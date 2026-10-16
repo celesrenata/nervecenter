@@ -14,7 +14,7 @@ paid **FrameShift** Apple Developer Program account (`celes@frameshift.net`).
 2. **Apple Distribution** certificate created (Accounts → Manage
    Certificates → + → Apple Distribution, App Store).
 3. App Store Connect app record **Nerve Center**
-   (`com.celesrenata.nervephone`) created at appstoreconnect.apple.com.
+   (`com.celesrenata.NervePhone`) created at appstoreconnect.apple.com.
 
 ## Per-build flow
 

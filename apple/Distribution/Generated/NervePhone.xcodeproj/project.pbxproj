@@ -3,7 +3,7 @@
 	archiveVersion = 1;
 	classes = {
 	};
-	objectVersion = 70;
+	objectVersion = 63;
 	objects = {
 
 /* Begin PBXBuildFile section */
@@ -24,13 +24,13 @@
 		9AA18CEE29FE6C523BA36844 /* NerveCenterWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86304C79457EC53E2E69E6CD /* NerveCenterWidgetBundle.swift */; };
 		A1B727D31A60151889013AEA /* PhoneFetchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FEC65426DC6D1DE8FE80DE3 /* PhoneFetchService.swift */; };
 		A54EA26ADAD82A438C58A3BB /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325F307E98486F0BFCA8D272 /* AgentsView.swift */; };
+		AA00000000000000000000FF01 /* NerveCenter in Frameworks */ = {isa = PBXBuildFile; productRef = B1DFA402691777EA1F88BD40 /* NerveCenter */; };
 		B1F0A7469619E0C3803C6D6C /* WidgetDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5CF7F51527E952976F7F7F0 /* WidgetDesign.swift */; };
 		C7C8DD14EFF9E178F8104C4B /* IncidentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DC38757E0E3C7AE4A69C47C /* IncidentsView.swift */; };
 		CCEAB1B1F30BE248D58A735D /* PhoneDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439C6171AE81F2227401E58D /* PhoneDataStore.swift */; };
 		D2ABB75F521BEE1703745BC2 /* AskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6D5A074353B5BF9E38EE92C /* AskView.swift */; };
 		F6067D86628FCA06C7AFD7A0 /* PhoneDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5784598D772E278429EB2C6D /* PhoneDesign.swift */; };
 		FE6A19EDA220B68FBC38F65A /* SystemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB87B5A52DCE7660100DF9FE /* SystemsView.swift */; };
-		AA00000000000000000000FF01 /* NerveCenter in Frameworks */ = {isa = PBXBuildFile; productRef = B1DFA402691777EA1F88BD40 /* NerveCenter */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -62,7 +62,7 @@
 		0E8FD65C359A1082522D0567 /* NerveCenterWidgetProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NerveCenterWidgetProvider.swift; sourceTree = "<group>"; };
 		1720799DF83260D96E88FC3C /* LargeWidgetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LargeWidgetView.swift; sourceTree = "<group>"; };
 		1B3076580D9E097498D9414A /* apple */ = {isa = PBXFileReference; lastKnownFileType = folder; name = apple; path = ../..; sourceTree = SOURCE_ROOT; };
-		21F7EEED47DE257CB424BA51 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
+		21F7EEED47DE257CB424BA51 /* .gitkeep */ = {isa = PBXFileReference; lastKnownFileType = text; path = .gitkeep; sourceTree = "<group>"; };
 		325F307E98486F0BFCA8D272 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
 		34F83B11821FD3176BAFA8E0 /* WidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSnapshot.swift; sourceTree = "<group>"; };
 		439C6171AE81F2227401E58D /* PhoneDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneDataStore.swift; sourceTree = "<group>"; };
@@ -77,8 +77,8 @@
 		A70C3931496C017464DBAE58 /* AppGroupWidgetDataSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupWidgetDataSource.swift; sourceTree = "<group>"; };
 		B34DEF456E074ABD20F973F3 /* GoalsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoalsView.swift; sourceTree = "<group>"; };
 		C6D5A074353B5BF9E38EE92C /* AskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskView.swift; sourceTree = "<group>"; };
-		C748FFD991FBC224E363D9CE /* NervePhone.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NervePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		CC50D6BDB25D3E0AD37B6A87 /* NerveCenterWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NerveCenterWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		C748FFD991FBC224E363D9CE /* NervePhone.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NervePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC50D6BDB25D3E0AD37B6A87 /* NerveCenterWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NerveCenterWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		E7176240358C3249CC9F9E35 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
 		EB87B5A52DCE7660100DF9FE /* SystemsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemsView.swift; sourceTree = "<group>"; };
 		F5CF7F51527E952976F7F7F0 /* WidgetDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetDesign.swift; sourceTree = "<group>"; };
@@ -276,14 +276,6 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 1430;
-				TargetAttributes = {
-					8873240A7CBBFFA343622C0F = {
-						ProvisioningStyle = Manual;
-					};
-					D7FF7C860AD2DE6EB6E59839 = {
-						ProvisioningStyle = Manual;
-					};
-				};
 			};
 			buildConfigurationList = 114455E6E6C909FA5C2BF73F /* Build configuration list for PBXProject "NervePhone" */;
 			compatibilityVersion = "Xcode 14.0";
@@ -298,7 +290,6 @@
 			packageReferences = (
 				16E475B70A3BAA61E386F182 /* XCLocalSwiftPackageReference "../..//" */,
 			);
-			preferredProjectObjectVersion = 70;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
@@ -359,6 +350,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../Generated/NerveCenterWidgetExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NQV7T36W69;
 				INFOPLIST_FILE = "../Generated/NerveCenterWidgetExtension-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -366,7 +360,8 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NerveCenterWidgetExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NervePhone.widgets;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -376,6 +371,9 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				CODE_SIGN_ENTITLEMENTS = ../Generated/NerveCenterWidgetExtension.entitlements;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NQV7T36W69;
 				INFOPLIST_FILE = "../Generated/NerveCenterWidgetExtension-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -383,7 +381,8 @@
 					"@executable_path/Frameworks",
 					"@executable_path/../../Frameworks",
 				);
-				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NerveCenterWidgetExtension;
+				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NervePhone.widgets;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -394,7 +393,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ../Generated/NervePhone.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NQV7T36W69;
 				INFOPLIST_FILE = "../Generated/NervePhone-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -402,6 +403,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NervePhone;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
@@ -412,7 +414,9 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_ENTITLEMENTS = ../Generated/NervePhone.entitlements;
-				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = NQV7T36W69;
 				INFOPLIST_FILE = "../Generated/NervePhone-Info.plist";
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -420,6 +424,7 @@
 					"@executable_path/Frameworks",
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NervePhone;
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};

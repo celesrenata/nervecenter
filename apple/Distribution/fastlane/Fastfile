@@ -16,7 +16,7 @@
 default_team = ENV["NERVE_TEAM_ID"]
 # Ad-hoc export does not validate against App Store rules.
 
-app_identifier_phone = "com.celesrenata.nervephone"
+app_identifier_phone = "com.celesrenata.NervePhone"
 app_identifier_watch = "com.celesrenata.nervewatch"
 
 # --- Paths -----------------------------------------------------------------
@@ -83,8 +83,8 @@ def run_xcodebuild_export(archive:, platform:, export_method:, destination:)
   <string>#{default_team}</string>
   <key>provisioningProfiles</key>
   <dict>
-    <key>com.celesrenata.nervephone</key>
-    <string>com.celesrenata.nervephone</string>
+    <key>com.celesrenata.NervePhone</key>
+    <string>com.celesrenata.NervePhone</string>
   </dict>
 </dict>
 </plist>

@@ -14,7 +14,7 @@
       "path": "NervePhone.ipa",
       "present": true,
       "embedded": false,
-      "bundle_id": "com.celesrenata.nervephone",
+      "bundle_id": "com.celesrenata.NervePhone",
       "min_ios": "17.0",
       "sha256": "EXAMPLESHA256FORDOCUMENTATIONONLY00000000000000000000000000000000",
       "bytes": 0
@@ -49,7 +49,7 @@
       "path": "NerveCenterWidgetExtension.appex",
       "present": false,
       "embedded": true,
-      "bundle_id": "com.celesrenata.nervephone.widgets"
+      "bundle_id": "com.celesrenata.NervePhone.widgets"
     }
   ]
 }

@@ -54,7 +54,7 @@ ARTIFACTS: List[Dict[str, Any]] = [
         "kind": "ios",
         "label": "NervePhone (iPhone / iPad)",
         "min_ios": "17.0",
-        "bundle_id": "com.celesrenata.nervephone",
+        "bundle_id": "com.celesrenata.NervePhone",
         "embedded": False,
     },
     {
@@ -78,7 +78,7 @@ ARTIFACTS: List[Dict[str, Any]] = [
         "name": "NerveCenterWidgetExtension.appex",
         "kind": "ios-widget",
         "label": "NerveCenter widget (embedded in app)",
-        "bundle_id": "com.celesrenata.nervephone.widgets",
+        "bundle_id": "com.celesrenata.NervePhone.widgets",
         "embedded": True,
     },
 ]

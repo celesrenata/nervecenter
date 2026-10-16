@@ -43,6 +43,9 @@ settings:
 
 targets:
   # Widget extension embedded in the app (WidgetKit, §62).
+  # NOTE: the widget bundle id MUST be a child of the host app's
+  # (com.celesrenata.NervePhone) — "Embedded binary's bundle identifier
+  # is not prefixed with the parent app's bundle identifier" otherwise.
   NerveCenterWidgetExtension:
     type: app-extension
     platform: iOS
@@ -52,7 +55,7 @@ targets:
     info:
       path: "../Generated/NerveCenterWidgetExtension-Info.plist"
       properties:
-        CFBundleIdentifier: com.celesrenata.nervephone.widgets
+        CFBundleIdentifier: com.celesrenata.NervePhone.widgets
         CFBundleDisplayName: "Nerve Center Widgets"
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
@@ -72,6 +75,9 @@ targets:
       - package: NerveCenter
     product: NerveCenterWidgetExtension
 
+  # NOTE: runtime CFBundleIdentifier MUST stay capitalized
+  # (com.celesrenata.NervePhone) — the lowercase form is registered to a
+  # different team and cannot be provisioned under NQV7T36W69.
   NervePhone:
     type: application
     platform: iOS
@@ -81,7 +87,7 @@ targets:
     info:
       path: "../Generated/NervePhone-Info.plist"
       properties:
-        CFBundleIdentifier: com.celesrenata.nervephone
+        CFBundleIdentifier: com.celesrenata.NervePhone
         CFBundleDisplayName: "Nerve Center"
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
@@ -94,7 +100,7 @@ targets:
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # Default API base, overridable at runtime via UserDefaults
-        # (defaults write com.celesrenata.nervephone NERVE_API_BASE "https://...").
+        # (defaults write com.celesrenata.NervePhone NERVE_API_BASE "https://...").
         NERVE_API_BASE: "https://nerv.celestium.life/api"
     entitlements:
       path: "../Generated/NervePhone.entitlements"

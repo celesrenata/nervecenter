@@ -12,9 +12,9 @@
 	<string>AppGroup</string>
 	<key>provisioningProfiles</key>
 	<dict>
-		<key>com.celesrenata.nervephone</key>
+		<key>com.celesrenata.NervePhone</key>
 		<string>NerveCenter</string>
-		<key>com.celesrenata.nervephone.widgets</key>
+		<key>com.celesrenata.NervePhone.widgets</key>
 		<string>NerveCenter</string>
 	</dict>
 </dict>

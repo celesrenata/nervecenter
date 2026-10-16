@@ -80,7 +80,7 @@ targets:
         CFBundleDisplayName: "Nerve Center"
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
-        WKCompanionAppBundleIdentifier: com.celesrenata.nervephone
+        WKCompanionAppBundleIdentifier: com.celesrenata.NervePhone
         # Self-host: allow http to localhost (LAN / tunnel use).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true

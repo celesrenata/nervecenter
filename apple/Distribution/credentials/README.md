@@ -8,7 +8,7 @@ Apple Developer account** — i.e. with a personal / free team.
 
 | File | What it is | How to get it |
 |------|-----------|--------------|
-| `nervecenter.mobileprovision` | The ad-hoc (or "Development") provisioning profile for `com.celesrenata.nervephone` (and the `com.celesrenata.nervewatch` bundle). | Register the App ID(s) in your Apple ID → developer section, then create a profile with **Distribution** type (ad-hoc) using your personal team. Download it. For the watchOS app you need a profile for `com.celesrenata.nervewatch` too — place it as `nervecenter-watch.mobileprovision`. |
+| `nervecenter.mobileprovision` | The ad-hoc (or "Development") provisioning profile for `com.celesrenata.NervePhone` (and the `com.celesrenata.nervewatch` bundle). | Register the App ID(s) in your Apple ID → developer section, then create a profile with **Distribution** type (ad-hoc) using your personal team. Download it. For the watchOS app you need a profile for `com.celesrenata.nervewatch` too — place it as `nervecenter-watch.mobileprovision`. |
 | `nervecenter.p12` | Your **Distribution** (or "App Sign") private key + cert exported from the Keychain. | In Xcode → Settings → Account → keychain, click *Download*. You'll be prompted for a password; remember it. Save the file here. |
 
 ## Registering the apps / bundle IDs
@@ -16,8 +16,8 @@ Apple Developer account** — i.e. with a personal / free team.
 Because there is no App Store submission, you still need to register the two
 App IDs so Xcode can sign them:
 
-- `com.celesrenata.nervephone`
-- `com.celesrenata.nervephone.widgets` (widget extension)
+- `com.celesrenata.NervePhone`
+- `com.celesrenata.NervePhone.widgets` (widget extension)
 - `com.celesrenata.nervewatch`
 - `com.celesrenata.nervewatch.widgets` (widget extension)
 
