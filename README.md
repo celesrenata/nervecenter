@@ -67,6 +67,20 @@ pyright backend
 pytest tests
 ```
 
+### Apple tests (canonical command)
+
+Apple tests run through [`apple/scripts/test-apple.sh`](apple/scripts/test-apple.sh), the
+canonical command that defeats the stale-test-product under-run trap (`gaps4.md` §3.4,
+D3): it `touch`es the test sources, rebuilds with `swift build --build-tests`, runs
+`swift test`, and **asserts the per-bundle counts** (NerveSharedTests 13 /
+NerveRelayTests 31 / NerveAppsTests 2 = **46 total**, 0 failures). `apple/build_and_test.sh`
+delegates to it, and CI (`.github/workflows/ci.yml`, `apple` job) runs it on a fresh
+macOS runner, where the count assertion doubles as the cold-cache guard.
+
+```bash
+bash apple/scripts/test-apple.sh   # 46 tests, 0 failures (13 / 31 / 2)
+```
+
 ## Deployment
 
 Deployment targets and runbooks live in [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md), which covers the local, Kubernetes, and Nix deployment paths under `deployments/`.

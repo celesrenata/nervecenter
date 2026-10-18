@@ -1,12 +1,13 @@
 #!/bin/bash
-set -e
+# Build + test NerveCenter.
+#
+# Delegates to scripts/test-apple.sh, the canonical Apple test command that
+# defeats the stale-test-product under-run trap (see gaps3.md Phase A /
+# gaps4.md Phase 1, D3). A bare `swift test` here would NOT guarantee the
+# full 46-test suite runs, so this entry point routes through the guarded
+# command instead.
+
+set -euo pipefail
 
 cd "$(dirname "$0")"
-
-echo "Building NerveCenter..."
-swift build
-
-echo "Running tests..."
-swift test
-
-echo "Build and test completed successfully!"
+exec bash scripts/test-apple.sh

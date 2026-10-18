@@ -144,7 +144,7 @@ git status --short        # must be empty after commit 6
 - [x] On the **final commit** (not the worktree): detached worktree of the final SHA; `python -c "import backend.api.app"` → exit 0. (Ran on 13cefdc — the slice tail; the docs commit 7 adds spec files only, cannot affect the import chain; final SHA re-verified post-commit.)
 - [x] `.venv/bin/python -m pytest tests/ -m "not integration"` → **596 passed, 0 failed** (≥559 threshold met).
 - [x] `npx playwright test --reporter=line` → **56 passed** (27.4s, from `web/`; mock backend boots/tears down clean).
-- [x] Apple evidence: `cd apple && swift test` (full) → `All tests passed`, exit 0. The plan's per-bundle `--filter` names are stale (filter runs report cached/0-test; `NerveRelayTests` target exists but its 2-test class runs under that filter only). Full run is the authoritative per-bundle evidence: NerveSharedTests 31, NerveAppsTests 2, relay + shared classes all green; Swift-Testing macro count is 0 by design.
+- [x] Apple evidence: `cd apple && swift test` (full) → `All tests passed`, exit 0. The plan's per-bundle `--filter` names are stale (filter runs report cached/0-test because of stale `.build` products, not because the tests don't exist). Canonical per-bundle counts (2026-10-18, gaps4.md D3): **NerveSharedTests 13, NerveRelayTests 31, NerveAppsTests 2 = 46 total**; the stale-product under-run is now guarded by `apple/scripts/test-apple.sh` (touch + `swift build --build-tests` + count assertion) wired into CI `.github/workflows/ci.yml`; Swift-Testing macro count is 0 by design.
 - [x] `git status --short` → empty (post commit 7); `git ls-files web/dist` → empty (since commit 6).
 - [x] AC-P01…AC-P06 each have an evidence row in the log below; the import-chain norm (AC-P07) is present in this pack's execution rules and (after the gaps2 delta amendments) in the sibling packs' rules.
 - [x] If the gate fails, reopen the offending task (P0-01…P0-05); do not patch around it here. (Gate passed; no reopen.)
@@ -179,7 +179,7 @@ git worktree remove /tmp/nc-p0-gate
 | 2026-10-15 | P0-06 / AC-P01…AC-P07 | see rows below | PASS | Full gate, pre-commit-7 (tree identical modulo the docs commit) |
 | 2026-10-15 | P0-06 pytest | `.venv/bin/python -m pytest tests/ -m "not integration" -q` | 596 passed, 0 failed | ≥559 threshold met |
 | 2026-10-15 | P0-06 e2e | `npx playwright test --reporter=line` (from web/) | 56 passed (27.4s) | mock backend boot/teardown clean |
-| 2026-10-15 | P0-06 apple | `cd apple && swift test` (full) | All tests passed, exit 0 | Per-bundle `--filter` names in the plan are stale (filter runs report cached/0-test); full run: XCTest suites green incl. NerveSharedTests (31) and NerveAppsTests (2) classes; Swift-Testing macro count is 0 by design. NerveRelayTests filter alone runs only its 2-test class — full run is the authoritative per-bundle evidence |
+| 2026-10-15 | P0-06 apple | `cd apple && swift test` (full) | All tests passed, exit 0 | Per-bundle `--filter` names in the plan are stale (filter runs report cached/0-test on stale `.build` products). Canonical counts as of 2026-10-18: NerveSharedTests (13), NerveRelayTests (31), NerveAppsTests (2) = 46 total; the under-run trap is now guarded by `apple/scripts/test-apple.sh` (CI `ci.yml`); Swift-Testing macro count is 0 by design |
 | 2026-10-15 | P0-06 clean tree | `git status --short`; `git ls-files web/dist` | empty / empty (post-commit-7) |  |
 
 ## AC coverage matrix

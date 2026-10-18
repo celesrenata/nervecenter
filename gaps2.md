@@ -59,7 +59,7 @@ then execute the three spec packs in the order §5 gives.
 | Web build | ✅ `tsc && vite build` clean (64 modules) | `cd web && npm run build` |
 | Web e2e | ✅ **56 passed** (27.2s, chromium) | `npx playwright test --reporter=line` (boots mock backend per `global-setup.mjs`) |
 | Apple build | ✅ `swift build` clean | `cd apple && swift build` (1.91s) |
-| Apple tests (default) | ⚠️ `swift test` runs **only `NerveAppsTests` (2 tests)**; `NerveRelayTests`/`NerveSharedTests` need `--filter` — **still true, G-4.1 open** | `swift test` output: `Executed 2 tests` |
+| Apple tests (default) | ✅ Full `swift test` (or the canonical `apple/scripts/test-apple.sh`) runs all three bundles — **NerveSharedTests 13, NerveRelayTests 31, NerveAppsTests 2 = 46 total** (2026-10-18, gaps4.md D3; per-bundle `--filter` names in the plan are stale, the under-run was a stale `.build` product, now guarded by touch + `--build-tests` + count assertion, CI `ci.yml`) | `swift test` output: `Executed 46 tests, with 0 failures` |
 | MCP | ✅ 18 tools (§45); 0 of the 11 §64 personal tools | `from mcp.tools_module import _SPEC; len(_SPEC) == 18` |
 | CLI | ✅ 14 commands; 0 personal (§65) commands | `cli/commands/` listing |
 | Backend "brain" (G-1.1–G-1.4) | ❌ `backend/communications/`, `followups/`, `drafts/` **do not exist** | `ls backend/` |
