@@ -92,6 +92,12 @@ extension PhoneDataStore {
        self.pendingApprovals = pendingApprovals
    }
 
+   /// Mark the store as freshly hydrated (call after a successful live
+   /// fetch so the §73 freshness/staleness badge reflects "just now").
+   public func touchUpdatedAt(_ date: Date = .now) {
+       updatedAt = date
+   }
+
     /// True when the last cache update is older than `policy.staleAfter`.
     public func isStale(policy: StalenessPolicy = .default) -> Bool {
         StaleState.evaluate(updatedAt: updatedAt, now: Date(), policy: policy).isStale

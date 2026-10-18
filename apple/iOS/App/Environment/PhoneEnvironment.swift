@@ -61,6 +61,26 @@ public struct ServerConfig: Codable, Hashable, Sendable {
         let wsScheme = (scheme == "https") ? "wss" : "ws"
         return URL(string: "\(wsScheme)://\(host):\(port)/ws/events")
     }
+
+    /// Parse a `--nerve-server=<scheme://host:port>` override value (C-3 /
+    /// §70 manual server configuration). Accepts optional scheme and port;
+    /// defaults to `https` + 443. Returns `nil` when unparseable.
+    public static func parse(_ raw: String) -> ServerConfig? {
+        var value = raw
+        var scheme = "https"
+        var host = value
+        var port = 443
+        if let schemeRange = value.range(of: "://") {
+            scheme = String(value[..<schemeRange.lowerBound])
+            host = String(value[schemeRange.upperBound...])
+        }
+        if let slash = host.firstIndex(of: ":") {
+            port = Int(host[host.index(after: slash)...]) ?? port
+            host = String(host[..<slash])
+        }
+        guard !host.isEmpty, scheme == "https" || scheme == "http" else { return nil }
+        return ServerConfig(host: host, port: port, scheme: scheme)
+    }
 }
 
 /// The iPhone app's service container: wires the existing `NerveShared`
@@ -123,6 +143,61 @@ extension PhoneEnvironment {
         let existing: Credential? = try? await credentialStore.retrieveCredential(forDevice: deviceID)
         isPaired = (existing != nil)
         cacheState = await cache.snapshot
+    }
+
+    /// Fetch live data from the configured server into `store`, then publish
+    /// a fresh §73 snapshot into the shared App Group so the Watch / Widgets
+    /// render real data (spec §69/§73). Truthful: a missing/unreachable
+    /// server leaves the store in its honest empty/error state and publishes
+    /// nothing new.
+    @MainActor
+    public func fetchInto(_ store: PhoneDataStore) async {
+        guard let baseURL = server.apiBaseURL else { return }
+        let client = APIClient(baseURL: baseURL, transport: URLSessionAPIClient())
+        let service = PhoneFetchService(client: client, store: store)
+        await service.fetchAll()
+
+        // Reflect the live compact state into the observable cache snapshot so
+        // the store's re-apply + the shared App Group both see fresh data.
+        let snapshot = CachedState(
+            systemHealth: store.systemHealth,
+            activeIncidents: store.activeIncidents,
+            runningAgents: store.runningAgents,
+            pendingApprovals: store.pendingApprovals,
+            primaryGoalProgress: store.primaryGoalProgress ?? 0,
+            updatedAt: store.updatedAt,
+            recentIncidentIDs: store.incidents.map(\.id),
+            recentGoalIDs: store.goals.map(\.id)
+        )
+        cacheState = snapshot
+        publishToAppGroup(snapshot)
+    }
+
+    /// Write the §73 snapshot to the App Group container the Watch reads
+    /// (`group.nerv.center` / `cached-state.json`). The phone target carries
+    /// both the `group.nerv.center` and `group.com.celestium.nervecenter`
+    /// entitlements, so this shares one container across Phone / Watch /
+    /// Widgets. Falls back to a local path (host / unit tests) when the group
+    /// container is unavailable.
+    public func publishToAppGroup(_ snapshot: CachedState) {
+        let fm = FileManager.default
+        let container: URL
+        if let group = fm.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.nerv.center"
+        ) {
+            container = group
+        } else {
+            let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? fm.temporaryDirectory
+            container = base.appendingPathComponent("NerveCenter", isDirectory: true)
+        }
+        try? fm.createDirectory(at: container, withIntermediateDirectories: true)
+        let url = container.appendingPathComponent("cached-state.json")
+        // `NerveJSON` uses ISO-8601 dates — the same strategy the Watch's
+        // `WatchSnapshotSource.readSnapshot()` decodes with.
+        if let data = NerveJSON.encode(snapshot) {
+            try? data.write(to: url)
+        }
     }
 }
 

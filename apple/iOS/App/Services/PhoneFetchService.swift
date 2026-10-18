@@ -82,7 +82,7 @@ public actor PhoneFetchService: Sendable {
     /// Fetch incidents for the Incidents tab.
     public func fetchIncidents() async throws {
         do {
-            let response = try await client.send(path: "/api/incidents") as WireListResponse<WireIncident>
+            let response = try await client.send(path: "/incidents") as WireListResponse<WireIncident>
             store.incidents = response.data.map(WireMapper.incident)
             if response.data.isEmpty {
                 store.incidentsState = .empty
@@ -135,10 +135,10 @@ public actor PhoneFetchService: Sendable {
     /// Fetch systems for the Systems tab.
     public func fetchSystems() async throws {
         do {
-            let response = try await client.send(path: "/api/systems") as WireListResponse<WireSystem>
+            let response = try await client.send(path: "/systems") as WireListResponse<WireSystem>
             store.systems = response.data.map { s in
                 SystemRow(
-                    id: s.id,
+                    id: s.rowID,
                     name: s.displayName,
                     health: s.displayHealth
                 )
@@ -166,7 +166,7 @@ public actor PhoneFetchService: Sendable {
         let request = AskRequest(question: question)
         do {
             let response = try await client.send(
-                path: "/api/context/ask",
+                path: "context/ask",
                 method: "POST",
                 body: request
             ) as WireAskResponse
@@ -194,5 +194,43 @@ public actor PhoneFetchService: Sendable {
     public func fetchOverviewCompact() async throws {
         // This endpoint is a stub returning 501
         // Leave compact state unchanged (from cache).
+    }
+
+    /// Fetch all six §56 sources and reconcile the store.
+    ///
+    /// Each per-tab fetch is best-effort (a failing endpoint leaves its own
+    /// state as an error without aborting the others). After the fetches we
+    /// derive the compact counts from whatever actually loaded and bump
+    /// `updatedAt` so the freshness badge reflects a real, just-received
+    /// snapshot.
+    public func fetchAll() async {
+        _ = try? await fetchGoals()
+        _ = try? await fetchIncidents()
+        _ = try? await fetchAgents()
+        _ = try? await fetchSystems()
+
+        let systems = store.systems
+        let agentCount = store.agents.count
+        let incidentCount = store.incidents.count
+        let nonHealthy = systems
+            .map(\.health)
+            .filter { $0.lowercased() != "healthy" }
+        let health: String
+        if let first = nonHealthy.first {
+            health = first
+        } else if !systems.isEmpty {
+            health = "healthy"
+        } else {
+            health = store.systemHealth
+        }
+        await MainActor.run {
+            store.applyWireCompact(
+                systemHealth: health,
+                activeIncidents: incidentCount,
+                runningAgents: agentCount,
+                pendingApprovals: store.pendingApprovals
+            )
+            store.touchUpdatedAt()
+        }
     }
 }

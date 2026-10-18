@@ -24,7 +24,13 @@ public struct NerveCenterSmallWidget: Widget {
         }
         .configurationDisplayName("Nerve Center — Health")
         .description("System health, agent and incident counts.")
+        // watchOS widgets use accessory families; systemSmall/Medium/Large are
+        // unavailable on watchOS.
+        #if os(watchOS)
+        .supportedFamilies([.accessoryCircular])
+        #else
         .supportedFamilies([.systemSmall])
+        #endif
     }
 }
 
@@ -40,7 +46,12 @@ public struct NerveCenterMediumWidget: Widget {
         }
         .configurationDisplayName("Nerve Center — Compute")
         .description("Compute utilisation plus agent and incident counts.")
+        // `systemMedium` is unavailable on watchOS — use accessoryRectangular.
+        #if os(watchOS)
+        .supportedFamilies([.accessoryRectangular])
+        #else
         .supportedFamilies([.systemMedium])
+        #endif
     }
 }
 
@@ -56,7 +67,12 @@ public struct NerveCenterLargeWidget: Widget {
         }
         .configurationDisplayName("Nerve Center — Overview")
         .description("Goal progress, compute state, incidents, and agent activity.")
+        // `systemLarge` is unavailable on watchOS — use accessoryCorner.
+        #if os(watchOS)
+        .supportedFamilies([.accessoryCorner])
+        #else
         .supportedFamilies([.systemLarge])
+        #endif
     }
 }
 

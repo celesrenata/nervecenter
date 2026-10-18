@@ -127,7 +127,9 @@ struct WireAgent: Decodable {
 /// A system / compute node as returned by `GET /api/systems` or
 /// `GET /api/compute`.
 struct WireSystem: Decodable {
-    var id: String
+    /// Live `/api/systems` rows may omit `id` (they carry `name`/`status`
+    /// only), so `id` is optional and a stable row id is derived.
+    var id: String?
     var name: String?
     var health: String?
     var status: String?
@@ -135,7 +137,11 @@ struct WireSystem: Decodable {
     var utilizationPercent: Int?
     var hardware: String?
 
-    var displayName: String { name ?? id }
+    /// A stable, non-fabricated row identifier: real `id` when present,
+    /// otherwise the display name, otherwise a positional placeholder.
+    var rowID: String { id ?? name ?? "system" }
+
+    var displayName: String { name ?? id ?? "system" }
     var displayHealth: String { health ?? status ?? "unknown" }
     var displayUtilization: Int? { utilizationPercent ?? utilization }
     var displayHardware: String? { hardware }

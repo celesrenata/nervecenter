@@ -87,6 +87,7 @@ public struct WatchHomeView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Color.nerve(HealthColor.critical.color))
+            .accessibilityIdentifier("watch.nav.details")
         }
     }
 
@@ -135,6 +136,7 @@ public struct WatchHomeView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(Color.nerve(HealthColor.critical.color))
+            .accessibilityIdentifier("watch.nav.stop")
         }
     }
 
@@ -152,5 +154,6 @@ public struct WatchHomeView: View {
             }
         }
         .accessibilityLabel(label)
+        .accessibilityIdentifier("watch.nav." + destination.id)
     }
 }
