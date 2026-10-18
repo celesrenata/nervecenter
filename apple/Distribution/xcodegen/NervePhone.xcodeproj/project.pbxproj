@@ -1,0 +1,600 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		0DEE485C2B50BF820A482510 /* InMemoryWidgetDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = 93189F6EEE82C4AB8C648F89 /* InMemoryWidgetDataSource.swift */; };
+		1637B174689ACA125A3D5A5C /* SmallWidgetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FB0D64E4A9083EF8EB5291A8 /* SmallWidgetView.swift */; };
+		32E11017A7E94AA83BB66A79 /* PhoneEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = A674E3A400FBDC8E1CBB79C7 /* PhoneEnvironment.swift */; };
+		375A468CDF2C8129A06302FF /* NerveCenter in Frameworks */ = {isa = PBXBuildFile; productRef = B1DFA402691777EA1F88BD40 /* NerveCenter */; };
+		3C04EB2E8ACA901F23744807 /* AppGroupWidgetDataSource.swift in Sources */ = {isa = PBXBuildFile; fileRef = A70C3931496C017464DBAE58 /* AppGroupWidgetDataSource.swift */; };
+		42B28D56EA340ECD6203901D /* WidgetSnapshot.swift in Sources */ = {isa = PBXBuildFile; fileRef = 34F83B11821FD3176BAFA8E0 /* WidgetSnapshot.swift */; };
+		438B006B30111FC36020F6A6 /* NervePhoneApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43DC3DB8461ADFB78997C9A7 /* NervePhoneApp.swift */; };
+		4501C9E03F4F8ABA82B21741 /* OverviewView.swift in Sources */ = {isa = PBXBuildFile; fileRef = E7176240358C3249CC9F9E35 /* OverviewView.swift */; };
+		47CBDF9FE954DCE8CD98BA2B /* WireModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 577487E055A213C51048CFDB /* WireModels.swift */; };
+		616783DC97EE646E8BE236C3 /* LargeWidgetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1720799DF83260D96E88FC3C /* LargeWidgetView.swift */; };
+		6BACC668B91F1BD7EDE2D76B /* MediumWidgetView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0A9F7B36836D945B0326B819 /* MediumWidgetView.swift */; };
+		7A43A5CD7469A8EF8BC3C7EC /* GoalsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = B34DEF456E074ABD20F973F3 /* GoalsView.swift */; };
+		7FF719BF1DCEA4B4F732E9D6 /* NerveCenterWidgetProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0E8FD65C359A1082522D0567 /* NerveCenterWidgetProvider.swift */; };
+		94259D3DCD8A78CA6AE064B6 /* NerveCenterWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = CC50D6BDB25D3E0AD37B6A87 /* NerveCenterWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		9AA18CEE29FE6C523BA36844 /* NerveCenterWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 86304C79457EC53E2E69E6CD /* NerveCenterWidgetBundle.swift */; };
+		A1B727D31A60151889013AEA /* PhoneFetchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8FEC65426DC6D1DE8FE80DE3 /* PhoneFetchService.swift */; };
+		A54EA26ADAD82A438C58A3BB /* AgentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 325F307E98486F0BFCA8D272 /* AgentsView.swift */; };
+		B1F0A7469619E0C3803C6D6C /* WidgetDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = F5CF7F51527E952976F7F7F0 /* WidgetDesign.swift */; };
+		C57933615E202F38FE6A773B /* NerveCenter in Frameworks */ = {isa = PBXBuildFile; productRef = 99816BC090096018008E73AD /* NerveCenter */; };
+		C7C8DD14EFF9E178F8104C4B /* IncidentsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9DC38757E0E3C7AE4A69C47C /* IncidentsView.swift */; };
+		CCEAB1B1F30BE248D58A735D /* PhoneDataStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 439C6171AE81F2227401E58D /* PhoneDataStore.swift */; };
+		D2ABB75F521BEE1703745BC2 /* AskView.swift in Sources */ = {isa = PBXBuildFile; fileRef = C6D5A074353B5BF9E38EE92C /* AskView.swift */; };
+		F6067D86628FCA06C7AFD7A0 /* PhoneDesign.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5784598D772E278429EB2C6D /* PhoneDesign.swift */; };
+		FE6A19EDA220B68FBC38F65A /* SystemsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = EB87B5A52DCE7660100DF9FE /* SystemsView.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		3AE4F525BD0FEE36FCFC26AC /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 54D7964742AD197A874028B8 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8873240A7CBBFFA343622C0F;
+			remoteInfo = NerveCenterWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		5EA41BC630CA8E95ABE5BC34 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				94259D3DCD8A78CA6AE064B6 /* NerveCenterWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		0A9F7B36836D945B0326B819 /* MediumWidgetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MediumWidgetView.swift; sourceTree = "<group>"; };
+		0E8FD65C359A1082522D0567 /* NerveCenterWidgetProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NerveCenterWidgetProvider.swift; sourceTree = "<group>"; };
+		1720799DF83260D96E88FC3C /* LargeWidgetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LargeWidgetView.swift; sourceTree = "<group>"; };
+		1B3076580D9E097498D9414A /* apple */ = {isa = PBXFileReference; lastKnownFileType = folder; name = apple; path = ../..; sourceTree = SOURCE_ROOT; };
+		21F7EEED47DE257CB424BA51 /* .gitkeep */ = {isa = PBXFileReference; path = .gitkeep; sourceTree = "<group>"; };
+		325F307E98486F0BFCA8D272 /* AgentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentsView.swift; sourceTree = "<group>"; };
+		34F83B11821FD3176BAFA8E0 /* WidgetSnapshot.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetSnapshot.swift; sourceTree = "<group>"; };
+		439C6171AE81F2227401E58D /* PhoneDataStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneDataStore.swift; sourceTree = "<group>"; };
+		43DC3DB8461ADFB78997C9A7 /* NervePhoneApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NervePhoneApp.swift; sourceTree = "<group>"; };
+		577487E055A213C51048CFDB /* WireModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WireModels.swift; sourceTree = "<group>"; };
+		5784598D772E278429EB2C6D /* PhoneDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneDesign.swift; sourceTree = "<group>"; };
+		86304C79457EC53E2E69E6CD /* NerveCenterWidgetBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NerveCenterWidgetBundle.swift; sourceTree = "<group>"; };
+		8FEC65426DC6D1DE8FE80DE3 /* PhoneFetchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneFetchService.swift; sourceTree = "<group>"; };
+		93189F6EEE82C4AB8C648F89 /* InMemoryWidgetDataSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InMemoryWidgetDataSource.swift; sourceTree = "<group>"; };
+		9DC38757E0E3C7AE4A69C47C /* IncidentsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IncidentsView.swift; sourceTree = "<group>"; };
+		A674E3A400FBDC8E1CBB79C7 /* PhoneEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PhoneEnvironment.swift; sourceTree = "<group>"; };
+		A70C3931496C017464DBAE58 /* AppGroupWidgetDataSource.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppGroupWidgetDataSource.swift; sourceTree = "<group>"; };
+		B34DEF456E074ABD20F973F3 /* GoalsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GoalsView.swift; sourceTree = "<group>"; };
+		C6D5A074353B5BF9E38EE92C /* AskView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AskView.swift; sourceTree = "<group>"; };
+		C748FFD991FBC224E363D9CE /* NervePhone.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NervePhone.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		CC50D6BDB25D3E0AD37B6A87 /* NerveCenterWidgetExtension.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = NerveCenterWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		E7176240358C3249CC9F9E35 /* OverviewView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OverviewView.swift; sourceTree = "<group>"; };
+		EB87B5A52DCE7660100DF9FE /* SystemsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemsView.swift; sourceTree = "<group>"; };
+		F5CF7F51527E952976F7F7F0 /* WidgetDesign.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WidgetDesign.swift; sourceTree = "<group>"; };
+		FB0D64E4A9083EF8EB5291A8 /* SmallWidgetView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmallWidgetView.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		64AB1567A17C5B86AD8C1ED9 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				375A468CDF2C8129A06302FF /* NerveCenter in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		CBFFB39C67BE9336C4EEF482 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C57933615E202F38FE6A773B /* NerveCenter in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		0E366A342D7DC74963A6D9F1 /* apple */ = {
+			isa = PBXGroup;
+			children = (
+				DCDF24E12A6C9EC767B0183F /* iOS */,
+				31B7EB1A33B6B547CFF4B7BF /* Widgets */,
+			);
+			name = apple;
+			path = ../..;
+			sourceTree = "<group>";
+		};
+		1C0C3452DDB91EEC24C89F10 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				5784598D772E278429EB2C6D /* PhoneDesign.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		31B7EB1A33B6B547CFF4B7BF /* Widgets */ = {
+			isa = PBXGroup;
+			children = (
+				21F7EEED47DE257CB424BA51 /* .gitkeep */,
+				A70C3931496C017464DBAE58 /* AppGroupWidgetDataSource.swift */,
+				93189F6EEE82C4AB8C648F89 /* InMemoryWidgetDataSource.swift */,
+				1720799DF83260D96E88FC3C /* LargeWidgetView.swift */,
+				0A9F7B36836D945B0326B819 /* MediumWidgetView.swift */,
+				86304C79457EC53E2E69E6CD /* NerveCenterWidgetBundle.swift */,
+				0E8FD65C359A1082522D0567 /* NerveCenterWidgetProvider.swift */,
+				FB0D64E4A9083EF8EB5291A8 /* SmallWidgetView.swift */,
+				F5CF7F51527E952976F7F7F0 /* WidgetDesign.swift */,
+				34F83B11821FD3176BAFA8E0 /* WidgetSnapshot.swift */,
+			);
+			path = Widgets;
+			sourceTree = "<group>";
+		};
+		6FE71D0D811C3C24D17B35B2 /* Environment */ = {
+			isa = PBXGroup;
+			children = (
+				A674E3A400FBDC8E1CBB79C7 /* PhoneEnvironment.swift */,
+			);
+			path = Environment;
+			sourceTree = "<group>";
+		};
+		726F742E1D3310260C0C3ECE /* Store */ = {
+			isa = PBXGroup;
+			children = (
+				439C6171AE81F2227401E58D /* PhoneDataStore.swift */,
+			);
+			path = Store;
+			sourceTree = "<group>";
+		};
+		892CC0E14C21CE89B90AF449 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				325F307E98486F0BFCA8D272 /* AgentsView.swift */,
+				C6D5A074353B5BF9E38EE92C /* AskView.swift */,
+				B34DEF456E074ABD20F973F3 /* GoalsView.swift */,
+				9DC38757E0E3C7AE4A69C47C /* IncidentsView.swift */,
+				E7176240358C3249CC9F9E35 /* OverviewView.swift */,
+				EB87B5A52DCE7660100DF9FE /* SystemsView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		9ED4CE5A9009A4285BAA79D8 /* App */ = {
+			isa = PBXGroup;
+			children = (
+				43DC3DB8461ADFB78997C9A7 /* NervePhoneApp.swift */,
+				6FE71D0D811C3C24D17B35B2 /* Environment */,
+				F507226F11A9593A2CFFA312 /* Services */,
+				726F742E1D3310260C0C3ECE /* Store */,
+				1C0C3452DDB91EEC24C89F10 /* Support */,
+				892CC0E14C21CE89B90AF449 /* Views */,
+			);
+			path = App;
+			sourceTree = "<group>";
+		};
+		ABAA4140281C7C0267BE5D22 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				CC50D6BDB25D3E0AD37B6A87 /* NerveCenterWidgetExtension.appex */,
+				C748FFD991FBC224E363D9CE /* NervePhone.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		D336DC21728669D0D9CD9775 /* Packages */ = {
+			isa = PBXGroup;
+			children = (
+				1B3076580D9E097498D9414A /* apple */,
+			);
+			name = Packages;
+			sourceTree = "<group>";
+		};
+		DCDF24E12A6C9EC767B0183F /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+				9ED4CE5A9009A4285BAA79D8 /* App */,
+			);
+			path = iOS;
+			sourceTree = "<group>";
+		};
+		E69DE629D63F0A2493D51816 = {
+			isa = PBXGroup;
+			children = (
+				0E366A342D7DC74963A6D9F1 /* apple */,
+				D336DC21728669D0D9CD9775 /* Packages */,
+				ABAA4140281C7C0267BE5D22 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		F507226F11A9593A2CFFA312 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				8FEC65426DC6D1DE8FE80DE3 /* PhoneFetchService.swift */,
+				577487E055A213C51048CFDB /* WireModels.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8873240A7CBBFFA343622C0F /* NerveCenterWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 20B96794E2A2825163ABD543 /* Build configuration list for PBXNativeTarget "NerveCenterWidgetExtension" */;
+			buildPhases = (
+				19821DD1E6228910CDEB9628 /* Sources */,
+				CBFFB39C67BE9336C4EEF482 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NerveCenterWidgetExtension;
+			packageProductDependencies = (
+				99816BC090096018008E73AD /* NerveCenter */,
+			);
+			productName = NerveCenterWidgetExtension;
+			productReference = CC50D6BDB25D3E0AD37B6A87 /* NerveCenterWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+		D7FF7C860AD2DE6EB6E59839 /* NervePhone */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 41DF6AB87D54AB5C2051CCDE /* Build configuration list for PBXNativeTarget "NervePhone" */;
+			buildPhases = (
+				B0460EAF0126FE2F467C4D1D /* Sources */,
+				64AB1567A17C5B86AD8C1ED9 /* Frameworks */,
+				5EA41BC630CA8E95ABE5BC34 /* Embed Foundation Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C8D1E7A3618E429533B10AE6 /* PBXTargetDependency */,
+			);
+			name = NervePhone;
+			packageProductDependencies = (
+				B1DFA402691777EA1F88BD40 /* NerveCenter */,
+			);
+			productName = NervePhone;
+			productReference = C748FFD991FBC224E363D9CE /* NervePhone.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		54D7964742AD197A874028B8 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 1430;
+				TargetAttributes = {
+					8873240A7CBBFFA343622C0F = {
+						ProvisioningStyle = Manual;
+					};
+					D7FF7C860AD2DE6EB6E59839 = {
+						ProvisioningStyle = Manual;
+					};
+				};
+			};
+			buildConfigurationList = 114455E6E6C909FA5C2BF73F /* Build configuration list for PBXProject "NervePhone" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = E69DE629D63F0A2493D51816;
+			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				16E475B70A3BAA61E386F182 /* XCLocalSwiftPackageReference "../..//" */,
+			);
+			preferredProjectObjectVersion = 77;
+			productRefGroup = ABAA4140281C7C0267BE5D22 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8873240A7CBBFFA343622C0F /* NerveCenterWidgetExtension */,
+				D7FF7C860AD2DE6EB6E59839 /* NervePhone */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		19821DD1E6228910CDEB9628 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				3C04EB2E8ACA901F23744807 /* AppGroupWidgetDataSource.swift in Sources */,
+				0DEE485C2B50BF820A482510 /* InMemoryWidgetDataSource.swift in Sources */,
+				616783DC97EE646E8BE236C3 /* LargeWidgetView.swift in Sources */,
+				6BACC668B91F1BD7EDE2D76B /* MediumWidgetView.swift in Sources */,
+				9AA18CEE29FE6C523BA36844 /* NerveCenterWidgetBundle.swift in Sources */,
+				7FF719BF1DCEA4B4F732E9D6 /* NerveCenterWidgetProvider.swift in Sources */,
+				1637B174689ACA125A3D5A5C /* SmallWidgetView.swift in Sources */,
+				B1F0A7469619E0C3803C6D6C /* WidgetDesign.swift in Sources */,
+				42B28D56EA340ECD6203901D /* WidgetSnapshot.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B0460EAF0126FE2F467C4D1D /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A54EA26ADAD82A438C58A3BB /* AgentsView.swift in Sources */,
+				D2ABB75F521BEE1703745BC2 /* AskView.swift in Sources */,
+				7A43A5CD7469A8EF8BC3C7EC /* GoalsView.swift in Sources */,
+				C7C8DD14EFF9E178F8104C4B /* IncidentsView.swift in Sources */,
+				438B006B30111FC36020F6A6 /* NervePhoneApp.swift in Sources */,
+				4501C9E03F4F8ABA82B21741 /* OverviewView.swift in Sources */,
+				CCEAB1B1F30BE248D58A735D /* PhoneDataStore.swift in Sources */,
+				F6067D86628FCA06C7AFD7A0 /* PhoneDesign.swift in Sources */,
+				32E11017A7E94AA83BB66A79 /* PhoneEnvironment.swift in Sources */,
+				A1B727D31A60151889013AEA /* PhoneFetchService.swift in Sources */,
+				FE6A19EDA220B68FBC38F65A /* SystemsView.swift in Sources */,
+				47CBDF9FE954DCE8CD98BA2B /* WireModels.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C8D1E7A3618E429533B10AE6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8873240A7CBBFFA343622C0F /* NerveCenterWidgetExtension */;
+			targetProxy = 3AE4F525BD0FEE36FCFC26AC /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		28286EDB36B692840F80E059 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ../Generated/NerveCenterWidgetExtension.entitlements;
+				INFOPLIST_FILE = "../Generated/NerveCenterWidgetExtension-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NerveCenterWidgetExtension;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		2B21BBD747063D4BAF1BD850 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = ../Generated/NerveCenterWidgetExtension.entitlements;
+				INFOPLIST_FILE = "../Generated/NerveCenterWidgetExtension-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NerveCenterWidgetExtension;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		7BC223288D381A14AC6ABFFB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ../Generated/NervePhone.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = "../Generated/NervePhone-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NervePhone;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		849037F669FA524ECD456E1D /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = ../Generated/NervePhone.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				INFOPLIST_FILE = "../Generated/NervePhone-Info.plist";
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.celesrenata.NervePhone;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		8FC004119171D10910CDBD43 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Debug;
+		};
+		DB9A2E46063C0780126BEB0F /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				CODE_SIGN_STYLE = Manual;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 5.9;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		114455E6E6C909FA5C2BF73F /* Build configuration list for PBXProject "NervePhone" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				8FC004119171D10910CDBD43 /* Debug */,
+				DB9A2E46063C0780126BEB0F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		20B96794E2A2825163ABD543 /* Build configuration list for PBXNativeTarget "NerveCenterWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				2B21BBD747063D4BAF1BD850 /* Debug */,
+				28286EDB36B692840F80E059 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		41DF6AB87D54AB5C2051CCDE /* Build configuration list for PBXNativeTarget "NervePhone" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7BC223288D381A14AC6ABFFB /* Debug */,
+				849037F669FA524ECD456E1D /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		16E475B70A3BAA61E386F182 /* XCLocalSwiftPackageReference "../..//" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = "../..//";
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		99816BC090096018008E73AD /* NerveCenter */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = NerveCenter;
+		};
+		B1DFA402691777EA1F88BD40 /* NerveCenter */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = NerveCenter;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 54D7964742AD197A874028B8 /* Project object */;
+}

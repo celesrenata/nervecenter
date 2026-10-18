@@ -4,8 +4,8 @@
 # Output:          apple/Distribution/Generated/NervePhone.xcodeproj (committed for reproducibility)
 #
 # The Swift sources are NOT copied into the project — this target compiles the
-# SPM package in place (apple/Package.swift, package "NerveCenter") and the app
-# entry point lives in apple/iOS/App (NervePhoneApp.swift, @main).
+# SPM package in place (apple/Package.swift, package "NerveCenter") and the
+# app entry point lives in apple/iOS/App (NervePhoneApp.swift, @main).
 #
 # Signing: personal-team development/ad-hoc. See ../README.md and ../fastlane.
 #
@@ -14,9 +14,15 @@
 # sources pin `group.nerv.center`. Until the code is aligned, BOTH identifiers
 # are granted in the entitlements below so every target sees one container.
 #
+# XCUITest harness (T003-06 / AC7): xcodegen 2.46 cannot emit ui-testing-bundle
+# targets, so after `xcodegen generate` run
+#   apple/Distribution/patch_uitests.sh NervePhone
+# which idempotently injects the NervePhoneUITests target (sources under
+# apple/e2e) and the scheme's Testables. The committed project already carries
+# the patch; re-run it whenever you regenerate.
+#
 # Path note: this spec lives in apple/Distribution/xcodegen/, so
-#   "../.."  -> apple/          (the local SPM package root)
-#   "../.."  -> apple/ (sources: ../.. = apple/, plus subdirs)
+#   "../../"  -> apple/          (the local SPM package root)
 #   "Generated/" -> apple/Distribution/Generated/
 
 name: NervePhone

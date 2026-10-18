@@ -10,9 +10,9 @@
 	<true/>
 	<key>provisioningProfiles</key>
 	<dict>
-		<key>com.celesrenata.nervewatch</key>
+		<key>com.celesrenata.NervePhone.watch</key>
 		<string>NerveCenter</string>
-		<key>com.celesrenata.nervewatch.widgets</key>
+		<key>com.celesrenata.NervePhone.watch.widgets</key>
 		<string>NerveCenter</string>
 	</dict>
 </dict>

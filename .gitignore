@@ -43,3 +43,22 @@ deployments/kubernetes/base/harbor-pull.yaml
 *~
 web/dist/
 apple/.build/
+
+# Apple signing credentials (see apple/Distribution/credentials/README.md)
+apple/Distribution/credentials/*
+!apple/Distribution/credentials/README.md
+apple/Distribution/fastlane/.env
+# Local signing key dropped at repo root (rotate it; remove from history)
+stabulous.p12
+
+# Apple build state (regenerable; never commit)
+apple/.swiftpm/
+apple/e2e-artifacts/
+apple/Distribution/DerivedData/
+*.xcodeproj/**/xcuserdata/
+
+# Per-user Xcode state anywhere under the tree (UserInterfaceState.xcuserstate, xcschememanagement)
+**/xcuserdata/
+# Spurious nested project duplicates from xcodegen mis-runs (the real projects live at the top level)
+apple/Distribution/Generated/NervePhone.xcodeproj/NervePhone.xcodeproj/
+apple/Distribution/Generated/NerveWatch.xcodeproj/NerveWatch.xcodeproj/

@@ -58,19 +58,25 @@ ARTIFACTS: List[Dict[str, Any]] = [
         "embedded": False,
     },
     {
-        "name": "NerveWatch.app",
+        # The watch app ships as a self-contained development IPA that embeds
+        # its WidgetKit extension (NerveWatch.app/PlugINS/...appex inside the
+        # IPA), the same shape as NervePhone.ipa. It is produced by
+        # `xcodebuild -exportArchive` on the NerveWatch archive.
+        "name": "NerveWatch.ipa",
         "kind": "watch",
         "label": "NerveWatch (watchOS)",
         "min_watch": "10.0",
-        "bundle_id": "com.celesrenata.nervewatch",
+        "bundle_id": "com.celesrenata.NervePhone.watch",
         "embedded": False,
     },
     {
-        "name": "NerveWatchWidgetExtension.watchkitarchive",
+        # The watch WidgetKit extension ships inside NerveWatch.ipa; it is not
+        # a separately downloadable file.
+        "name": "NerveWatchWidgetExtension.appex",
         "kind": "watch-widget",
-        "label": "NerveWatch widget",
-        "bundle_id": "com.celesrenata.nervewatch.widgets",
-        "embedded": False,
+        "label": "NerveWatch widget (embedded in app)",
+        "bundle_id": "com.celesrenata.NervePhone.watch.widgets",
+        "embedded": True,
     },
     {
         # The embedded iOS widget ships inside NervePhone.ipa; we do not

@@ -1,0 +1,24 @@
+{
+  "activeIncidents" : 0,
+  "agentCount" : 0,
+  "agents" : [
+
+  ],
+  "agentsState" : "empty",
+  "askAnswerCount" : 0,
+  "askState" : "empty",
+  "goalCount" : 0,
+  "goalsState" : "empty",
+  "incidentCount" : 0,
+  "incidentsState" : "empty",
+  "pendingApprovals" : 0,
+  "primaryGoalProgress" : null,
+  "runningAgents" : 0,
+  "systemCount" : 0,
+  "systemHealth" : "unknown",
+  "systems" : [
+
+  ],
+  "systemsState" : "empty",
+  "updatedAt" : "0001-01-01T00:00:00Z"
+}

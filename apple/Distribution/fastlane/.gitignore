@@ -1,0 +1,7 @@
+# Local, untracked fastlane environment (fastlane auto-loads this; values are
+# machine/team-specific). Keep the committed template in .env.example.
+.env
+
+# fastlane-generated run artifacts (doc landing page + JUnit lane report).
+README.md
+report.xml

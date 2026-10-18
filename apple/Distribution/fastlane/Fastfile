@@ -1,214 +1,252 @@
 #!/usr/bin/env ruby
 # NerveCenter self-hosting Fastfile — no App Store, no Matchfile.
 #
-# Ad-hoc distribution for NervePhone (iOS) + NerveWatch (watchOS, with the
-# embedded widget extension). Signing uses a personal-team ad-hoc /
-# development provisioning profile + p12 that live in ../credentials/
-# (gitignored — see ../credentials/README.md).
+# Development-method distribution for NervePhone (iOS, with the embedded
+# widget extension) + NerveWatch (watchOS, with the embedded widget
+# extension). Signing uses the personal-team development provisioning
+# profiles + dev identity that live in the local Xcode/keychain
+# (profile copies are in ../credentials/ — gitignored).
+#
+# Xcode 27 notes (why this file was rewritten):
+#   * `xcodebuild archive` no longer accepts the legacy `-archive` flag
+#     (it errors with "invalid option '-archive'"). Archive now uses the
+#     subcommand form:  xcodebuild archive -project ... -scheme ...
+#     -destination 'generic/platform=...' -archivePath <path>
+#   * `xcodebuild -exportArchive` takes -archivePath (the archive to export),
+#     -exportOptionsPlist and -outputPath. It does NOT take -destination.
+#   * Top-level locals are invisible inside `def` methods in Ruby, so every
+#     path / id a helper needs is now passed in explicitly as an argument.
 #
 # Usage:
 #   cd apple/Distribution/fastlane
-#   fastlane build_ipa            # archive + export NervePhone.ipa
-#   fastlane build_watch          # archive + export NerveWatch.app + watchkitarchive
-#   fastlane publish             # copy artifacts -> web/dist/downloads/ (or dist/)
-#   fastlane distribute          # build_ipa + build_watch + publish
+#   fastlane build_ipa            # archive + export NervePhone.ipa (development)
+#   fastlane build_watch          # archive + export NerveWatch (best effort, non-fatal)
+#   fastlane publish              # copy artifacts -> web/dist/downloads/ + manifest.json
+#   fastlane distribute           # build_ipa + build_watch + publish
 #
-default_team = ENV["NERVE_TEAM_ID"]
-# Ad-hoc export does not validate against App Store rules.
+require "fileutils"
+require "open3"
+require "shellwords"
+
+# Personal-team signing id (also set in fastlane/.env, which fastlane loads
+# automatically). Falling back to the literal id keeps the pipeline working
+# even if the .env is not present.
+default_team = ENV["NERVE_TEAM_ID"] || "NQV7T36W69"
+
+# A personal team cannot do ad-hoc; development is the only method that can
+# install to a real device from these locally-signed profiles.
+phone_export_method = ENV["NERVE_PHONE_EXPORT_METHOD"] || "development"
+watch_export_method = ENV["NERVE_WATCH_EXPORT_METHOD"] || "development"
 
 app_identifier_phone = "com.celesrenata.NervePhone"
-app_identifier_watch = "com.celesrenata.nervewatch"
+app_identifier_watch = "com.celesrenata.NervePhone.watch"
 
-# --- Paths -----------------------------------------------------------------
+# --- Paths (all absolute; worktree path contains spaces -> always shellescape)
 distribution_root = File.expand_path("..", __dir__)
 project_phone = File.join(distribution_root, "Generated", "NervePhone.xcodeproj")
 project_watch = File.join(distribution_root, "Generated", "NerveWatch.xcodeproj")
 build_root = File.join(distribution_root, "build")
 artifact_root = File.join(build_root, "artifacts")
-credentials_dir = File.join(distribution_root, "credentials")
-web_dist = File.join(Dir.pwd, "..", "..", "web", "dist", "downloads")
-fallback_dist = File.join(distribution_root, "dist")
+# __dir__ = <root>/apple/Distribution/fastlane -> go up 3 to the repo/worktree root
+repo_root = File.expand_path("../../..", __dir__)
+web_dist = File.join(repo_root, "web", "dist", "downloads")
 manifest_script = File.join(distribution_root, "generate_manifest.py")
+watch_log_path = File.join(build_root, "watch.log")
 
-# --- Signing profile (ad-hoc, personal team) ---------------------------------
-# The provisioning profile is stored as ../credentials/nervecenter.mobileprovision
-# and the p12 (exported from the keychain) as ../credentials/nervecenter.p12.
-
-def signing_identity_path
-  File.join(credentials_dir, "nervecenter.p12")
+# Shell-quote a single argument so paths with spaces survive the shell.
+def shq(value)
+  Shellwords.shellescape(value.to_s)
 end
 
-def provisioning_profile_path
-  File.join(credentials_dir, "nervecenter.mobileprovision")
+# Run a command, stream its combined output to the console (and, when given,
+# append it to log_path). Raises on a non-zero exit so a failed step cannot be
+# silently skipped. Uses Kernel-level primitives (Open3) so it works from
+# inside `def` helpers (fastlane's lane-scoped `sh` is not available there).
+def run_logged(cmd, log_path: nil)
+  puts "[fastlane] $ #{cmd}"
+  out, status = Open3.capture2e(cmd)
+  log_io = log_path ? File.open(log_path, "a") : nil
+  if log_io
+    log_io.puts("# #{Time.now.utc} :: #{cmd}")
+    log_io.puts(out)
+    log_io.puts("# exit=#{status.success? ? 0 : status.exitstatus}")
+    log_io.puts
+    log_io.close
+  end
+  unless status.success?
+    tail = out.lines.last(40).join
+    raise "command failed (exit #{status.exitstatus}):\n#{cmd}\n--- last 40 lines ---\n#{tail}"
+  end
+  out
 end
 
-# Build export_options.plist for ad-hoc.
-# For personal-team / no developer program this must be method: ad-hoc
-# (or development for direct device installs).
-def export_options(method:)
-  {
-    "method" => method
-  }
+# Archive a project with xcodebuild (Xcode 27 subcommand form). No -archive flag.
+# `-allowProvisioningUpdates` lets the tool auto-generate/register App IDs and
+# development provisioning profiles for the team during archive (required for
+# auto-signed watch builds, where the widget extension has its own App ID).
+def run_xcodebuild_archive(project:, scheme:, platform:, archive_path:, log_path: nil)
+  cmd = "xcodebuild archive " \
+    "-project #{shq(project)} " \
+    "-scheme #{shq(scheme)} " \
+    "-destination 'generic/platform=#{platform}' " \
+    "-archivePath #{shq(archive_path)} " \
+    "CODE_SIGNING_ALLOWED=YES " \
+    "-allowProvisioningUpdates"
+  run_logged(cmd, log_path: log_path)
 end
 
-# Archive a project with xcodebuild.
-def run_xcodebuild_archive(project:, scheme:, platform:)
-  system(
-    "xcodebuild " \
-    "-project #{project} " \
-    "-scheme #{scheme} " \
-    "-destination '#{platform}' " \
-    "-archivePath #{build_root}/#{scheme}.xcarchive " \
-    "-archive " \
-    "OTHER_XCODEFLAGS='-allowProvisioningUpdates'",
-    chdir: Dir.pwd
-  )
+# Export an archive to an .ipa / .app with xcodebuild. No -destination flag.
+# `-allowProvisioningUpdates` is required: export resolves each target's
+# profile (including embedded extensions) against the team's registered App IDs.
+def run_xcodebuild_export(archive:, export_plist:, output_dir:, log_path: nil)
+  FileUtils.mkdir_p(output_dir)
+  cmd = "xcodebuild -exportArchive " \
+    "-archivePath #{shq(archive)} " \
+    "-exportPath #{shq(output_dir)} " \
+    "-exportOptionsPlist #{shq(export_plist)} " \
+    "-allowProvisioningUpdates"
+  run_logged(cmd, log_path: log_path)
 end
 
-# Export an archive to an app bundle / ipa.
-def run_xcodebuild_export(archive:, platform:, export_method:, destination:)
-  # Build the export_options plist inline (no Matchfile, no certificates
-  # managed by fastlane — we use the profile + p12 in ../credentials/).
-  export_plist = File.join(build_root, "export_options_#{export_method}.plist")
-  system("plutil -p -o /dev/null #{export_plist}") # ensure file exists (no-op check)
-  if !File.exist?(export_plist)
-    content = <<PLIST
+# Write an export_options.plist for a local (non-App-Store) export. For a
+# personal-team `development` export we intentionally omit provisioningProfiles
+# and let xcodebuild auto-select the installed development profiles by bundle
+# id + teamID (the previously-working shape).
+def write_export_plist(path, method:, team_id:)
+  content = <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
   <key>method</key>
-  <string>#{export_method}</string>
+  <string>#{method}</string>
   <key>teamID</key>
-  <string>#{default_team}</string>
-  <key>provisioningProfiles</key>
-  <dict>
-    <key>com.celesrenata.NervePhone</key>
-    <string>com.celesrenata.NervePhone</string>
-  </dict>
+  <string>#{team_id}</string>
 </dict>
 </plist>
 PLIST
-    File.write(export_plist, content)
-  end
-
-  system(
-    "xcodebuild " \
-    "-exportArchive " \
-    "-archive #{archive} " \
-    "-exportOptionsPlist #{export_plist} " \
-    "-destination '#{destination}'",
-    chdir: Dir.pwd
-  )
+  FileUtils.mkdir_p(File.dirname(path))
+  File.write(path, content)
+  path
 end
 
 # --- Lanes -------------------------------------------------------------------
 
 lane :build_ipa do
-  UI.message("Building NervePhone.ipa (iOS, ad-hoc)...")
+  raise "NERVE_TEAM_ID is not set (add it to fastlane/.env)" if default_team.to_s.strip.empty?
+  UI.message("Building NervePhone.ipa (iOS, #{phone_export_method})...")
+  FileUtils.mkdir_p(build_root)
 
-  # 1. Archive
+  archive = File.join(build_root, "NervePhone.xcarchive")
+  plist = write_export_plist(
+    File.join(build_root, "export_options_#{phone_export_method}.plist"),
+    method: phone_export_method,
+    team_id: default_team
+  )
+  destination = File.join(build_root, "phone-export-#{phone_export_method}")
+
   run_xcodebuild_archive(
     project: project_phone,
     scheme: "NervePhone",
-    platform: "generic/platform=iOS"
-  )
-
-  # 2. Export (ad-hoc)
-  destination = File.join(build_root, "phone-export")
-  FileUtils.mkdir_p(destination)
-  run_xcodebuild_export(
-    archive: File.join(build_root, "NervePhone.xcarchive"),
     platform: "iOS",
-    export_method: "ad-hoc",
-    destination: destination
+    archive_path: archive
   )
+  run_xcodebuild_export(archive: archive, export_plist: plist, output_dir: destination)
 
-  # 3. Copy to artifact root
+  ipa = Dir.glob(File.join(destination, "**/*.ipa")).first
+  raise "NervePhone.ipa not produced under #{destination}" if ipa.nil?
+
   FileUtils.mkdir_p(artifact_root)
-  ipa = Dir.glob(File.join(destination, "*.ipa")).first
-  raise "NervePhone.ipa not produced" if ipa.nil?
   FileUtils.cp(ipa, File.join(artifact_root, "NervePhone.ipa"))
   UI.success("NervePhone.ipa ready: #{File.join(artifact_root, 'NervePhone.ipa')}")
 end
 
 lane :build_watch do
-  UI.message("Building NerveWatch (watchOS, ad-hoc, with embedded widget extension)...")
+  UI.message("Building NerveWatch (watchOS, #{watch_export_method}, embedded widget)...")
+  FileUtils.mkdir_p(build_root)
+  begin
+    archive = File.join(build_root, "NerveWatch.xcarchive")
+    plist = write_export_plist(
+      File.join(build_root, "export_options_#{watch_export_method}.plist"),
+      method: watch_export_method,
+      team_id: default_team
+    )
+    destination = File.join(build_root, "watch-export-#{watch_export_method}")
 
-  # 1. Archive
-  run_xcodebuild_archive(
-    project: project_watch,
-    scheme: "NerveWatch",
-    platform: "generic/platform=watchOS"
-  )
+    run_xcodebuild_archive(
+      project: project_watch,
+      scheme: "NerveWatch",
+      platform: "watchOS",
+      archive_path: archive,
+      log_path: watch_log_path
+    )
+    run_xcodebuild_export(archive: archive, export_plist: plist, output_dir: destination, log_path: watch_log_path)
 
-  # 2. Export (ad-hoc for watchOS includes the embedded extension)
-  destination = File.join(build_root, "watch-export")
-  FileUtils.mkdir_p(destination)
-  run_xcodebuild_export(
-    archive: File.join(build_root, "NerveWatch.xcarchive"),
-    platform: "watchOS",
-    export_method: "ad-hoc",
-    destination: destination
-  )
-
-  # 3. Collect artifacts: .app + .watchkitarchive + manifest
-  FileUtils.mkdir_p(artifact_root)
-  app = Dir.glob(File.join(destination, "**/NerveWatch.app")).first
-  watchkit = Dir.glob(File.join(destination, "**/*.watchkitarchive")).first
-  raise "NerveWatch.app not produced" if app.nil?
-  FileUtils.cp_r(app, File.join(artifact_root, "NerveWatch.app"))
-  FileUtils.cp(watchkit, File.join(artifact_root, "NerveWatchWidgetExtension.watchkitarchive")) if watchkit
-  UI.success("NerveWatch artifacts ready in #{artifact_root}")
+    # The development export produces a self-contained NerveWatch.ipa that
+    # embeds the WidgetKit extension (NerveWatch.app/PlugIns/*.appex), so we
+    # copy the IPA directly — the same distribution shape as NervePhone.ipa.
+    ipa = Dir.glob(File.join(destination, "**/NerveWatch.ipa")).first
+    if ipa.nil?
+      UI.important("NerveWatch.ipa not produced (watch export failed); continuing without watch.")
+    else
+      FileUtils.mkdir_p(artifact_root)
+      FileUtils.cp(ipa, File.join(artifact_root, "NerveWatch.ipa"))
+      UI.success("NerveWatch.ipa ready: #{File.join(artifact_root, 'NerveWatch.ipa')}")
+    end
+  rescue => e
+    # The watch widget links the Nerve* modules from the local NerveCenter SPM
+    # package (watchOS is a first-class platform in apple/Package.swift) — the
+    # original "cannot resolve NerveApps" failure was a missing package
+    # dependency on the widget target, fixed in the xcodegen spec + project.
+    # Safety net: if a future signing/provisioning gap breaks the watch lane,
+    # keep the phone publish path unblocked: record the failure and move on.
+    UI.important("Watch build failed (NON-FATAL for the phone publish path): #{e.message[0, 400]}")
+    UI.important("Full watch log: #{watch_log_path}")
+    File.open(watch_log_path, "a") { |f| f.puts "# lane rescue: #{e.message}" }
+  end
 end
 
 lane :publish do
   UI.message("Publishing exported artifacts...")
 
-  # Determine destination: web/dist/downloads/ if present, else dist/
-  destination = File.exist?(web_dist) ? web_dist : fallback_dist
+  # Publish into the repo's web/dist/downloads (created if needed). This is the
+  # single canonical target: the web Dockerfile + verify-downloads-packaging.sh
+  # bake exactly this directory, so there is no alternate location to drift to.
+  destination = web_dist
   FileUtils.mkdir_p(destination)
 
-  # Copy NervePhone.ipa
   ipa = File.join(artifact_root, "NervePhone.ipa")
-  if File.exist?(ipa)
-    FileUtils.cp(ipa, File.join(destination, "NervePhone.ipa"))
-    UI.message("  NervePhone.ipa -> #{destination}")
+  unless File.exist?(ipa)
+    raise "NervePhone.ipa is missing from #{artifact_root} — nothing to publish."
+  end
+  FileUtils.cp(ipa, File.join(destination, "NervePhone.ipa"))
+  UI.message("  NervePhone.ipa -> #{destination}")
+
+  watch_ipa = File.join(artifact_root, "NerveWatch.ipa")
+  if File.exist?(watch_ipa)
+    FileUtils.cp(watch_ipa, File.join(destination, "NerveWatch.ipa"))
+    UI.message("  NerveWatch.ipa -> #{destination}")
+  else
+    UI.important("  NerveWatch.ipa not present — watch artifact will show as 'not built' in the manifest.")
   end
 
-  # Copy NerveWatch.app + watchkitarchive
-  app = File.join(artifact_root, "NerveWatch.app")
-  watchkit = File.join(artifact_root, "NerveWatchWidgetExtension.watchkitarchive")
-  if File.exist?(app)
-    FileUtils.cp_r(app, File.join(destination, "NerveWatch.app"))
-    UI.message("  NerveWatch.app -> #{destination}")
-  end
-  if File.exist?(watchkit)
-    FileUtils.cp(watchkit, File.join(destination, "NerveWatchWidgetExtension.watchkitarchive"))
-    UI.message("  NerveWatchWidgetExtension.watchkitarchive -> #{destination}")
-  end
-
-  # Generate the download manifest (calls generate_manifest.py).
-  # Fail hard when generation fails: fastlane's `sh` with :raise => true
-  # raises SystemCommandFailure on a non-zero exit, so the lane aborts
-  # instead of silently shipping without a manifest (the previous
-  # `system(...)` ignored the child process exit code, so an argparse
-  # error on --artifact-root was swallowed and no manifest.json was ever
-  # written).
+  # Generate the download manifest. `sh` with :raise => true aborts the lane on
+  # a non-zero exit so we never ship without a valid manifest.json.
   if File.exist?(manifest_script)
-    sh "python3 #{manifest_script} --destination #{destination} --artifact-root #{artifact_root}",
-       :raise => true, :log_info => true
+    cmd = "python3 #{shq(manifest_script)} " \
+      "--destination #{shq(destination)} --artifact-root #{shq(artifact_root)}"
+    sh cmd, :raise => true, :log_info => true
     unless File.exist?(File.join(destination, "manifest.json"))
       raise "generate_manifest.py ran but did not produce manifest.json — check output."
     end
-    UI.success("manifest.json generated: #{destination}/manifest.json")
+    UI.success("manifest.json generated: #{File.join(destination, 'manifest.json')}")
   else
     UI.important("generate_manifest.py not found — skipping manifest generation.")
   end
 end
 
 lane :distribute do
-  build_ipa
-  build_watch
+  build_ipa   # hard requirement: the phone IPA
+  build_watch # non-fatal: a watch failure must not block the phone publish
   publish
 end

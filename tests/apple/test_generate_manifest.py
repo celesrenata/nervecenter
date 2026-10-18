@@ -74,10 +74,13 @@ def test_missing_artifacts_marked_not_present(tmp_path):
     entries = {e["name"]: e for e in manifest["artifacts"]}
     for expected in (
         "NervePhone.ipa",
-        "NerveWatch.app",
-        "NerveWatchWidgetExtension.watchkitarchive",
+        "NerveWatch.ipa",
+        "NerveWatchWidgetExtension.appex",
     ):
         assert entries[expected]["present"] is False
+    # The widget extension ships embedded inside NerveWatch.ipa, never as a
+    # standalone artifact.
+    assert entries["NerveWatchWidgetExtension.appex"]["embedded"] is True
 
 
 def test_artifact_root_defaults_to_destination(tmp_path):

@@ -52,7 +52,7 @@ targets:
     info:
       path: "../Generated/NerveWatchWidgetExtension-Info.plist"
       properties:
-        CFBundleIdentifier: com.celesrenata.nervewatch.widgets
+        CFBundleIdentifier: com.celesrenata.NervePhone.watch.widgets
         CFBundleDisplayName: "Nerve Center Widgets"
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
@@ -66,6 +66,11 @@ targets:
           - group.nerv.center
           - group.com.celestium.nervecenter
     product: NerveWatchWidgetExtension
+    # The widget imports Nerve* modules from the NerveCenter package. Without
+    # this dependency the widget target fails to compile
+    # ("Unable to resolve module dependency: 'NerveApps'").
+    dependencies:
+      - package: NerveCenter
 
   NerveWatch:
     type: application
@@ -76,16 +81,17 @@ targets:
     info:
       path: "../Generated/NerveWatch-Info.plist"
       properties:
-        CFBundleIdentifier: com.celesrenata.nervewatch
+        CFBundleIdentifier: com.celesrenata.NervePhone.watch
         CFBundleDisplayName: "Nerve Center"
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
+        WKApplication: true
         WKCompanionAppBundleIdentifier: com.celesrenata.NervePhone
         # Self-host: allow http to localhost (LAN / tunnel use).
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
         # Default API base, overridable at runtime via UserDefaults
-        # (defaults write com.celesrenata.nervewatch NERVE_API_BASE "https://...").
+        # (defaults write com.celesrenata.NervePhone.watch NERVE_API_BASE "https://...").
         NERVE_API_BASE: "https://nerv.celestium.life/api"
     entitlements:
       path: "../Generated/NerveWatch.entitlements"
