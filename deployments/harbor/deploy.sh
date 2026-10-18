@@ -137,7 +137,12 @@ kubectl apply -f /tmp/rendered.yaml
 # Migration Job completes first (schema at head before the api is useful).
 log "waiting for job/nervecenter-migrate Complete (timeout 300s)"
 kubectl -n "${NS}" wait --for=condition=Complete job/nervecenter-migrate --timeout=300s
-for kindname in statefulset/postgres deployment/api deployment/web deployment/nats; do
+# NOTE: the postgres StatefulSet is intentionally NOT waited on with
+# --for=condition=Available — some K3s versions (observed: v1.36.4+k3s1) never
+# populate a StatefulSet's status.conditions, so that wait times out on a
+# fully-healthy pod. Deployment Available works fine; the pod-level Ready
+# waits below already cover postgres.
+for kindname in deployment/api deployment/web deployment/nats; do
   log "waiting for ${kindname} Available (timeout 300s)"
   kubectl -n "${NS}" wait --for=condition=Available "${kindname}" --timeout=300s
 done
