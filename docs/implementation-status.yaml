@@ -186,8 +186,9 @@ wave1_integration:
       name: "deploy (Dockerfile.api, web/Dockerfile, k8s base manifests, harbor)"
       state: complete (integrated)
     - id: T204
-      name: "apple (Swift shared SDK)"
+      name: "apple (Swift shared SDK) + NervePhone/NerveWatch apps"
       state: complete (integrated)
+      note: "2026-10-18 data-loading lift: phone now shows real server data (store.fetchNow on load; --nerve-server test override; App Group cached-state.json publish verified with live values 14 agents / healthy). Watch read path code-correct; standalone watch-sim does not share the phone-sim App Group (needs paired phone+watch to render). See docs/apple-data-lift-2026-10-18.md. Open: Personal Operations Plane surfaces (Today/Inbox/People/Waiting/Briefing) + Today|Engineering|Ask reorg."
   conflict_resolution:
     backend_persistence_migrate_py: >
       T101 and T104 both created backend/persistence/migrate.py. Resolved in

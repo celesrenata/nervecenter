@@ -22,7 +22,15 @@ paid **FrameShift** Apple Developer Program account (`celes@frameshift.net`).
    target needs `dependencies: [package: NerveCenter]` or it fails to
    compile (`Unable to resolve module dependency: NerveApps`). See
    `apple/Distribution/xcodegen/NervePhone.xcodegen.yml`.
-2. **Xcode GUI** (not CLI): open `apple/Distribution/Generated/NervePhone.xcodeproj`
+2. **Xcode GUI** (not CLI): open `apple/Distribution/Generated/NerveCenterWorkspace.xcworkspace`
+   (contains both the phone *and* watch projects sharing the local
+   `apple/` SPM package — required because Xcode disallows the same local
+   package being owned by two independent project windows, which surfaces
+   as "… is already open in another project or workspace" plus a
+   follow-up "missing package product `NerveCenter`" build error).
+   - Target `NervePhone` + `NerveCenterWidgetExtension` (inside the
+     `NervePhone` navigator node) → Signing & Capabilities → **Team:
+     FrameShift**, Automatic signing.
    - Target `NervePhone` + `NerveCenterWidgetExtension` → Signing &
      Capabilities → **Team: FrameShift**, Automatic signing.
    - The entitlements carry both app groups
@@ -50,3 +58,31 @@ paid **FrameShift** Apple Developer Program account (`celes@frameshift.net`).
   re-archive. TestFlight builds last **90 days** and need no profiles.
 - App ID / app groups live under App Store Connect → Users and Access →
   App Information.
+
+## Upload stall at "Signing & Validating" (no progress, no network)
+
+Symptom: Organizer upload sheet advances to **"Upload in progress —
+NervePhone X (Y) / Signing & Validating for App Store Connect"** and then
+freezes indefinitely (no % movement, no ASC traffic in `lsof`, the
+`com.apple.dt.Xcode.ITunesSoftwareService` process sits at 0% CPU).
+
+Root cause found 2026-10-16: the egress network cannot resolve
+**`contentdelivery.apple.com`** (and the `contentdeliveryws-*.apple.com`
+edge hosts) — the hosts Apple's upload path uses. Other Apple hosts
+(`api.appstoreconnect.apple.com`, `itunes.apple.com`, `testflight.apple.com`)
+resolve fine, so ASC *API* traffic works but the `.ipa` upload can never
+start. Even Apple's authoritative DNS returns no A record for the
+contentdelivery hosts from this egress (geo-/policy-restricted).
+
+Diagnosis + fix:
+
+```sh
+# should print a real HTTP status (e.g. 403/200), NOT 000:
+curl -o /dev/null -w "%{http_code}\n" -m 10 https://contentdelivery.apple.com/
+```
+
+If it prints `000`: **cancel the Organizer upload**, switch to a network
+where that host resolves (home/WAN/VPN/phone hotspot), confirm the curl
+check, then re-run Organizer → **Distribute App → App Store Connect →
+Upload** on the same archive — no re-archive needed. Do not wait it out:
+the stall never resolves on its own.
