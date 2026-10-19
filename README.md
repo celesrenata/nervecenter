@@ -64,22 +64,32 @@ Live workstream tracking lives in [`docs/implementation-status.yaml`](docs/imple
 pip install -e ".[dev]"
 ruff check .
 pyright backend
-pytest tests
 ```
 
-### Apple tests (canonical command)
+## Testing
 
-Apple tests run through [`apple/scripts/test-apple.sh`](apple/scripts/test-apple.sh), the
-canonical command that defeats the stale-test-product under-run trap (`gaps4.md` §3.4,
-D3): it `touch`es the test sources, rebuilds with `swift build --build-tests`, runs
-`swift test`, and **asserts the per-bundle counts** (NerveSharedTests 13 /
-NerveRelayTests 31 / NerveAppsTests 2 = **46 total**, 0 failures). `apple/build_and_test.sh`
-delegates to it, and CI (`.github/workflows/ci.yml`, `apple` job) runs it on a fresh
-macOS runner, where the count assertion doubles as the cold-cache guard.
+Canonical test commands (Phase 1, `gaps4.md` §A2). CI (`.github/workflows/ci.yml`)
+runs the same three; a deliberately red test must fail CI.
 
-```bash
-bash apple/scripts/test-apple.sh   # 46 tests, 0 failures (13 / 31 / 2)
-```
+| Plane | Command | Expect |
+| --- | --- | --- |
+| Python | `pytest tests/ -m "not integration"` | 601 passed, 0 failed |
+| Web | `cd web && npm ci && npm run build && npx playwright test` | ≥60 passed |
+| Apple | `bash apple/scripts/test-apple.sh` | 46 tests, 0 failures (13 / 31 / 2) |
+
+Notes:
+
+- The Python gate is **601 passing tests** as of 2026-10-19 (integration tests are
+  excluded from the default run via the `not integration` marker).
+- The Apple count assertion in [`apple/scripts/test-apple.sh`](apple/scripts/test-apple.sh)
+  defeats the stale-test-product under-run trap (`gaps4.md` §3.4, D3): the script
+  `touch`es the test sources, rebuilds with `swift build --build-tests`, runs
+  `swift test`, and **asserts the per-bundle counts** (NerveSharedTests 13 /
+  NerveRelayTests 31 / NerveAppsTests 2 = **46 total**). `apple/build_and_test.sh`
+  delegates to it; the count assertion doubles as the cold-cache guard on a
+  fresh macOS runner.
+- The Web build step (`npm run build`) keeps the Playwright suite green against
+  the current bundle before the E2E specs run.
 
 ## Deployment
 

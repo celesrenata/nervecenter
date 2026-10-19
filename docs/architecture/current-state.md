@@ -428,3 +428,54 @@ current-state baseline.
    ([deployments/local/docker-compose.yaml:78](deployments/local/docker-compose.yaml:78));
    deciding whether to add an OmniRoute service or remove the env var is
    open.
+
+## Since the 2026-10-10 baseline
+
+The inventory above is the frozen C0 current-state (2026-10-10). The items
+below are material changes that landed after that snapshot and are recorded
+here for continuity; the machine-readable form of the same items lives in
+[`docs/implementation-status.yaml`](../../docs/implementation-status.yaml)
+(`recent_activity`, dated 2026-10-19).
+
+1. **FastAPI `on_event` retired (G-4.2 / E1).** The startup/shutdown hooks at
+  [`backend/api/wiring.py`](../../backend/api/wiring.py) are now a single
+  `@asynccontextmanager` lifespan registered on the router's
+  `lifespan_context` (startup: `wire_dependencies`; shutdown:
+  `teardown_dependencies`); the deferral comment is gone. No FastAPI
+  `@app.on_event` / `@target.on_event` decorator usage remains in
+  `backend/api` (the only remaining `on_event` strings in `backend/` are the
+  connector's unrelated `on_event` callback parameter in
+  `backend/connectors/*`, a different API, out of E1 scope).
+  `tests/backend/test_app_wiring.py` is 9/9 green with **zero** `on_event`
+  deprecation warnings.
+2. **Apple test-truth corrected (E2 / D3).** The canonical Apple suite is
+  **46** tests, not 31: NerveSharedTests 13 / NerveRelayTests 31 /
+  NerveAppsTests 2. The earlier "31" was NerveRelayTests only, a symptom of
+  the stale-test-product under-run trap now guarded by
+  [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh), which
+  asserts the per-bundle counts (and doubles as the cold-cache guard).
+3. **Watch bundle-ID family converged (E2 / D2).** The watch app and its
+  widget extension now use the
+  `com.celesrenata.NervePhone.watch` family
+  (`com.celesrenata.NervePhone.watch` app /
+  `com.celesrenata.NervePhone.watch.widgets` extension), declared in
+  [`apple/Distribution/xcodegen/NerveWatch.xcodegen.yml`](../../apple/Distribution/xcodegen/NerveWatch.xcodegen.yml)
+  and regenerated under `apple/Distribution/Generated/`.
+4. **Personal surface plane: data lift landed, surfaces still open (E2).**
+  The 2026-10-18 lift makes `NervePhone` render real server data on load
+  (`PhoneDataStore.fetchNow`; `--nerve-server` test override; App Group
+  `cached-state.json` verified with live values). See
+  [`docs/apple-data-lift-2026-10-18.md`](../../docs/apple-data-lift-2026-10-18.md).
+  **Still open:** the Personal Operations Plane surfaces
+  (Today/Inbox/People/Waiting/Briefing) and the `Today | Engineering | Ask`
+  reorg — `apple/iOS/App/Views` currently ships only
+  Overview/Agents/Goals/Incidents/Systems/Ask, so capability 11 remains
+  unimplemented as of this baseline.
+5. **Commit-hygiene norm seconded (E5).** The two-clause commit-hygiene norm
+  from gaps2 §7 Q6 (a generated project and its patcher ship together; a
+  backend import-chain commit is verified by a fresh-worktree import) is now
+  a standing rule in [`specs/phase0-integrity/tasks.md`](../../specs/phase0-integrity/tasks.md)
+  and [`specs/t001-stabilization/tasks.md`](../../specs/t001-stabilization/tasks.md).
+6. **Python suite baseline is 601.** `pytest tests/ -m "not integration" -q`
+  → 601 passed, 0 failed (2026-10-19); the canonical test commands are
+  documented in [`README.md`](../../README.md) §Testing.

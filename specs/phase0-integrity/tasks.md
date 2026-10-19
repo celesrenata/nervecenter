@@ -8,7 +8,9 @@
 ## Execution rules
 
 - Keep the task order and ownership below. P0-01, P0-02, P0-03, and P0-05 are independent and may run in one wave; P0-04 must wait for all of them; P0-06 last.
-- **Import-chain gate (gaps2 §7 Q6, made a standing rule):** any commit that touches a `backend/**` import chain — in this pack, commit 1 (`fix(connectors)`) — must be verified by `python -c "import backend.api.app"` in a **detached worktree of the resulting commit**, never just in the working tree. This is the check that would have caught H-1.
+- **Commit-hygiene norm (gaps2 §7 Q6, made a standing rule; seconded by gaps4 Phase 5 E5):** two clauses, both must hold for a commit to ship.
+  - *(a) Generated project:* no commit that touches a **generated project** (e.g. the Apple Xcode projects generated from `apple/Distribution/xcodegen/*.xcodegen.yml`) **and its patcher** ships without the patcher — a generated artifact and its generator must move together; commit the regenerated `apple/Distribution/Generated/` tree alongside the xcodegen/`Fastfile` change that produced it.
+  - *(b) Import chain:* no commit that touches a `backend/**` import chain — in this pack, commit 1 (`fix(connectors)`) — ships without `python -c "import backend.api.app"` verified in a **detached worktree of the resulting commit**, never just in the working tree. This is the check that would have caught H-1.
 - **Fix + tests ship together:** the `fix(connectors)` commit must contain both `backend/connectors/mail/__init__.py` (the worktree fix) and `tests/backend/test_mail_connector.py` (P0-03 output). Never commit the import fix alone.
 - Do not modify any file outside the owned paths above. The mail-plane *source* is frozen: P0-03 writes tests against it; if a test reveals a real plane defect, stop and report it — do not silently "fix" the plane.
 - Record commit SHAs and command output in the verification log below. Do not claim a check passed without evidence.

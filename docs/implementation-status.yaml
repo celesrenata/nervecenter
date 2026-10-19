@@ -10,7 +10,7 @@
 #   deferred   - consciously postponed
 
 version: 1
-updated: "2026-09-29"
+updated: "2026-10-19"
 spec_section: 95
 
 workstreams:
@@ -25,12 +25,12 @@ workstreams:
       that underpin every other subsystem.
     status: done
     evidence:
-      - Command: `.venv/bin/ruff check backend/events/`
+      - Command: "`.venv/bin/ruff check backend/events/`"
       - Result: No errors after fixes applied
-      - File: `backend/events/processor.py` (585 lines)
-      - File: `backend/events/publisher.py`
-      - File: `backend/events/subscriber.py`
-      - File: `backend/events/validators.py`
+      - File: "`backend/events/processor.py` (585 lines)"
+      - File: "`backend/events/publisher.py`"
+      - File: "`backend/events/subscriber.py`"
+      - File: "`backend/events/validators.py`"
 
   - id: ws-02
     name: Knowledge & Evidence
@@ -43,11 +43,11 @@ workstreams:
       provenance and citation support.
     status: done
     evidence:
-      - Command: `.venv/bin/python -c "from backend.evidence.service import EvidenceService; print('OK')"`
+      - Command: "`.venv/bin/python -c \"from backend.evidence.service import EvidenceService; print('OK')\"`"
       - Result: NotImplementedError (intended for later ORM integration)
-      - File: `backend/evidence/service.py` (46 lines)
-      - File: `backend/knowledge/service.py` (298 lines)
-      - File: `backend/knowledge/entity.py` (367 lines)
+      - File: "`backend/evidence/service.py` (46 lines)"
+      - File: "`backend/knowledge/service.py` (298 lines)"
+      - File: "`backend/knowledge/entity.py` (367 lines)"
 
   - id: ws-03
     name: Goals & Tasks
@@ -61,9 +61,9 @@ workstreams:
       execution, and time-based scheduling.
     status: done
     evidence:
-      - File: `backend/goals/service.py` (393 lines)
-      - File: `backend/tasks/service.py` (408 lines)
-      - File: `backend/scheduler/scheduler.py` (157 lines)
+      - File: "`backend/goals/service.py` (393 lines)"
+      - File: "`backend/tasks/service.py` (408 lines)"
+      - File: "`backend/scheduler/scheduler.py` (157 lines)"
 
   - id: ws-04
     name: Orchestration & Agents
@@ -77,11 +77,11 @@ workstreams:
       registries plus agent definitions and capability manifests.
     status: done
     evidence:
-      - Command: `.venv/bin/pytest tests/backend/test_agents.py -v`
+      - Command: "`.venv/bin/pytest tests/backend/test_agents.py -v`"
       - Result: 2/2 tests passed
-      - File: `backend/agents/registry.py` (524 lines)
-      - File: `backend/orchestration/__init__.py` (144 lines)
-      - File: `backend/orchestration/incident.py` (159 lines)
+      - File: "`backend/agents/registry.py` (524 lines)"
+      - File: "`backend/orchestration/__init__.py` (144 lines)"
+      - File: "`backend/orchestration/incident.py` (159 lines)"
       - Native agents: 14 types registered (Planner, RepositoryInspector, etc.)
 
   - id: ws-05
@@ -94,12 +94,12 @@ workstreams:
       HTTP API endpoints and OpenTelemetry/Prometheus observability.
     status: done
     evidence:
-      - Command: `.venv/bin/uvicorn backend.api.app:app --host 0.0.0.0 --port 8000`
+      - Command: "`.venv/bin/uvicorn backend.api.app:app --host 0.0.0.0 --port 8000`"
       - Result: Server boots successfully
-      - Command: `.venv/bin/python -c "from backend.api.app import app, create_app"`
-      - Result: Both `app` and `create_app` imported successfully
-      - File: `backend/api/app.py` (92 lines) - expose `create_app()`
-      - File: `backend/observability/__init__.py` (224 lines)
+      - Command: "`.venv/bin/python -c \"from backend.api.app import app, create_app\"`"
+      - Result: "Both `app` and `create_app` imported successfully"
+      - File: "`backend/api/app.py` (92 lines) - expose `create_app()`"
+      - File: "`backend/observability/__init__.py` (224 lines)"
       - Endpoints: events, entities, evidence, goals, tasks, knowledge, agents
 
   - id: ws-06
@@ -111,20 +111,20 @@ workstreams:
       SQLAlchemy async ORM with alembic migrations.
     status: done
     evidence:
-      - Command: `.venv/bin/python -c "from backend.persistence.models import Base, Evidence"`
+      - Command: "`.venv/bin/python -c \"from backend.persistence.models import Base, Evidence\"`"
       - Result: Models imported successfully
-      - Command: `.venv/bin/python -m backend.persistence.migrate init`
+      - Command: "`.venv/bin/python -m backend.persistence.migrate init`"
       - Result: Init command implemented
-      - File: `backend/persistence/migrate.py` - initdb entrypoint
-      - File: `backend/persistence/connection.py` (408 lines)
-      - File: `backend/persistence/models/*.py` - 12 model files (incl. new planned_changes.py)
-      - Command: `.venv/bin/python -c "from backend.persistence.models import Base, PlannedChange; print('TAB', PlannedChange.__tablename__)"`
-      - Result: `TAB planned_changes` (T-DEPMIGRATE)
-      - Command: FK check — `Base.metadata.tables['decisions'].columns['planned_change_id'].foreign_keys`
-      - Result: FK_OK — `target_fullname == 'planned_changes.id'` (attached via `Table.append_constraint` in planned_changes.py; the verbatim one-liner in the task spec has a SyntaxError in its list-comp, so the corrected equivalent is what runs)
-      - Command: `alembic upgrade head` against a throwaway pgvector/pgvector:pg16 container (not the cluster)
-      - Result: upgraded to 001_initial — 12 tables, planned_changes (16 cols, 3 indexes + PK), decisions FKs {claim_id, planned_change_id, task_id}, tasks FKs {goal_id, decision_id, parent_task_id}; `alembic downgrade -1` returns to empty schema
-      - Defect fixed (T-DEPMIGRATE): 001_initial.py created `decisions` before its FK target tables (`planned_changes` was created last / after `decisions`, `goals` after `tasks`) and the ORM `Decision` had no FK on `planned_change_id`; fresh `alembic upgrade` aborted with `relation "planned_changes" does not exist`. Fixed in place (revision was never stamped anywhere): `planned_changes` now created before `decisions`, `goals` before `tasks`, and the decisions<->tasks cycle is broken by a deferred `op.create_foreign_key` after `tasks`
+      - File: "`backend/persistence/migrate.py` - initdb entrypoint"
+      - File: "`backend/persistence/connection.py` (408 lines)"
+      - File: "`backend/persistence/models/*.py` - 12 model files (incl. new planned_changes.py)"
+      - Command: "`.venv/bin/python -c \"from backend.persistence.models import Base, PlannedChange; print('TAB', PlannedChange.__tablename__)\"`"
+      - Result: "`TAB planned_changes` (T-DEPMIGRATE)"
+      - Command: "FK check — `Base.metadata.tables['decisions'].columns['planned_change_id'].foreign_keys`"
+      - Result: "FK_OK — `target_fullname == 'planned_changes.id'` (attached via `Table.append_constraint` in planned_changes.py; the verbatim one-liner in the task spec has a SyntaxError in its list-comp, so the corrected equivalent is what runs)"
+      - Command: "`alembic upgrade head` against a throwaway pgvector/pgvector:pg16 container (not the cluster)"
+      - Result: "upgraded to 001_initial — 12 tables, planned_changes (16 cols, 3 indexes + PK), decisions FKs {claim_id, planned_change_id, task_id}, tasks FKs {goal_id, decision_id, parent_task_id}; `alembic downgrade -1` returns to empty schema"
+      - Defect fixed (T-DEPMIGRATE): "001_initial.py created `decisions` before its FK target tables (`planned_changes` was created last / after `decisions`, `goals` after `tasks`) and the ORM `Decision` had no FK on `planned_change_id`; fresh `alembic upgrade` aborted with `relation \"planned_changes\" does not exist`. Fixed in place (revision was never stamped anywhere): `planned_changes` now created before `decisions`, `goals` before `tasks`, and the decisions<->tasks cycle is broken by a deferred `op.create_foreign_key` after `tasks`"
 
   - id: ws-07
     name: Testing
@@ -135,9 +135,9 @@ workstreams:
       Pytest test suite for all subsystems.
     status: done
     evidence:
-      - Command: `.venv/bin/python -m pytest tests/ -m "not integration" -q`
+      - Command: "`.venv/bin/python -m pytest tests/ -m \"not integration\" -q`"
       - Result: 9 collected, 9 passed (post-integration)
-      - Files: `tests/backend/test_agents.py`, `tests/backend/test_persistence.py`, etc.
+      - Files: "`tests/backend/test_agents.py`, `tests/backend/test_persistence.py`, etc."
 
   - id: ws-08
     name: Deploy (Docker + k8s + Harbor)
@@ -151,13 +151,13 @@ workstreams:
       deploy.sh flow (build, push, retag, apply, probe).
     status: done
     evidence:
-      - Command: `bash -n deployments/harbor/deploy.sh`
+      - Command: "`bash -n deployments/harbor/deploy.sh`"
       - Result: exit 0 (T-DEPMIGRATE)
-      - Command: `kubectl apply -k deployments/kubernetes --dry-run=server`
+      - Command: "`kubectl apply -k deployments/kubernetes --dry-run=server`"
       - Result: objects accepted in server dry-run (T-DEPMIGRATE; the pre-existing cluster Job already exists so apply reports field-immutable — expected)
-      - Defect fixed (T-DEPMIGRATE): deploy.sh retag step invoked `kubectl apply -k ... --image` — `kubectl apply` has no `--image` flag; replaced with `kubectl kustomize` (pure render, no cluster write) piped through `sed` to /tmp/rendered.yaml, then `kubectl apply -f /tmp/rendered.yaml`
-      - Defect fixed (T-DEPMIGRATE): both `docker build` invocations now pass `--platform linux/amd64` (cluster nodes are amd64; prior arm64 builds caused `exec /usr/local/bin/uvicorn: no such file or directory`)
-      - Defect fixed (T-DEPMIGRATE): nats-deployment.yaml container args now include `--http_port 8222` so the :8222/varz liveness+readiness probes pass on fresh images (durable in source; parent had live-patched the cluster)
+      - Defect fixed (T-DEPMIGRATE): "deploy.sh retag step invoked `kubectl apply -k ... --image` — `kubectl apply` has no `--image` flag; replaced with `kubectl kustomize` (pure render, no cluster write) piped through `sed` to /tmp/rendered.yaml, then `kubectl apply -f /tmp/rendered.yaml`"
+      - Defect fixed (T-DEPMIGRATE): "both `docker build` invocations now pass `--platform linux/amd64` (cluster nodes are amd64; prior arm64 builds caused `exec /usr/local/bin/uvicorn: no such file or directory`)"
+      - Defect fixed (T-DEPMIGRATE): "nats-deployment.yaml container args now include `--http_port 8222` so the :8222/varz liveness+readiness probes pass on fresh images (durable in source; parent had live-patched the cluster)"
 
 cross-workstream-defects:
   - id: def-001
@@ -201,19 +201,19 @@ wave1_integration:
       config.db_url field; the deployed Job / docker-compose / deploy.sh
       contract invokes `python -m backend.persistence.migrate upgrade`.
   verification_gates:
-    - Command: `.venv/bin/python -c "from backend.api.app import app, create_app"`
+    - Command: "`.venv/bin/python -c \"from backend.api.app import app, create_app\"`"
       Result: "OK — app and create_app import cleanly"
-    - Command: `.venv/bin/python -m uvicorn backend.api.app:app --port 8000`
+    - Command: "`.venv/bin/python -m uvicorn backend.api.app:app --port 8000`"
       Result: "Boots; GET /version -> 200 (JSON version info); GET /openapi.json -> 200; clean shutdown"
-    - Command: `.venv/bin/python -m pytest tests/ -m "not integration" -q`
+    - Command: "`.venv/bin/python -m pytest tests/ -m \"not integration\" -q`"
       Result: "9 passed, 0 failed (was 5 failed / 4 passed pre-integration)"
-    - Command: `cd web && npm install && npm run build`
+    - Command: "`cd web && npm install && npm run build`"
       Result: "exit 0 — vite production build, 49 modules transformed"
-    - Command: `cd apple && swift build`
+    - Command: "`cd apple && swift build`"
       Result: "exit 0 — green after fixing cross-worker compile defects"
-    - Command: `kubectl apply -k deployments/kubernetes --dry-run=server`
+    - Command: "`kubectl apply -k deployments/kubernetes --dry-run=server`"
       Result: "exit 0 — 12 resources accepted (server dry run)"
-    - Command: `bash -n deployments/harbor/deploy.sh`
+    - Command: "`bash -n deployments/harbor/deploy.sh`"
       Result: "syntax OK"
   integration_defects_fixed:
     - "backend/persistence/models/base.py — Jsonb was Annotated[..., mapped_column(JSONB, ...)] passed as a positional SchemaItem; now the plain JSONB alias (valid SQLAlchemy 2.x pattern)"
@@ -227,7 +227,7 @@ summary:
   status: complete
   uvicorn_boot: "SUCCESS"
   pip_install: "SUCCESS"
-  pytest_count: 9 tests (9 passed, 0 failed)
+  pytest_count: 9 tests (9 passed, 0 failed) [wave-1 baseline; see recent_activity for current]
   ruff_status: Fixed 29 errors; 86 remaining in existing code (not blocking)
   defects_fixed:
     - Created `create_app()` factory in `backend/api/app.py`
@@ -240,3 +240,78 @@ summary:
   cross_workstream_defects_found:
     - structlog import variations
     - ruff line-length violations in existing code
+
+recent_activity:
+  - date: "2026-10-19"
+    summary: >
+      Phase 5 hygiene closeout (gaps4 §6 E1-E5) + Apple test-truth
+      refresh. Recorded here because the workstream entries above were
+      last touched at wave-1 integration (2026-09-29) and predate all of
+      these changes.
+    items:
+      - id: E1
+        title: FastAPI on_event -> lifespan migration (G-4.2)
+        detail: >
+          backend/api/wiring.py install_dependency_wiring now registers a
+          single @asynccontextmanager lifespan on target.router.lifespan_context
+          (startup: wire_dependencies, shutdown: teardown_dependencies)
+          replacing the two @target.on_event("startup"/"shutdown")
+          handlers; the deferral comment is gone.
+          No FastAPI @app.on_event / @target.on_event decorator usage remains
+          in backend/api (the only remaining "on_event" strings in backend/ are
+          the connector's unrelated on_event callback parameter in
+          backend/connectors/*, a different API, out of E1 scope).
+          tests/backend/test_app_wiring.py 9/9 green with zero on_event
+          deprecation warnings.
+        evidence:
+          - Command: .venv/bin/python -m pytest tests/backend/test_app_wiring.py -q
+          - Result: 9 passed, 0 failed
+      - id: E2
+        title: Status-doc refresh
+        detail: >
+          This updated: field bump + this recent_activity block;
+          docs/architecture/current-state.md gained a "Since the 2026-10-10
+          baseline" section with the same four items.
+      - id: E3
+        title: README canonical test commands
+        detail: >
+          README.md gained a "Testing" section with the three canonical
+          commands (Python 601 / web playwright / apple 46) and the bare
+          `pytest tests` line was removed from Development.
+      - id: E5
+        title: Commit-hygiene norm seconded
+        detail: >
+          The two-clause commit-hygiene norm from gaps2 §7 Q6 (generated
+          project + patcher ship together; backend import-chain commits
+          verified by fresh-worktree import) is now a standing rule in
+          specs/phase0-integrity/tasks.md and specs/t001-stabilization/tasks.md.
+      - id: apple-truth
+        title: Apple count correction + watch bundle-ID decision
+        detail: >
+          The canonical Apple suite is 46 tests (NerveSharedTests 13 /
+          NerveRelayTests 31 / NerveAppsTests 2); the earlier "31" figure was
+          NerveRelayTests only (stale test-product under-run, gaps4 §3.4 D3).
+          apple/scripts/test-apple.sh now asserts the per-bundle counts. The
+          watch bundle-ID family was converged to
+          com.celesrenata.NervePhone.watch (app) /
+          com.celesrenata.NervePhone.watch.widgets (widget extension) in
+          apple/Distribution/xcodegen/NerveWatch.xcodegen.yml (D2 decision).
+      - id: data-lift
+        title: "Apple personal surface plane: data lift"
+        detail: >
+          2026-10-18 data-loading lift: NervePhone now renders real server
+          data on load (PhoneDataStore.fetchNow; --nerve-server test
+          override; App Group cached-state.json verified with live values
+          14 agents / healthy). Watch read path is code-correct; standalone
+          watch-sim does not share the phone-sim App Group (needs a paired
+          phone+watch to render). See docs/apple-data-lift-2026-10-18.md.
+          Still open: the Personal Operations Plane surfaces
+          (Today/Inbox/People/Waiting/Briefing) + the Today|Engineering|Ask
+          reorg; apple/iOS/App/Views currently ships only
+          Overview/Agents/Goals/Incidents/Systems/Ask.
+      - id: python-count
+        title: Python suite baseline is now 601
+        detail: >
+          pytest tests/ -m "not integration" -q -> 601 passed, 0 failed
+          (2026-10-19). The wave-1 "9 tests" figure in summary.pytest_count
+          is the wave-1 baseline only.

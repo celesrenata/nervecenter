@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -341,20 +342,29 @@ async def teardown_dependencies(target: FastAPI) -> None:
 
 
 def install_dependency_wiring(target: FastAPI) -> None:
-    """Register the startup/shutdown handlers on ``target``.
+    """Register the startup/shutdown lifecycle on ``target`` via ASGI lifespan.
 
     Applied to BOTH the module-level ``app`` and ``create_app()`` in
     :mod:`backend.api.app` so that both instances wire their dependencies the
-    same way.  Kept in the existing ``@app.on_event`` style (no lifespan
-    refactor).
+    same way.  Uses a single ``@asynccontextmanager`` lifespan attached to
+    ``target.router.lifespan_context``: startup runs :func:`wire_dependencies`,
+    shutdown runs :func:`teardown_dependencies`.  This replaces the deprecated
+    ``@target.on_event("startup"|"shutdown")`` registrations while preserving
+    the exact ordering the handlers had (dependency wiring first on startup,
+    teardown last on shutdown; no other startup/shutdown handlers are
+    registered on the app, so nothing else is displaced).
     """
 
-    @target.on_event("startup")
-    async def _wire_dependencies() -> None:
-        """Wire the DB engine and NATS client onto app.state at startup."""
+    @asynccontextmanager
+    async def _wiring_lifespan(app: FastAPI):
         await wire_dependencies(target)
+        try:
+            yield
+        finally:
+            await teardown_dependencies(target)
 
-    @target.on_event("shutdown")
-    async def _unwrap_dependencies() -> None:
-        """Dispose the DB engine and disconnect NATS at shutdown."""
-        await teardown_dependencies(target)
+    # Starlette keeps the ASGI lifespan handler on the app's router; FastAPI
+    # (and the module-level ``app``) build their ``Router`` with the default
+    # handler, so overwriting it here is the supported in-place upgrade that
+    # keeps the public ``install_dependency_wiring(target)`` surface intact.
+    target.router.lifespan_context = _wiring_lifespan

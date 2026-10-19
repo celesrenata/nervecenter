@@ -18,7 +18,9 @@
 ## Execution rules
 
 - Keep the task order and ownership below. T002 must be green before T003 creates the mail-connector commit.
-- **Import-chain gate (gaps2 §7 Q6, standing rule):** no backend commit that touches an import chain may ship without `python -c "import backend.api.app"` verified in a **detached worktree of the resulting commit** (never just the working tree). Propagated to `specs/phase0-integrity/` and `specs/gap-closure-t003/`.
+- **Commit-hygiene norm (gaps2 §7 Q6, standing rule; seconded by gaps4 Phase 5 E5):** two clauses, both must hold for a commit to ship.
+  - *(a) Generated project:* no commit that touches a **generated project** (e.g. the Apple Xcode projects generated from `apple/Distribution/xcodegen/*.xcodegen.yml`) **and its patcher** ships without the patcher — commit the regenerated `apple/Distribution/Generated/` tree alongside the xcodegen/`Fastfile` change that produced it.
+  - *(b) Import chain:* no backend commit that touches an import chain may ship without `python -c "import backend.api.app"` verified in a **detached worktree of the resulting commit** (never just the working tree). Propagated to `specs/phase0-integrity/` and `specs/gap-closure-t003/`.
 - **T007 correction (gaps2 §3.7):** the "stale references" claim was wrong — `backend/events/` and `backend/knowledge/` **both exist and are tested** (e.g. `tests/backend/events/test_dlq.py`). T007 is a *content* refresh (docs dated 2026-09-29, pre-personal-planes), not a path fix; the `rg` path gate in T007 passes trivially.
 - T003 is the explicit dependency boundary for the G-0.2 mail-connector commit: any task that verifies the committed mail plane must run after that commit exists.
 - T003 and T006 both touch distinct regions of [`backend/api/app.py`](../../backend/api/app.py); reconcile both changes during T008 rather than overwriting either region.
