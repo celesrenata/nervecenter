@@ -147,7 +147,7 @@ public struct AppGroupSnapshotSource: WatchSnapshotSource {
 
     public func readApprovals() -> [WatchApprovalRow] {
         guard let data = try? Data(contentsOf: approvalsURL) else { return [] }
-        return (try? decodeApprovals(data)) ?? []
+        return decodeApprovals(data)
     }
 
     public func writeStopMarker(at date: Date) throws {
@@ -167,28 +167,13 @@ public struct AppGroupSnapshotSource: WatchSnapshotSource {
     }
 }
 
-/// Tolerant decoder for `approvals.json`: a JSON array of objects shaped
-/// like the shared `PlannedChange` wire contract (snake_case keys). Unknown
-/// optional fields degrade to honest defaults instead of failing the whole
-/// file; a malformed file yields `[]` at the call site.
-private func decodeApprovals(_ data: Data) throws -> [WatchApprovalRow] {
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
-    decoder.dateDecodingStrategy = .iso8601
-
-    struct Wire: Decodable {
-        var id: String
-        var title: String
-        var description: String?
-        var riskLevel: Int
-        var changeType: String
-        var status: String
-        var diff: [String: NerveJSONValue]?
-        var rollback: [String: NerveJSONValue]?
-    }
-
-    let wires = try decoder.decode([Wire].self, from: data)
-    return wires.map { wire in
+/// Map the shared `approvals.json` wire rows (NerveApps
+/// `WatchApprovalsJSON`) onto the watch's compact rows. The wire contract is
+/// shared with the phone's publisher — same file name, same snake_case keys;
+/// unknown optional fields degrade to honest defaults and a malformed file
+/// yields `[]` at the call site.
+private func decodeApprovals(_ data: Data) -> [WatchApprovalRow] {
+    WatchApprovalsJSON.decode(data).map { wire in
         WatchApprovalRow(
             id: wire.id,
             title: wire.title,

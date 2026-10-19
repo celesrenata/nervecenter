@@ -173,13 +173,24 @@ extension PhoneEnvironment {
         publishToAppGroup(snapshot)
     }
 
-    /// Write the §73 snapshot to the App Group container the Watch reads
-    /// (`group.nerv.center` / `cached-state.json`). The phone target carries
+    /// Write the §73 snapshot and the §66 pending-approval rows to the App
+    /// Group container the Watch reads (`group.nerv.center` /
+    /// `cached-state.json` + `approvals.json`). The phone target carries
     /// both the `group.nerv.center` and `group.com.celestium.nervecenter`
     /// entitlements, so this shares one container across Phone / Watch /
     /// Widgets. Falls back to a local path (host / unit tests) when the group
     /// container is unavailable.
-    public func publishToAppGroup(_ snapshot: CachedState) {
+    ///
+    /// Both files are written on the same cadence (every `fetchInto`), so the
+    /// Watch never sees a snapshot with an approvals file from an older
+    /// generation. `approvals.json` is always written — `[]` when the phone
+    /// holds no rows (the pending-approvals row feed is not wired to a
+    /// backend endpoint yet, so today the phone holds none), which the Watch
+    /// decodes as "no approvals pending" and renders honestly.
+    public func publishToAppGroup(
+        _ snapshot: CachedState,
+        approvals: [ApprovalWireRow] = []
+    ) {
         let fm = FileManager.default
         let container: URL
         if let group = fm.containerURL(
@@ -197,6 +208,14 @@ extension PhoneEnvironment {
         // `WatchSnapshotSource.readSnapshot()` decodes with.
         if let data = NerveJSON.encode(snapshot) {
             try? data.write(to: url)
+        }
+
+        // §66 pending-approvals rows — same shared wire contract the Watch's
+        // `WatchSnapshotSource.readApprovals()` decodes (NerveApps
+        // `WatchApprovalsJSON`): snake_case keys, `[]` when empty.
+        let approvalsURL = container.appendingPathComponent(WatchApprovalsJSON.fileName)
+        if let approvalsData = WatchApprovalsJSON.encode(approvals) {
+            try? approvalsData.write(to: approvalsURL)
         }
     }
 }
