@@ -16,14 +16,14 @@
 # Expected per-bundle counts (XCTest, as of 2026-10-20):
 #   NerveSharedTests  13
 #   NerveRelayTests   74
-#   NerveAppsTests     9
-#   Total             96, 0 failures
+#   NerveAppsTests    17
+#   Total            104, 0 failures
 #
 # Success criteria are structural, not summary-line dependent: each
 # 'Test Suite "<Bundle>.xctest" passed' line is paired with its
 # 'Executed N tests, with F failures' summary, and any 'Test Case ...
 # failed' line is a hard failure. Older toolchains that only emit a global
-# summary fall back to the total 'Executed 96 tests' check.
+# summary fall back to the total 'Executed 104 tests' check.
 #
 # Usage:
 #   bash apple/scripts/test-apple.sh
@@ -53,7 +53,7 @@ echo "==> [test-apple] (d) asserting per-bundle counts..."
 python3 - "$OUT" <<'PY'
 import re, sys
 
-expected = {"NerveSharedTests": 13, "NerveRelayTests": 74, "NerveAppsTests": 9}
+expected = {"NerveSharedTests": 13, "NerveRelayTests": 74, "NerveAppsTests": 17}
 TOTAL = sum(expected.values())
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 lines = text.splitlines()
@@ -96,7 +96,7 @@ if counts:
         ok = False
     if not ok:
         sys.exit(1)
-    print(f"PASS: {total} tests total (13/74/9), 0 failures")
+    print(f"PASS: {total} tests total (13/74/17), 0 failures")
 else:
     # Fallback (older toolchain): single global summary line.
     ms = list(re.finditer(r"Executed (\d+) tests, with (\d+) failures", text))

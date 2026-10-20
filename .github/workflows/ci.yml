@@ -2,7 +2,7 @@
 #
 #   python : pytest tests/ -m "not integration"  (expect >= 601 passed)
 #   web    : npm ci && npm run build && playwright (expect >= 60 passed)
-#   apple  : apple/scripts/test-apple.sh          (expect exactly 96, 0 failures)
+#   apple  : apple/scripts/test-apple.sh          (expect exactly 104, 0 failures)
 #
 # The apple job's count assertion doubles as the cold-cache guard: a fresh
 # macOS runner has no .build, and test-apple.sh's touch + --build-tests +
@@ -79,5 +79,5 @@ jobs:
       - name: Run canonical Apple test command
         # test-apple.sh itself fails non-zero if any per-bundle count is
         # missing or off (NerveSharedTests 13 / NerveRelayTests 74 /
-        # NerveAppsTests 9 = 96 total). No separate assertion step needed.
+        # NerveAppsTests 17 = 104 total). No separate assertion step needed.
         run: bash apple/scripts/test-apple.sh
