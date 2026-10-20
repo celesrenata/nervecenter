@@ -29,6 +29,11 @@ from typing import Any
 from uuid import uuid4
 
 from backend.api.models import AttentionItem, AttentionState
+from backend.attention.policy import (
+    AttentionPolicyService,
+    EscalationRecord,
+    get_attention_policy,
+)
 
 
 def _now() -> datetime:
@@ -46,8 +51,14 @@ def _ensure_utc(dt: datetime | None) -> datetime | None:
 class AttentionService:
     """In-memory, deterministic, explainable Attention Engine (P0)."""
 
-    def __init__(self) -> None:
+    def __init__(self, policy: AttentionPolicyService | None = None) -> None:
         self._items: dict[str, AttentionItem] = {}
+        self._policy = policy or get_attention_policy()
+
+    @property
+    def policy(self) -> AttentionPolicyService:
+        """The local, user-editable attention policy (AC-R15 §28/§29/§58/§59)."""
+        return self._policy
 
     # -- internals --------------------------------------------------------
     def _sort_key(self, item: AttentionItem) -> tuple[float, datetime, str]:
@@ -84,6 +95,13 @@ class AttentionService:
         # Keep caller-provided reasons first, append the scorer's factors.
         item.why = list(dict.fromkeys(list(item.why) + why))
         self._items[item.attention_id] = item
+        self.policy.record_action(
+            item.attention_id,
+            "create",
+            at=now,
+            reason=item.reason,
+            details={"status": item.status.value},
+        )
         return item
 
     def get(self, attention_id: str) -> AttentionItem | None:
@@ -129,22 +147,50 @@ class AttentionService:
         priority, why = self._score(item)
         item.priority = priority
         item.why = list(dict.fromkeys(item.why + why))
+        self.policy.record_action(
+            attention_id,
+            "refresh",
+            at=item.updated_at,
+            reason=item.reason,
+        )
         return item
 
-    def update_status(self, attention_id: str, status: AttentionState) -> AttentionItem | None:
+    def update_status(
+        self,
+        attention_id: str,
+        status: AttentionState,
+        action: str | None = None,
+        reason: str = "",
+    ) -> AttentionItem | None:
         item = self._items.get(attention_id)
         if item is None:
             return None
         item.status = status
         item.updated_at = _now()
+        self.policy.record_action(
+            attention_id,
+            action or f"status:{status.value}",
+            at=item.updated_at,
+            reason=reason or f"status changed to {status.value}",
+        )
         return item
 
     def resolve(self, attention_id: str) -> AttentionItem | None:
-        return self.update_status(attention_id, AttentionState.RESOLVED)
+        return self.update_status(
+            attention_id,
+            AttentionState.RESOLVED,
+            action="resolve",
+            reason="user resolved the item",
+        )
 
     def suppress(self, attention_id: str) -> AttentionItem | None:
         """Hide an item the user explicitly muted (prompt2 §23 feedback)."""
-        return self.update_status(attention_id, AttentionState.SUPPRESSED)
+        return self.update_status(
+            attention_id,
+            AttentionState.SUPPRESSED,
+            action="suppress",
+            reason="user explicitly muted the item",
+        )
 
     def snooze(self, attention_id: str, until: datetime | None = None) -> AttentionItem | None:
         """Defer an item (prompt2 §28 escalation / §78 follow-up).
@@ -160,11 +206,35 @@ class AttentionService:
         item.due = _ensure_utc(until)
         item.status = AttentionState.TODAY
         item.updated_at = _now()
+        self.policy.record_action(
+            attention_id,
+            "snooze",
+            at=item.updated_at,
+            reason="user snoozed the item",
+            details={"until": item.due.isoformat() if item.due else None},
+        )
         return item
 
     def acknowledge(self, attention_id: str) -> AttentionItem | None:
         """User handled it → resolve and clear from the live queue (§23)."""
-        return self.resolve(attention_id)
+        return self.update_status(
+            attention_id,
+            AttentionState.RESOLVED,
+            action="acknowledge",
+            reason="user acknowledged the item (handled)",
+        )
+
+    def escalate_deadlines(
+        self, now: datetime | str | None = None
+    ) -> list[EscalationRecord]:
+        """Apply deadline escalation (§28) to the live queue.
+
+        TODAY items whose deadline proximity crosses the configured
+        threshold are promoted to NOW in place (score inputs preserved, a
+        deterministic reason appended to ``why``); the policy records each
+        promotion in the escalation history and action history.
+        """
+        return self.policy.apply_deadline_escalation(list(self._items.values()), now=now)
 
     def count(self, status: AttentionState | None = None) -> int:
         return len(self.list(status=status))

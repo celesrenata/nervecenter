@@ -152,7 +152,7 @@ class BriefingService:
             kind = BriefingKind(kind)
         clock = _ensure_utc(now)
 
-        actions = self._compose_actions()
+        actions = self._compose_actions(clock)
         waiting_on = self._compose_waiting_on(clock)
         today = self._compose_today(clock)
         overnight = self._compose_overnight(clock)
@@ -172,16 +172,23 @@ class BriefingService:
         )
 
     # -- sections ------------------------------------------------------------
-    def _compose_actions(self) -> list[BriefingAction]:
+    def _compose_actions(self, now: datetime) -> list[BriefingAction]:
         """Top of the Now queue (prompt2 §26), capped, highest-priority first.
 
         ``label`` is the action to take (the item's ``suggested_action`` when
         the plane proposed one, else its ``reason``); ``due`` carries the item
         due time for "before 5 PM" framing. The Now screen's ordering (ranked
         by the P0 scorer) is preserved.
+
+        AC-R15 (§58 bundling hook): when the attention plane's daily FYI
+        budget bundles low-priority items into one entry, that single
+        bundled entry is appended after the Now actions — nine
+        low-priority items surface as exactly one briefing entry, while
+        urgent items (which bypass batching) keep their own rows. The
+        bundled items remain in the attention queue; nothing is deleted.
         """
         now_items = self._attention().now()[:MAX_ACTIONS]
-        return [
+        actions = [
             BriefingAction(
                 attention_id=item.attention_id,
                 label=item.suggested_action or item.reason,
@@ -189,6 +196,21 @@ class BriefingService:
             )
             for item in now_items
         ]
+
+        attention_service = self._attention()
+        decision = attention_service.policy.budget_decision(
+            attention_service.list(), now=now
+        )
+        bundle = decision.bundle
+        if bundle is not None:
+            actions.append(
+                BriefingAction(
+                    attention_id=bundle.bundle_id,
+                    label=bundle.label,
+                    due=None,
+                )
+            )
+        return actions
 
     def _compose_waiting_on(self, now: datetime) -> list[BriefingWaitingOn]:
         """Open outstanding requests, longest-waiting first (§19/§31)."""
