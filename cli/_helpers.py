@@ -11,6 +11,8 @@ Exit codes:
 """
 from __future__ import annotations
 
+from typing import Any, Callable
+
 import click
 
 from .client import ApiError, UnreachableError, resolve_base_url
@@ -81,8 +83,14 @@ def run_command(
     output_format: str,
     params: dict | None = None,
     json_body: dict | None = None,
+    render: Callable[[Any, str], str] | None = None,
 ) -> None:
-    """Execute one API call, render the result, and map failures to exit codes."""
+    """Execute one API call, render the result, and map failures to exit codes.
+
+    ``render`` (optional) overrides the default :class:`OutputFormatter`
+    rendering for non-JSON output — used by e.g. the ranked ``attention``
+    table, which must show the ``why`` explainability column.
+    """
     base_url = resolve_base_url(api_url)
     validate_api_url(base_url)
     try:
@@ -93,5 +101,10 @@ def run_command(
     if as_json:
         click.echo(OutputFormatter.format_json(response.data))
     else:
-        click.echo(OutputFormatter.render(unwrap_envelope(response.data), output_format))
+        data = unwrap_envelope(response.data)
+        click.echo(
+            render(data, output_format)
+            if render is not None
+            else OutputFormatter.render(data, output_format)
+        )
     ctx.exit(EXIT_OK)

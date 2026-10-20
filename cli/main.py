@@ -9,16 +9,23 @@ import click
 from .commands import (
     agents,
     ask,
+    attention,
+    brief,
     changes,
+    communication,
+    commitments,
     compute,
     entity,
     goal,
     incident,
     mutations,
     pause,
+    people,
     routes,
     status,
     task,
+    today,
+    waiting,
 )
 
 
@@ -45,6 +52,14 @@ ALL_COMMANDS = [
     incident.incident,
     pause.pause_agents,
     mutations.stop_mutations,
+    # §65 personal surfaces (AC-R11).
+    attention.attention,
+    today.today,
+    commitments.commitments,
+    waiting.waiting,
+    brief.brief,
+    people.people,
+    communication.communication,
 ]
 
 for _command in ALL_COMMANDS:
