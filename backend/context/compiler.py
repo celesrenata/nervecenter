@@ -55,6 +55,15 @@ class ContextSource(BaseModel):
             ),
         ),
     ]
+    summary: str | None = Field(
+        default=None,
+        description=(
+            "Optional bounded, remote-safe summary for this source (R107 "
+            "firewall / §35): when set, only this summary — never the raw "
+            "record payloads — may be carried into a remote inference "
+            "payload. Compiled into section metadata for audit."
+        ),
+    )
 
 
 class BudgetConfig(BaseModel):
@@ -273,22 +282,43 @@ class ContextCompiler(BaseModel):
         # Estimate token count
         tokens = self._estimate_tokens(record_ids)
 
+        metadata: dict[str, Any] = {
+            "source_id": source.id,
+            "query": source.query,
+            "relevance_score": source.relevance_score,
+        }
+        if source.summary:
+            # R107 firewall: the summary is the only remote-safe projection
+            # of this source's content; raw payloads never enter the payload.
+            metadata["summary"] = source.summary
         return CompiledSection(
             kind=source.kind,
             record_ids=record_ids,
             tokens=tokens,
-            metadata={
-                "source_id": source.id,
-                "query": source.query,
-                "relevance_score": source.relevance_score,
-            },
+            metadata=metadata,
         )
 
     def _fetch_records(self, source: ContextSource, limit: int) -> list[str]:
         """Fetch record IDs from a source.
 
-        In production, this would query the knowledge graph store.
+        In production, this would query the knowledge graph store. A source
+        query may carry explicit ``refs`` (record ids already known to be
+        relevant, e.g. from the ask grounding context) — those are returned
+        verbatim (deduped, bounded) so grounding is deterministic and the
+        compiled package references exactly those records (R107 / §35:
+        references, not raw content).
         """
+        refs = source.query.get("refs") if isinstance(source.query, dict) else None
+        if isinstance(refs, list) and refs:
+            seen: set[str] = set()
+            out: list[str] = []
+            for ref in refs:
+                if not isinstance(ref, str) or not ref:
+                    continue
+                if ref not in seen:
+                    seen.add(ref)
+                    out.append(ref)
+            return out[: max(limit, 1)]
         # For testing, generate synthetic IDs
         return [f"{source.kind}-{i:04d}" for i in range(min(limit, 100))]
 
