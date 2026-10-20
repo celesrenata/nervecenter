@@ -66,7 +66,26 @@ public struct WaitingView: View {
             server: env.server,
             store: store
         ) else { return }
-        Task { await service.fetchWaiting(status: store.waitingFilter) }
+        Task {
+            await service.fetchWaiting(status: store.waitingFilter)
+            // §68/§69: publish the open waiting count to the App Group so
+            // the widget renders the real "N waiting". Honest: published
+            // only for the open queue (a filtered view must not publish a
+            // filtered count as if it were the whole queue), and a failed
+            // fetch publishes nothing (the environment keeps the last good
+            // state).
+            if store.waitingFilter == .open {
+                switch store.waitingState {
+                case .error:
+                    // Failed fetch — publish nothing; keep last good state.
+                    break
+                case .loading, .empty, .loaded:
+                    env.publishPersonalState(
+                        PersonalStateWire(waitingOnCount: store.waitingRows.count)
+                    )
+                }
+            }
+        }
     }
 
     private func waitingEmptyTitle(for filter: WaitingStatusFilter) -> String {

@@ -109,6 +109,13 @@ public final class PhoneEnvironment: ObservableObject {
     /// the UI never has to cross the actor boundary.
     @Published public private(set) var cacheState: CachedState
 
+    /// Latest §68/§69 personal-plane snapshot the phone derived from its
+    /// real personal store (``PersonalStateWire``). `nil` = the personal
+    /// plane has never fetched successfully (fresh install / no server) —
+    /// in which case no personal keys are published at all (honest
+    /// absence, never fabricated counts; spec §61/§69).
+    public private(set) var personalState: PersonalStateWire?
+
     public let deviceID: String
 
     private var lastRealtimeClient: (any RealtimeClient)?
@@ -191,6 +198,7 @@ extension PhoneEnvironment {
         _ snapshot: CachedState,
         approvals: [ApprovalWireRow] = []
     ) {
+        defer { writePendingPersonalStateIfAny() }
         let fm = FileManager.default
         let container: URL
         if let group = fm.containerURL(
@@ -216,6 +224,66 @@ extension PhoneEnvironment {
         let approvalsURL = container.appendingPathComponent(WatchApprovalsJSON.fileName)
         if let approvalsData = WatchApprovalsJSON.encode(approvals) {
             try? approvalsData.write(to: approvalsURL)
+        }
+    }
+
+    /// Record the latest personal-plane state for the shared App Group and
+    /// publish it into `cached-state.json` immediately, so a personal fetch
+    /// never has to wait for the next engineering `fetchInto` to reach the
+    /// widget. Honest-empty inputs publish nothing (a failed fetch must not
+    /// overwrite a previously good publish, and a genuinely empty queue
+    /// arrives as a zero-count wire, not as `nil`).
+    @MainActor
+    public func publishPersonalState(_ state: PersonalStateWire?) {
+        personalState = state
+        publishToAppGroup(cacheState)
+    }
+
+    /// Merge the stored personal state into a fresh engineering snapshot and
+    /// write the union to `cached-state.json` in the App Group container —
+    /// the exact file the widget's `AppGroupWidgetDataSource.readPersonalState()`
+    /// (and the watch's `WatchAttentionJSON`) decode.
+    ///
+    /// The merge is additive and loss-preserving: any top-level key already in
+    /// the file (e.g. D3' `attention` array) is kept; personal keys are set
+    /// only for the fields present on the wire (missing personal fields are
+    /// omitted, never zero-filled — honest empty, spec §61/§69).
+    private func writePendingPersonalStateIfAny() {
+        guard let personal = personalState else { return }
+        let fm = FileManager.default
+        let container: URL
+        if let group = fm.containerURL(
+            forSecurityApplicationGroupIdentifier: "group.nerv.center"
+        ) {
+            container = group
+        } else {
+            let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+                ?? fm.temporaryDirectory
+            container = base.appendingPathComponent("NerveCenter", isDirectory: true)
+        }
+        try? fm.createDirectory(at: container, withIntermediateDirectories: true)
+        let url = container.appendingPathComponent("cached-state.json")
+        var file: [String: Any] = [:]
+        if let existing = try? Data(contentsOf: url) {
+            if let decoded = try? JSONSerialization.jsonObject(
+                with: existing,
+                options: [.fragmentsAllowed]
+            ) as? [String: Any] {
+                file = decoded
+            }
+        }
+        guard let wire = try? JSONSerialization.jsonObject(
+            with: NerveJSON.encode(personal) ?? Data("{}".utf8),
+            options: [.fragmentsAllowed]
+        ) as? [String: Any] else { return }
+        for (key, value) in wire where value as? NSNull == nil {
+            file[key] = value
+        }
+        if let data = try? JSONSerialization.data(
+            withJSONObject: file,
+            options: [.sortedKeys]
+        ) {
+            try? data.write(to: url)
         }
     }
 }

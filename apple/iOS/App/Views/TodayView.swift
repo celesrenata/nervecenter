@@ -63,7 +63,70 @@ public struct TodayView: View {
             server: env.server,
             store: store
         ) else { return }
-        Task { await service.fetchToday() }
+        Task {
+            await service.fetchToday()
+            // §68/§69: publish the personal plane to the App Group so the
+            // widget (and watch) render real personal state on this fetch's
+            // cadence. Honest: a failed source simply omits its fields
+            // (never a fabricated 0-count); a fetch that failed *before
+            // producing any rows* publishes nothing at all (the environment
+            // then keeps whatever personal state was last published).
+            env.publishPersonalState(derivedPersonalState())
+        }
+    }
+
+    /// Derive the §68/§69 ``PersonalStateWire`` from the real personal store
+    /// (Today rollup: attention queue, open follow-ups, waiting-on requests).
+    ///
+    /// Fields are published only from sources that fetched successfully
+    /// (a failed source omits its fields rather than reporting 0); the top
+    /// attention item is the highest-ranked attention row, the top
+    /// commitment is the soonest-due open follow-up (the only personal
+    /// source with a real ``due_at``), and the waiting count is the number
+    /// of open waiting rows. Returns `nil` — publish nothing — when no
+    /// source fetched successfully (never a fabricated 0-count). §61.
+    private func derivedPersonalState() -> PersonalStateWire? {
+        let rows = store.todayRows
+        let failed = store.todaySourceErrors
+        let attention = rows.filter { $0.origin == .attention }
+        let followups = rows.filter { $0.origin == .followup }
+        let waiting = rows.filter { $0.origin == .waiting }
+        var wire = PersonalStateWire()
+        var populated = false
+        if failed[TodayOrigin.attention.rawValue] == nil {
+            wire.attentionCount = attention.count
+            if let top = attention.first {
+                wire.topAttentionTitle = top.label
+                wire.topAttentionUrgency = top.priority
+            }
+            populated = true
+        }
+        if failed[TodayOrigin.followup.rawValue] == nil {
+            if let top = topCommitment(from: followups) {
+                wire.topCommitmentTitle = top.label
+                wire.topCommitmentDueAt = top.date
+            }
+            populated = true
+        }
+        if failed[TodayOrigin.waiting.rawValue] == nil {
+            wire.waitingOnCount = waiting.count
+            populated = true
+        }
+        return populated ? wire : nil
+    }
+
+    /// The soonest-due row among open follow-ups (deterministic tiebreak on
+    /// row id), or `nil` when there are no dated follow-ups — the only
+    /// personal source whose rows carry a real `due_at`.
+    private func topCommitment(from rows: [TodayRow]) -> TodayRow? {
+        rows
+            .filter { $0.date != nil }
+            .min { lhs, rhs in
+                let a = lhs.date ?? .distantFuture
+                let b = rhs.date ?? .distantFuture
+                guard a == b else { return a < b }
+                return lhs.id < rhs.id
+            }
     }
 
     /// Group the flat rollup into the three §25 sections the Today screen
