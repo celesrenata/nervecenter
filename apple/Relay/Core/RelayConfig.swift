@@ -7,7 +7,11 @@ import Foundation
 /// comments). Default location: `~/.nervcenter/relay.conf`.
 ///
 /// Env overrides (for LaunchAgent use): `NERVE_RELAY_BASE_URL`,
-/// `NERVE_RELAY_TOKEN`, `NERVE_RELAY_STORE`, `NERVE_RELAY_OUTBOX`.
+/// `NERVE_RELAY_TOKEN`, `NERVE_RELAY_STORE`, `NERVE_RELAY_OUTBOX`,
+/// and per-channel enables `NERVE_RELAY_EMAIL_ENABLED`,
+/// `NERVE_RELAY_VOICEMAIL_ENABLED`, `NERVE_RELAY_CALENDAR_ENABLED`,
+/// `NERVE_RELAY_CONTACTS_ENABLED`. Mailbox credentials never live in this
+/// file — the mail-connector plane reads `NERVE_RELAY_MAIL_TOKEN` (env) only.
 public struct RelayConfig: Sendable, Equatable {
     public var baseURL: URL
     public var token: String
@@ -15,6 +19,9 @@ public struct RelayConfig: Sendable, Equatable {
     public var outboxPath: URL
     public var batchSize: Int
     public var interval: TimeInterval
+    /// Phase 4 D5' capture planes (email/voicemail/calendar/contacts).
+    /// Disabled by default; tokens are env-only.
+    public var channels: ChannelConfigs
 
     public static let defaultStore = "~/Library/Messages/chat.db"
     public static let defaultOutbox = "~/.nervcenter/relay/outbox.db"
@@ -26,7 +33,8 @@ public struct RelayConfig: Sendable, Equatable {
         storePath: URL,
         outboxPath: URL,
         batchSize: Int = 200,
-        interval: TimeInterval = 5
+        interval: TimeInterval = 5,
+        channels: ChannelConfigs = ChannelConfigs()
     ) {
         self.baseURL = baseURL
         self.token = token
@@ -34,6 +42,15 @@ public struct RelayConfig: Sendable, Equatable {
         self.outboxPath = outboxPath
         self.batchSize = max(1, batchSize)
         self.interval = max(1, interval)
+        self.channels = channels
+    }
+
+    /// Durable outbox path for one capture plane — a separate SQLite file
+    /// per channel (`<outbox dir>/channels/<slug>`) so backlogs never
+    /// starve or corrupt each other.
+    public func channelOutboxPath(_ channel: RelayChannel) -> URL {
+        let dir = outboxPath.deletingLastPathComponent()
+        return dir.appendingPathComponent("channels/\(channel.outboxSlug)")
     }
 
     public enum ConfigError: Error, Equatable {
@@ -122,13 +139,57 @@ public struct RelayConfig: Sendable, Equatable {
         let batch = kv["batch"].flatMap { Int($0) } ?? 200
         let interval = kv["interval_seconds"].flatMap { TimeInterval($0) } ?? 5
 
+        // -- Phase 4 D5' channel planes ------------------------------------
+        // Channels stay disabled unless `=<channel>_enabled = true` (file or
+        // env); every channel keeps its own outbox, batch, interval,
+        // retention bounds, and (optional) local capture source dir.
+        func chBool(_ key: String) -> Bool {
+            (kv[key]?.lowercased() == "true") || (kv[key] == "1")
+        }
+        func chInt(_ key: String, _ dflt: Int) -> Int {
+            kv[key].flatMap { Int($0) } ?? dflt
+        }
+        func chDouble(_ key: String, _ dflt: TimeInterval) -> TimeInterval {
+            kv[key].flatMap { TimeInterval($0) } ?? dflt
+        }
+        func chDir(_ key: String) -> URL? {
+            guard let v = kv[key], !v.isEmpty else { return nil }
+            guard !v.hasPrefix("https"), !v.hasPrefix("http") else {
+                return nil   // local only — a remote "dir" is a misconfig
+            }
+            return expand(v)
+        }
+
+        func makeChannel(_ prefix: String, envEnable: String) -> ChannelConfig {
+            var c = ChannelConfig()
+            c.enabled = chBool("\(prefix)_enabled")
+            if let v = ProcessInfo.processInfo.environment[envEnable],
+               !v.isEmpty, v.lowercased() != "false", v != "0" {
+                c.enabled = true
+            }
+            c.batchSize = chInt("\(prefix)_batch", c.batchSize)
+            c.interval = chDouble("\(prefix)_interval", c.interval)
+            c.maxEntries = chInt("\(prefix)_max_entries", c.maxEntries)
+            c.retentionDays = chInt("\(prefix)_retention_days", c.retentionDays)
+            c.sourceDir = chDir("\(prefix)_source_dir") ?? c.sourceDir
+            return c
+        }
+
+        let channels = ChannelConfigs(
+            email: makeChannel("email", envEnable: "NERVE_RELAY_EMAIL_ENABLED"),
+            voicemail: makeChannel("voicemail", envEnable: "NERVE_RELAY_VOICEMAIL_ENABLED"),
+            calendar: makeChannel("calendar", envEnable: "NERVE_RELAY_CALENDAR_ENABLED"),
+            contacts: makeChannel("contacts", envEnable: "NERVE_RELAY_CONTACTS_ENABLED")
+        )
+
         return RelayConfig(
             baseURL: base,
             token: token,
             storePath: store,
             outboxPath: outbox,
             batchSize: batch,
-            interval: interval
+            interval: interval,
+            channels: channels
         )
     }
 
@@ -145,6 +206,15 @@ public struct RelayConfig: Sendable, Equatable {
         outbox_path = ~/.nervcenter/relay/outbox.db
         batch = 200
         interval_seconds = 5
+
+        # Phase 4 D5' capture planes — all disabled until you opt in.
+        # Outboxes/retention are per-channel; local history is never
+        # deleted on send failure (§70). Mailbox credentials are ENV ONLY
+        # (NERVE_RELAY_MAIL_TOKEN) — never in this file.
+        email_enabled = false
+        voicemail_enabled = false
+        calendar_enabled = false
+        contacts_enabled = false
         """
     }
 }

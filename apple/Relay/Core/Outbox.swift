@@ -72,6 +72,22 @@ public final class Outbox {
                 key   TEXT PRIMARY KEY,
                 value INTEGER NOT NULL
             );
+            -- §70 local-first: delivered rows are archived, never dropped.
+            -- Pruning (`prune`) may trim this table by config bounds only.
+            CREATE TABLE IF NOT EXISTS delivered (
+                seq        INTEGER NOT NULL,
+                store_id   INTEGER NOT NULL,
+                payload    TEXT    NOT NULL,
+                created_at TEXT    NOT NULL,
+                acked_at   TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_delivered_ack ON delivered(acked_at, seq);
+            -- Local idempotency index: stable record ids already handled
+            -- (queued or archived) by this channel's outbox.
+            CREATE TABLE IF NOT EXISTS seen (
+                id   TEXT PRIMARY KEY,
+                at   TEXT NOT NULL
+            );
         """
         _ = try execRaw(handle, ddl)
         // Migration: pre-cursor outboxes have the table but no row.
@@ -147,6 +163,8 @@ public final class Outbox {
     }
 
     /// The next unacked batch, oldest first (FIFO — ordering contract §48).
+    /// Only *undelivered* rows: delivery moves a row to the local archive
+    /// (`delivered`, §70 local-first retention) instead of dropping it.
     public func pending(limit: Int) throws -> [OutboxEntry] {
         guard let db else { throw OutboxError.notOpened }
         var stmt: OpaquePointer?
@@ -169,31 +187,77 @@ public final class Outbox {
         return out
     }
 
-    /// Drop successfully-delivered entries. `seqs` are the acked rows.
+    /// Archive successfully-delivered entries. `seqs` are the acked rows.
+    ///
+    /// §70 local-first: acking **moves** each row from `outbox` into the
+    /// local `delivered` archive inside one transaction — the local history
+    /// is never deleted on send, and a crash mid-ack leaves the row pending
+    /// (replayed), not lost. Bounded retention trims `delivered` later via
+    /// `prune(...)`; the pending `outbox` rows are never pruned.
     @discardableResult
     public func ack(_ seqs: [Int64]) throws -> Int {
         guard let db else { throw OutboxError.notOpened }
         guard !seqs.isEmpty else { return 0 }
         _ = try execRaw(db, "BEGIN IMMEDIATE")
         do {
-            var stmt: OpaquePointer?
-            guard sqlite3_prepare_v2(db, "DELETE FROM outbox WHERE seq = ?", -1, &stmt, nil) == SQLITE_OK,
-                  let stmt
+            var select: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db, "SELECT seq, store_id, payload, created_at FROM outbox WHERE seq = ?",
+                -1, &select, nil
+            ) == SQLITE_OK, let select else {
+                throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            var move: OpaquePointer?
+            guard sqlite3_prepare_v2(
+                db,
+                "INSERT INTO delivered (seq, store_id, payload, created_at, acked_at) " +
+                    "VALUES (?, ?, ?, ?, ?)",
+                -1, &move, nil
+            ) == SQLITE_OK, let move else {
+                throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db)))
+            }
+            var del: OpaquePointer?
+            guard sqlite3_prepare_v2(db, "DELETE FROM outbox WHERE seq = ?", -1, &del, nil) == SQLITE_OK,
+                  let del
             else { throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db))) }
 
-            var deleted = 0
+            var moved = 0
+            let now = ISO8601DateFormatter.iso8601Second.string(from: Date())
             for seq in seqs {
-                sqlite3_reset(stmt)
-                sqlite3_clear_bindings(stmt)
-                sqlite3_bind_int64(stmt, 1, seq)
-                guard sqlite3_step(stmt) == SQLITE_DONE else {
+                sqlite3_reset(select)
+                sqlite3_clear_bindings(select)
+                sqlite3_bind_int64(select, 1, seq)
+                guard sqlite3_step(select) == SQLITE_ROW else {
+                    // Not pending (already archived) — idempotent no-op.
+                    continue
+                }
+                sqlite3_reset(move)
+                sqlite3_clear_bindings(move)
+                sqlite3_bind_int64(move, 1, seq)
+                sqlite3_bind_int64(move, 2, sqlite3_column_int64(select, 1))
+                if let payload = ncCStr(sqlite3_column_text(select, 2)) {
+                    sqlite3_bind_text(move, 3, payload, -1, kSQLITE_TRANSIENT)
+                }
+                if let created = ncCStr(sqlite3_column_text(select, 3)) {
+                    sqlite3_bind_text(move, 4, created, -1, kSQLITE_TRANSIENT)
+                }
+                sqlite3_bind_text(move, 5, now, -1, kSQLITE_TRANSIENT)
+                guard sqlite3_step(move) == SQLITE_DONE else {
                     throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db)))
                 }
-                deleted += 1
+                sqlite3_reset(del)
+                sqlite3_clear_bindings(del)
+                sqlite3_bind_int64(del, 1, seq)
+                guard sqlite3_step(del) == SQLITE_DONE else {
+                    throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db)))
+                }
+                moved += 1
             }
-            sqlite3_finalize(stmt)
+            sqlite3_finalize(select)
+            sqlite3_finalize(move)
+            sqlite3_finalize(del)
             _ = try execRaw(db, "COMMIT")
-            return deleted
+            return moved
         } catch {
             _ = try? execRaw(db, "ROLLBACK")
             throw error
@@ -224,6 +288,95 @@ public final class Outbox {
         defer { sqlite3_finalize(stmt) }
         guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
         return Int(sqlite3_column_int64(stmt, 0))
+    }
+
+    /// Rows in the local `delivered` archive (§70 local-first history).
+    public func deliveredCount() throws -> Int {
+        guard let db else { return 0 }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM delivered", -1, &stmt, nil) == SQLITE_OK,
+              let stmt
+        else { throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db))) }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else { return 0 }
+        return Int(sqlite3_column_int64(stmt, 0))
+    }
+
+    /// Local idempotency: was this stable record id already handled
+    /// (queued or archived) by this outbox?
+    public func seen(_ id: String) -> Bool {
+        guard let db else { return false }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "SELECT 1 FROM seen WHERE id = ?", -1, &stmt, nil) == SQLITE_OK,
+              let stmt
+        else { return false }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, id, -1, kSQLITE_TRANSIENT)
+        return sqlite3_step(stmt) == SQLITE_ROW
+    }
+
+    /// Remember a stable record id. Called after a successful enqueue so a
+    /// source that re-yields the record between polls is not re-captured.
+    public func markSeen(_ id: String) throws {
+        guard let db else { throw OutboxError.notOpened }
+        guard !id.isEmpty else { return }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            db, "INSERT OR IGNORE INTO seen (id, at) VALUES (?, ?)", -1, &stmt, nil
+        ) == SQLITE_OK, let stmt
+        else { throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db))) }
+        defer { sqlite3_finalize(stmt) }
+        sqlite3_bind_text(stmt, 1, id, -1, kSQLITE_TRANSIENT)
+        sqlite3_bind_text(
+            stmt, 2,
+            ISO8601DateFormatter.iso8601Second.string(from: Date()),
+            -1, kSQLITE_TRANSIENT
+        )
+        guard sqlite3_step(stmt) == SQLITE_DONE else {
+            throw OutboxError.execFailed(String(cString: sqlite3_errmsg(db)))
+        }
+    }
+
+    /// §70 bounded local retention — trims the `delivered` archive only.
+    ///
+    /// Pending rows in `outbox` are **never** touched, so a transport
+    /// failure can never cost local data. Keeps at most `maxEntries`
+    /// delivered rows (0 = no entry cap) and drops delivered rows acked
+    /// more than `retentionDays` before `now` (0 = no age cap). Returns
+    /// the number of rows pruned.
+    @discardableResult
+    public func prune(maxEntries: Int, retentionDays: Int, now: Date = Date()) throws -> Int {
+        guard let db else { throw OutboxError.notOpened }
+        guard maxEntries > 0 || retentionDays > 0 else { return 0 }
+        var pruned = 0
+        if retentionDays > 0 {
+            let cutoff = ISO8601DateFormatter.iso8601Second.string(
+                from: Date(timeIntervalSince1970:
+                    now.timeIntervalSince1970 - TimeInterval(retentionDays) * 86_400)
+            )
+            let before = try deliveredCount()
+            _ = try execRaw(db, "DELETE FROM delivered WHERE acked_at <= '\(cutoff)'")
+            let after = try deliveredCount()
+            pruned += max(0, before - after)
+        }
+        if maxEntries > 0 {
+            let total = try deliveredCount()
+            let overflow = total - maxEntries
+            if overflow > 0 {
+                // Oldest-first: the newest `maxEntries` rows survive.
+                _ = try execRaw(db, """
+                    DELETE FROM delivered
+                    WHERE seq IN (
+                        SELECT seq FROM delivered
+                        ORDER BY acked_at ASC, seq ASC
+                        LIMIT \(overflow)
+                    )
+                    """)
+                let after = try deliveredCount()
+                pruned += max(0, total - after)
+            }
+        }
+        return pruned
     }
 
     /// The persisted capture cursor: the highest chat.db `id` the engine
