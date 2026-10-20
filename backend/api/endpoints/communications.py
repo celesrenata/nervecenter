@@ -38,6 +38,7 @@ from backend.communications import (
     SensitivityLabel,
     get_communications_service,
 )
+from backend.communications.detection.wiring import get_pipeline
 from backend.communications.registry import CommunicationsService
 
 router = APIRouter(prefix="/api/communications", tags=["communications"])
@@ -135,6 +136,11 @@ async def ingest_communication(
 
     response.status_code = 201 if result["created"] else 200
     communication = result["communication"]
+    # R106 end-to-end seam (§61): after persist, run the detection →
+    # follow-up → attention pass over the normalized record. Pure
+    # orchestration on the process-wide singletons; a missing transient
+    # content registration degrades to empty text, never an error.
+    get_pipeline().ingest(communication, now=communication.timestamp)
     return {
         "item": communication.model_dump(mode="json"),
         "conversation": result["conversation"].model_dump(mode="json"),
