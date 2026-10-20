@@ -29,6 +29,7 @@ from backend.api.docs import custom_openapi, get_version_info
 from backend.attention import get_attention_service
 from backend.briefing import get_briefing_service
 from backend.calendar import get_calendar_service
+from backend.communications import get_communications_service
 from backend.contacts import get_contacts_service
 from backend.connectors import get_mail_connector_service
 from backend.email import get_email_service
@@ -41,7 +42,10 @@ from backend.api.endpoints import (
     briefing,
     approvals,
     calendar,
+    communications,
+    conversations,
     contacts,
+    people,
     changes,
     claims,
     clients,
@@ -87,6 +91,9 @@ ALL_ROUTERS = (
     waiting_on.router,
     calendar.router,
     contacts.router,
+    people.router,
+    communications.router,
+    conversations.router,
     goals.router,
     tasks.router,
     evidence.router,
@@ -311,6 +318,16 @@ def create_app() -> FastAPI:
     target.state.contacts_service = contacts_service
     if os.environ.get("NERVE_SEED_CONTACTS", "").lower() in {"1", "true", "yes"}:
         contacts_service.seed_demo()
+
+    # Unified communications plane (gaps4 R101 — prompt2 §5–§7, §32): the
+    # canonical Person/ContactIdentity/Communication/Conversation graph the
+    # existing VIP contacts and per-channel message threads delegate to.
+    # In-process, always available; empty store returns empty listings.
+    # There is no demo seed — the plane only gains content when real
+    # identity/communication ingest arrives (R102 normalizes the existing
+    # planes into it).
+    communications_service = get_communications_service()
+    target.state.communications_service = communications_service
 
     # Briefing plane (prompt2 §30 — Briefings): a read-only, deterministic
     # aggregation over the personal-operations planes above. It owns no state
