@@ -72,6 +72,17 @@ public struct SmallWidgetView: View {
                     StaleCaption()
                 }
             }
+            // §68/§69 personal line: rendered only when the phone actually
+            // published attention state ("N need you" / "Clear"); a fresh
+            // install renders nothing here — no fabricated counts.
+            if let attentionLine = state.personal?.attentionLine {
+                Text(attentionLine)
+                    .font(.system(size: 13, weight: .medium))
+                    .monospacedDigit()
+                    .foregroundStyle(Color.nerveWidgetSecondary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
             HStack(spacing: Spacing.sm) {
                 Text("\(small.agentCount) agents")
                 Text("\(small.incidentCount) incidents")

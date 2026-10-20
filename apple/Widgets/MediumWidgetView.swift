@@ -75,6 +75,36 @@ public struct MediumWidgetView: View {
                 }
             }
 
+            // §68/§69 personal lines, rendered only when the phone published
+            // them — a fresh install renders none (no fabricated rows).
+            if let personal = state.personal, personal.hasData {
+                VStack(alignment: .leading, spacing: Spacing.xxs) {
+                    if let attentionLine = personal.attentionLine {
+                        Text(attentionLine)
+                            .font(.system(size: 13, weight: .medium))
+                            .monospacedDigit()
+                            .lineLimit(1)
+                    }
+                    if let waitingLine = personal.waitingLine {
+                        Text(waitingLine)
+                            .font(.system(size: 12))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.nerveWidgetSecondary)
+                            .lineLimit(1)
+                    }
+                    if let title = personal.topCommitmentTitle,
+                       let due = personal.dueLabel() {
+                        Text("Next: \(title) \(due)")
+                            .font(.system(size: 12))
+                            .monospacedDigit()
+                            .foregroundStyle(Color.nerveWidgetSecondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
             Spacer(minLength: 0)
 
             HStack(alignment: .firstTextBaseline, spacing: WidgetMetrics.rowPadding) {

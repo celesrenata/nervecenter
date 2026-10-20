@@ -278,4 +278,161 @@ final class NerveAppsTests: XCTestCase {
         XCTAssertNil(absentFile.attention)
         XCTAssertNil(WatchAttentionJSON.decodeAttentionFile(from: Data("not json".utf8)))
     }
+
+    // MARK: - §68/§69 personal widget content derivation (gaps4 D4' / T003-09)
+
+    /// A fresh install (no personal fields published) must derive to an honest
+    /// empty section: nothing populated, no "needs you" line, no fabricated
+    /// counts.
+    func testPersonalContentFreshInstallIsHonestEmpty() {
+        let content = PersonalWidgetContent.make(from: Data("{}".utf8))
+
+        XCTAssertEqual(content.attentionCount, 0)
+        XCTAssertEqual(content.waitingOnCount, 0)
+        XCTAssertNil(content.topAttentionTitle)
+        XCTAssertNil(content.topCommitmentTitle)
+        XCTAssertNil(content.topAttentionUrgency)
+        XCTAssertNil(content.topCommitmentDueAt)
+        XCTAssertFalse(content.hasData)
+        XCTAssertFalse(content.needsAttention)
+        XCTAssertNil(content.attentionLine)
+        XCTAssertNil(content.waitingLine)
+        XCTAssertEqual(content.actionCount, 0)
+    }
+
+    /// Corrupt / non-object bytes degrade to the honest empty section, never to
+    /// fabricated data.
+    func testPersonalContentCorruptBytesAreHonestEmpty() {
+        let content = PersonalWidgetContent.make(from: Data("not json".utf8))
+        XCTAssertFalse(content.hasData)
+        XCTAssertNil(content.attentionLine)
+
+        // A bare array is the wrong shape for the object contract.
+        let arrayContent = PersonalWidgetContent.make(from: Data("[1,2,3]".utf8))
+        XCTAssertFalse(arrayContent.hasData)
+        XCTAssertEqual(arrayContent.attentionCount, 0)
+    }
+
+    /// The full personal wire must decode losslessly with the exact
+    /// snake_case §69 keys the phone writes, and aggregate counts correctly.
+    func testPersonalContentDecodesSnakeCaseWire() {
+        let wire = """
+        {
+          "attention_count": 3,
+          "top_attention_title": "Pharmacy",
+          "top_attention_urgency": 0.9,
+          "top_commitment_title": "Dinner",
+          "top_commitment_due_at": "2026-10-20T23:30:00Z",
+          "waiting_on_count": 2,
+          "system_health": "healthy",
+          "active_incidents": 0
+        }
+        """
+        let content = PersonalWidgetContent.make(from: Data(wire.utf8))
+
+        XCTAssertTrue(content.hasData)
+        // Counts aggregate to the honest values.
+        XCTAssertEqual(content.attentionCount, 3)
+        XCTAssertEqual(content.waitingOnCount, 2)
+        XCTAssertEqual(content.actionCount, 5)
+        // Top attention carries title + urgency.
+        XCTAssertEqual(content.topAttentionTitle, "Pharmacy")
+        XCTAssertEqual(content.topAttentionUrgency, 0.9)
+        XCTAssertEqual(content.urgencyLabel, "urgent")
+        // Top commitment carries title + due.
+        XCTAssertEqual(content.topCommitmentTitle, "Dinner")
+        XCTAssertNotNil(content.topCommitmentDueAt)
+        // The engineering fields in the same file are ignored (additive).
+        XCTAssertTrue(content.needsAttention)
+    }
+
+    /// An out-of-range or negative wire value is clamped to an honest range,
+    /// never surfaced raw.
+    func testPersonalContentClampsOutOfRangeValues() {
+        let wire = """
+        {
+          "attention_count": -4,
+          "top_attention_urgency": 1.7,
+          "waiting_on_count": -1
+        }
+        """
+        let content = PersonalWidgetContent.make(from: Data(wire.utf8))
+
+        XCTAssertEqual(content.attentionCount, 0)
+        XCTAssertEqual(content.waitingOnCount, 0)
+        XCTAssertEqual(content.topAttentionUrgency, 1.0)
+        XCTAssertEqual(content.urgencyLabel, "urgent")
+        // The wire explicitly published `waiting_on_count` (present, negative),
+        // so the block renders — but clamped to the honest zero, not the raw -1.
+        XCTAssertEqual(content.waitingLine, "0 waiting")
+        // `attention_count` was also present, so the queue is a known-empty one.
+        XCTAssertEqual(content.attentionLine, "Clear")
+    }
+
+    /// A blank title is treated as absent (nil), not rendered.
+    func testPersonalContentBlankTitleIsNil() {
+        let wire = "{\"top_attention_title\": \"   \", \"attention_count\": 1}"
+        let content = PersonalWidgetContent.make(from: Data(wire.utf8))
+        XCTAssertNil(content.topAttentionTitle)
+        XCTAssertEqual(content.attentionCount, 1)
+    }
+
+    /// A genuinely *known* empty queue (data published, zero items) honestly
+    /// reads "Clear" — distinct from a fresh install, which reads nothing.
+    func testPersonalContentKnownEmptyQueueIsClear() {
+        let wire = "{\"attention_count\": 0, \"waiting_on_count\": 0}"
+        let content = PersonalWidgetContent.make(from: Data(wire.utf8))
+
+        XCTAssertTrue(content.hasData)
+        XCTAssertFalse(content.needsAttention)
+        XCTAssertEqual(content.attentionLine, "Clear")
+        XCTAssertEqual(content.waitingLine, "0 waiting")
+    }
+
+    /// A non-zero queue reads "N need you"; the urgency label only appears
+    /// when an urgency score is known.
+    func testPersonalContentNeedsYouLineAndUrgency() {
+        let wire = "{\"attention_count\": 3, \"top_attention_urgency\": 0.4}"
+        let content = PersonalWidgetContent.make(from: Data(wire.utf8))
+        XCTAssertEqual(content.attentionLine, "3 need you")
+        XCTAssertEqual(content.urgencyLabel, "normal")
+
+        let noUrgency = PersonalWidgetContent.make(from: Data("{\"attention_count\": 2}".utf8))
+        XCTAssertEqual(noUrgency.attentionLine, "2 need you")
+        XCTAssertNil(noUrgency.urgencyLabel)
+    }
+
+    /// The commitment due label renders relative day labels deterministically
+    /// for a fixed reference date, and `nil` when no due time is published.
+    func testPersonalContentDueLabel() {
+        // A fixed reference with a known time zone so the day math is
+        // deterministic.
+        let calendar = Calendar(identifier: .gregorian)
+        let components = DateComponents(
+            timeZone: TimeZone(identifier: "UTC"),
+            year: 2026, month: 10, day: 20, hour: 12, minute: 0
+        )
+        guard let reference = calendar.date(from: components) else {
+            return XCTFail("could not build reference date")
+        }
+
+        // No due time → nil.
+        let none = PersonalWidgetContent.make(from: Data("{}".utf8))
+        XCTAssertNil(none.dueLabel(reference: reference))
+
+        // Same calendar day → "today"; next day → "tomorrow"; past →
+        // "overdue"; further out → a dated string.
+        func makeContent(dayOffset: Int) -> PersonalWidgetContent {
+            let due = calendar.date(byAdding: .day, value: dayOffset, to: reference) ?? reference
+            let iso = ISO8601DateFormatter().string(from: due)
+            let wire = "{\"top_commitment_due_at\": \"\(iso)\"}"
+            return PersonalWidgetContent.make(from: Data(wire.utf8))
+        }
+
+        XCTAssertEqual(makeContent(dayOffset: 0).dueLabel(reference: reference), "today")
+        XCTAssertEqual(makeContent(dayOffset: 1).dueLabel(reference: reference), "tomorrow")
+        XCTAssertEqual(makeContent(dayOffset: -1).dueLabel(reference: reference), "overdue")
+        let farAway = makeContent(dayOffset: 10).dueLabel(reference: reference)
+        XCTAssertNotNil(farAway)
+    }
 }

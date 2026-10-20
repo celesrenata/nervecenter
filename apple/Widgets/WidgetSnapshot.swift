@@ -20,11 +20,23 @@ public struct WidgetSnapshot: Sendable, Hashable {
     /// personal plane — the watch renders the system tile (never a fake
     /// "CLEAR"; spec §61).
     public var attentionText: String?
+    /// The personal (§68/§69) section, derived from the App Group
+    /// `cached-state.json` independent of the engineering tile. `nil` when the
+    /// phone has never published personal fields (fresh install) or when there
+    /// is no tile at all — in both cases the views render an honest empty
+    /// state, never fabricated rows.
+    public var personal: NerveApps.PersonalWidgetContent?
 
-    public init(tile: NerveApps.WidgetTile?, updatedAt: Date? = nil, attentionText: String? = nil) {
+    public init(
+        tile: NerveApps.WidgetTile?,
+        updatedAt: Date? = nil,
+        attentionText: String? = nil,
+        personal: NerveApps.PersonalWidgetContent? = nil
+    ) {
         self.tile = tile
         self.updatedAt = updatedAt
         self.attentionText = attentionText
+        self.personal = personal
     }
 
     /// The most specific available timestamp: the snapshot-level
@@ -45,6 +57,16 @@ public enum WidgetDataState: Sendable, Hashable {
     case notConnected
     /// A state file exists but is corrupt / unreadable / empty.
     case noData
+}
+
+extension WidgetDataState {
+    /// The personal (§68/§69) section when a tile is connected, or `nil` for
+    /// the placeholder states / snapshots that carry none. Views use this to
+    /// render the personal lines only when the phone actually published them.
+    public var personal: NerveApps.PersonalWidgetContent? {
+        guard case .connected(let snapshot) = self else { return nil }
+        return snapshot.personal
+    }
 }
 
 extension WidgetDataState {
@@ -92,7 +114,12 @@ extension WidgetDataSource {
         }
         let updatedAt = snapshot.updatedAt ?? tile.updatedAt
         return .connected(
-            snapshot: WidgetSnapshot(tile: tile, updatedAt: updatedAt, attentionText: snapshot.attentionText)
+            snapshot: WidgetSnapshot(
+                tile: tile,
+                updatedAt: updatedAt,
+                attentionText: snapshot.attentionText,
+                personal: snapshot.personal
+            )
         )
     }
 }

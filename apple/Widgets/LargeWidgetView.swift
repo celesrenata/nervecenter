@@ -60,6 +60,57 @@ public struct LargeWidgetView: View {
                 }
             }
 
+            // §68/§69 Personal: rendered only when the phone actually
+            // published personal state. A fresh install renders no section
+            // here (honest empty), so the large tile falls back to its
+            // engineering layout unchanged.
+            if let personal = state.personal, personal.hasData {
+                SectionBlock(title: "Personal") {
+                    VStack(alignment: .leading, spacing: Spacing.xxs) {
+                        if let attentionLine = personal.attentionLine {
+                            HStack(spacing: Spacing.sm) {
+                                Text(attentionLine)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .monospacedDigit()
+                                    .lineLimit(1)
+                                if let title = personal.topAttentionTitle {
+                                    Text("· \(title)")
+                                        .font(.system(size: 12))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color.nerveWidgetSecondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.tail)
+                                }
+                                if let urgency = personal.urgencyLabel {
+                                    Text(urgency)
+                                        .font(.system(size: 10, weight: .bold))
+                                        .monospacedDigit()
+                                        .foregroundStyle(Color.nerveWidgetSecondary)
+                                        .lineLimit(1)
+                                }
+                                Spacer(minLength: 0)
+                            }
+                        }
+                        if let waitingLine = personal.waitingLine {
+                            Text(waitingLine)
+                                .font(.system(size: 12))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.nerveWidgetSecondary)
+                                .lineLimit(1)
+                        }
+                        if let title = personal.topCommitmentTitle,
+                           let due = personal.dueLabel() {
+                            Text("Next: \(title) — \(due)")
+                                .font(.system(size: 12))
+                                .monospacedDigit()
+                                .foregroundStyle(Color.nerveWidgetSecondary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
+                }
+            }
+
             // 1) Goal progress.
             SectionBlock(title: "Goal") {
                 if let label = large.goalLabel, !label.isEmpty {

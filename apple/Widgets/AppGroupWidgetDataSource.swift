@@ -77,18 +77,40 @@ public struct AppGroupWidgetDataSource: WidgetDataSource {
         // §67: the attention feed lives in `cached-state.json` regardless
         // of which state file produces the tile below; read it once.
         let attentionText = readAttentionText()
+        // Personal (§68/§69) content lives in the *same* `cached-state.json`;
+        // it is *additive* to the engineering tile: when the phone has not
+        // published any personal fields (fresh install) it is
+        // ``PersonalWidgetContent/empty`` and the views render an honest
+        // empty state, never fabricated rows.
+        let personal = readPersonalState()
         // 1) Primary source: the phone's published state (tile included).
         if let published = readPublishedState() {
-            return WidgetSnapshot(tile: published.tile, updatedAt: published.updatedAt, attentionText: attentionText)
+            return WidgetSnapshot(
+                tile: published.tile,
+                updatedAt: published.updatedAt,
+                attentionText: attentionText,
+                personal: personal
+            )
         }
         // 2) Fallback: the §73 cache plus optional compute rows.
         if let cache = readCachedState() {
             let tile = makeTile(from: cache)
-            return WidgetSnapshot(tile: tile, updatedAt: tile.updatedAt, attentionText: attentionText)
+            return WidgetSnapshot(
+                tile: tile,
+                updatedAt: tile.updatedAt,
+                attentionText: attentionText,
+                personal: personal
+            )
         }
         // Honest absence: no published state, no cache → no tile. The views
-        // render "Not connected" / "No data yet" — never fabricated data.
-        return WidgetSnapshot(tile: nil, updatedAt: nil, attentionText: attentionText)
+        // render "Not connected" / "No data yet" — never fabricated data. With
+        // no tile there is nothing to attach personal content to.
+        return WidgetSnapshot(
+            tile: nil,
+            updatedAt: nil,
+            attentionText: nil,
+            personal: nil
+        )
     }
 
     /// The §67 complication text from `cached-state.json`'s `attention`
@@ -127,6 +149,25 @@ public struct AppGroupWidgetDataSource: WidgetDataSource {
         guard FileManager.default.fileExists(atPath: url.path),
               let data = try? Data(contentsOf: url) else { return nil }
         return NerveJSON.decode(CachedState.self, from: data)
+    }
+
+    /// Read the personal (§68/§69) fields out of the *same*
+    /// `cached-state.json` the phone publishes.
+    ///
+    /// The phone's `CachedState` currently carries only engineering fields, so
+    /// today this honestly returns ``PersonalWidgetContent/empty`` (no personal
+    /// blocks render) for existing files — the decode is additive and ignores
+    /// every non-personal key. Once the phone publishes the personal keys
+    /// (`attention_count`, `top_attention_title`, `top_attention_urgency`,
+    /// `top_commitment_title`, `top_commitment_due_at`, `waiting_on_count`) the
+    /// same call picks them up with no further widget change. Missing /
+    /// corrupt / non-object files degrade to `.empty`, never to fabricated
+    /// rows.
+    func readPersonalState() -> PersonalWidgetContent {
+        let url = containerDirectory().appendingPathComponent(NerveWidgetPaths.cachedStateFile)
+        guard FileManager.default.fileExists(atPath: url.path),
+              let data = try? Data(contentsOf: url) else { return .empty }
+        return PersonalWidgetContent.make(from: data)
     }
 
     /// Read `compute.json` into widget rows; `[]` when absent or corrupt.
