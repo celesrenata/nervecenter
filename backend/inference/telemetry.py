@@ -145,9 +145,11 @@ class InferenceTelemetry(BaseModel):
         self.error_counts[key] = self.error_counts.get(key, 0) + 1
 
     def _ensure_key(self, key: str) -> None:
-        """Ensure window exists for key."""
+        """Ensure window and counters exist for key."""
         if key not in self.windows:
             self.windows[key] = LatencyWindow()
+        self.request_counts.setdefault(key, 0)
+        self.error_counts.setdefault(key, 0)
 
     def get_metrics(self, provider: str, model: str) -> OmniRouteTelemetry:
         """Generate telemetry metrics for a provider/model."""
@@ -159,6 +161,7 @@ class InferenceTelemetry(BaseModel):
         success_rate = 1.0 - (total_errors / total_requests) if total_requests > 0 else 1.0
 
         return OmniRouteTelemetry(
+            id=f"telemetry-{provider}/{model}",
             provider=provider,
             model=model,
             sample_at=datetime.now(UTC),

@@ -157,7 +157,7 @@ class AdapterPool(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    adapters: dict[str, InferenceAdapter] = Field(
+    adapters: dict[str, Any] = Field(
         default_factory=dict,
         description="Registered adapters by provider name.",
     )

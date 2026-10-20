@@ -23,7 +23,14 @@ from .adapter import (
     LocalAdapter,
     OpenAIAdapter,
 )
-from .omniroute import InferenceRequest, InferenceResponse, OmniRouteAdapter
+from .omniroute import (
+    InferenceRequest,
+    InferenceResponse,
+    OmniRouteAdapter,
+    OmniRouteTransport,
+    OmniRouteUnavailableError,
+    RouteCandidate,
+)
 from .policy import InferencePolicyEngine, PolicyRule, TaskRequirements
 from .telemetry import (
     InferenceTelemetry,
@@ -37,6 +44,9 @@ __all__ = [
     "PolicyRule",
     "TaskRequirements",
     "OmniRouteAdapter",
+    "OmniRouteTransport",
+    "OmniRouteUnavailableError",
+    "RouteCandidate",
     "InferenceRequest",
     "InferenceResponse",
     "InferenceAdapter",
