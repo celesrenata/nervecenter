@@ -1,0 +1,655 @@
+{
+  "schema_version": 1,
+  "corpus_id": "t003-05-synthetic-lab",
+  "version": 1,
+  "seed": 20261020,
+  "anchor": "2026-10-20T10:00:00+00:00",
+  "title": "T003-05 synthetic lab — detection (R103), attention policy (R108), ask QA (T003.AC9, pending)",
+  "cases": [
+    {
+      "id": "det-commitment-tonight",
+      "plane": "detection",
+      "title": "§16 commitment — first-person promise with relative due (tonight)",
+      "direction": "OUTGOING",
+      "channel": "sms",
+      "sender": "counterpart",
+      "text": "I'll send it tonight.",
+      "expect": {
+        "kinds": [
+          "commitment"
+        ],
+        "finding_ids": [
+          "commitment-det-commitment-tonight"
+        ],
+        "due": {
+          "commitment": "2026-10-20T20:00:00+00:00"
+        },
+        "model_used": "deterministic-extractor",
+        "status": [
+          "OPEN"
+        ],
+        "confidence": {
+          "commitment": 0.93
+        },
+        "events": [
+          "commitment.detected"
+        ],
+        "why_contains": {
+          "commitment": [
+            "tonight"
+          ]
+        },
+        "suppressed": false
+      }
+    },
+    {
+      "id": "det-commitment-friday",
+      "plane": "detection",
+      "title": "§16 commitment — ability promise with day-level due (Friday, EOD default)",
+      "direction": "OUTGOING",
+      "channel": "sms",
+      "sender": "counterpart",
+      "text": "I can get that done Friday.",
+      "expect": {
+        "kinds": [
+          "commitment"
+        ],
+        "finding_ids": [
+          "commitment-det-commitment-friday"
+        ],
+        "due": {
+          "commitment": "2026-10-23T17:00:00+00:00"
+        },
+        "model_used": "deterministic-extractor",
+        "status": [
+          "OPEN"
+        ],
+        "confidence": {
+          "commitment": 0.88
+        },
+        "events": [
+          "commitment.detected"
+        ],
+        "why_contains": {
+          "commitment": [
+            "friday"
+          ]
+        },
+        "suppressed": false
+      }
+    },
+    {
+      "id": "det-commitment-open",
+      "plane": "detection",
+      "title": "§16 commitment — open-ended promise carries no due (no guessed date)",
+      "direction": "OUTGOING",
+      "channel": "sms",
+      "sender": "counterpart",
+      "text": "I'll take care of it.",
+      "expect": {
+        "kinds": [
+          "commitment"
+        ],
+        "finding_ids": [
+          "commitment-det-commitment-open"
+        ],
+        "due": {
+          "commitment": null
+        },
+        "model_used": "deterministic-extractor",
+        "status": [
+          "OPEN"
+        ],
+        "confidence": {
+          "commitment": 0.9
+        },
+        "events": [
+          "commitment.detected"
+        ],
+        "why_contains": {
+          "commitment": [
+            "open-ended"
+          ]
+        },
+        "suppressed": false
+      }
+    },
+    {
+      "id": "det-request-simple",
+      "plane": "detection",
+      "title": "§17 request — direct incoming question to the user",
+      "direction": "INCOMING",
+      "channel": "sms",
+      "sender": "counterpart",
+      "text": "Can you send me the report.",
+      "expect": {
+        "kinds": [
+          "request"
+        ],
+        "finding_ids": [
+          "request-det-request-simple"
+        ],
+        "due": {
+          "request": null
+        },
+        "model_used": "deterministic-extractor",
+        "status": [
+          "OPEN"
+        ],
+        "confidence": {
+          "request": 0.9
+        },
+        "events": [
+          "request.detected"
+        ],
+        "why_contains": {
+          "request": [
+            "can you"
+          ]
+        },
+        "suppressed": false
+      }
+    },
+    {
+      "id": "det-mixed-tuesday",
+      "plane": "detection",
+      "title": "§17+§18 mixed — need-by request; due lives on the Deadline finding",
+      "direction": "INCOMING",
+      "channel": "sms",
+      "sender": "counterpart",
+      "text": "We need the form by Tuesday.",
+      "expect": {
+        "kinds": [
+          "request",
+          "deadline"
+        ],
+        "finding_ids": [
+          "request-det-mixed-tuesday",
+          "deadline-det-mixed-tuesday"
+        ],
+        "due": {
+          "request": null,
+          "deadline": "2026-10-27T17:00:00+00:00"
+        },
+        "model_used": "deterministic-extractor",
+        "status": [
+          "OPEN",
+          "OPEN"
+        ],
+        "confidence": {
+          "request": 0.85,
+          "deadline": 0.91
+        },
+        "events": [
+          "request.detected",
+          "deadline.detected"
+        ],
+        "why_contains": {
+          "request": [
+            "need-by"
+          ],
+          "deadline": [
+            "tuesday"
+          ]
+        },
+        "suppressed": false
+      }
+    },
+    {
+      "id": "det-deadline-friday",
+      "plane": "detection",
+      "title": "§18 deadline — explicit relative due (by Friday, EOD default)",
+      "direction": "INCOMING",
+      "channel": "sms",
+      "sender": "counterpart",
+      "text": "Need this by Friday.",
+      "expect": {
+        "kinds": [
+          "request",
+          "deadline"
+        ],
+        "finding_ids": [
+          "request-det-deadline-friday",
+          "deadline-det-deadline-friday"
+        ],
+        "due": {
+          "request": null,
+          "deadline": "2026-10-23T17:00:00+00:00"
+        },
+        "model_used": "deterministic-extractor",
+        "status": [
+          "OPEN",
+          "OPEN"
+        ],
+        "confidence": {
+          "request": 0.85,
+          "deadline": 0.91
+        },
+        "events": [
+          "request.detected",
+          "deadline.detected"
+        ],
+        "why_contains": {
+          "request": [
+            "need-by"
+          ],
+          "deadline": [
+            "friday"
+          ]
+        },
+        "suppressed": false
+      }
+    },
+    {
+      "id": "det-none",
+      "plane": "detection",
+      "title": "precision — casual personal message yields no finding, no suppression",
+      "direction": "INCOMING",
+      "channel": "sms",
+      "sender": "counterpart",
+      "text": "sounds good, thanks!",
+      "expect": {
+        "kinds": [],
+        "due": {},
+        "events": [],
+        "suppressed": false
+      }
+    },
+    {
+      "id": "det-marketing-sender",
+      "plane": "detection",
+      "title": "precision — marketing sender domain gate (metadata-only, body never read)",
+      "direction": "INCOMING",
+      "channel": "sms",
+      "sender": "deal@offers.example",
+      "text": "Buy now and save 20 percent today",
+      "expect": {
+        "kinds": [],
+        "events": [],
+        "suppressed": true,
+        "suppression_contains": "marketing"
+      }
+    },
+    {
+      "id": "det-marketing-subject",
+      "plane": "detection",
+      "title": "precision — marketing subject marker gate (registered subject, not body)",
+      "direction": "INCOMING",
+      "channel": "email",
+      "sender": "corp@example.com",
+      "text": "Great product news",
+      "subject": "Your weekly digest",
+      "expect": {
+        "kinds": [],
+        "events": [],
+        "suppressed": true,
+        "suppression_contains": "weekly digest"
+      }
+    },
+    {
+      "id": "att-budget-bundle",
+      "plane": "attention",
+      "title": "§58 budget — six low-priority FYI items vs daily cap of 3 → one bundle",
+      "operation": "budget_decision",
+      "items": [
+        {
+          "attention_id": "fyi-0",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-1",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-2",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-3",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-4",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-5",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        }
+      ],
+      "expect": {
+        "individual": [
+          "fyi-0",
+          "fyi-1",
+          "fyi-2"
+        ],
+        "bundled": [
+          "fyi-3",
+          "fyi-4",
+          "fyi-5"
+        ],
+        "urgent": [],
+        "bundle_count": 3,
+        "reasons_contains": [
+          "daily FYI cap"
+        ]
+      }
+    },
+    {
+      "id": "att-budget-urgent-bypass",
+      "plane": "attention",
+      "title": "§58 budget — urgent item (urgency >= 0.7) bypasses batching entirely",
+      "operation": "budget_decision",
+      "items": [
+        {
+          "attention_id": "fyi-0",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-1",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-2",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-3",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-4",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "fyi-5",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "urg",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.9
+        }
+      ],
+      "expect": {
+        "individual": [
+          "fyi-0",
+          "fyi-1",
+          "fyi-2"
+        ],
+        "bundled": [
+          "fyi-3",
+          "fyi-4",
+          "fyi-5"
+        ],
+        "urgent": [
+          "urg"
+        ],
+        "bundle_count": 3
+      }
+    },
+    {
+      "id": "att-quiet-sleep",
+      "plane": "attention",
+      "title": "§59 quiet — sleep window suppresses flags only; NOW/FYI items keep status + feed",
+      "operation": "notification_flags",
+      "quiet_period": {
+        "kind": "sleep",
+        "start": "2026-10-20T10:00:00+00:00",
+        "end": "2026-10-20T23:00:00+00:00",
+        "reason": "lab sleep window"
+      },
+      "items": [
+        {
+          "attention_id": "fyi-q",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1
+        },
+        {
+          "attention_id": "now-q",
+          "status": "NOW",
+          "priority": 0.9,
+          "urgency": 0.9
+        }
+      ],
+      "expect": {
+        "notify": {
+          "fyi-q": false,
+          "now-q": false
+        },
+        "quiet": {
+          "fyi-q": "sleep",
+          "now-q": "sleep"
+        },
+        "status": {
+          "fyi-q": "FYI",
+          "now-q": "NOW"
+        }
+      }
+    },
+    {
+      "id": "att-escalate-12h",
+      "plane": "attention",
+      "title": "§28 escalation — TODAY item 12h from due (<= 24h threshold) promotes to NOW",
+      "operation": "deadline_escalation",
+      "items": [
+        {
+          "attention_id": "d-1",
+          "status": "TODAY",
+          "priority": 0.5,
+          "urgency": 0.5,
+          "due": "2026-10-20T22:00:00+00:00",
+          "why": [
+            "original why"
+          ]
+        }
+      ],
+      "expect": {
+        "promoted": [
+          "d-1"
+        ],
+        "not_promoted": [],
+        "status_after": {
+          "d-1": "NOW"
+        },
+        "reason_contains": {
+          "d-1": "deadline 12.0h away"
+        }
+      }
+    },
+    {
+      "id": "att-escalate-48h",
+      "plane": "attention",
+      "title": "§28 escalation — TODAY item 36h from due (beyond threshold) does not promote",
+      "operation": "deadline_escalation",
+      "items": [
+        {
+          "attention_id": "d-2",
+          "status": "TODAY",
+          "priority": 0.5,
+          "urgency": 0.5,
+          "due": "2026-10-21T22:00:00+00:00"
+        }
+      ],
+      "expect": {
+        "promoted": [],
+        "not_promoted": [
+          "d-2"
+        ],
+        "status_after": {
+          "d-2": "TODAY"
+        }
+      }
+    },
+    {
+      "id": "att-escalate-overdue",
+      "plane": "attention",
+      "title": "§28 escalation — overdue TODAY item promotes with an overdue reason",
+      "operation": "deadline_escalation",
+      "items": [
+        {
+          "attention_id": "d-3",
+          "status": "TODAY",
+          "priority": 0.5,
+          "urgency": 0.5,
+          "due": "2026-10-20T02:00:00+00:00"
+        }
+      ],
+      "expect": {
+        "promoted": [
+          "d-3"
+        ],
+        "not_promoted": [],
+        "status_after": {
+          "d-3": "NOW"
+        },
+        "reason_contains": {
+          "d-3": "overdue"
+        }
+      }
+    },
+    {
+      "id": "att-adaptive-silent",
+      "plane": "attention",
+      "title": "§29 adaptive — person+channel preference (alice/sms → silent) wins by specificity",
+      "operation": "adaptive_escalation",
+      "preferences": [
+        {
+          "mode": "silent",
+          "person": "alice",
+          "channel": "sms",
+          "reason": "quiet hours"
+        },
+        {
+          "mode": "notification",
+          "channel": "sms",
+          "reason": "all sms default"
+        }
+      ],
+      "items": [
+        {
+          "attention_id": "a-1",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1,
+          "entities": [
+            "alice"
+          ],
+          "sources": [
+            "sms"
+          ]
+        }
+      ],
+      "expect": {
+        "mode": {
+          "a-1": "silent"
+        },
+        "preference": {
+          "a-1": "alice:sms"
+        },
+        "reason_contains": {
+          "a-1": "alice:sms"
+        }
+      }
+    },
+    {
+      "id": "att-adaptive-default",
+      "plane": "attention",
+      "title": "§29 adaptive — no local preference falls back to the default notification mode",
+      "operation": "adaptive_escalation",
+      "items": [
+        {
+          "attention_id": "a-2",
+          "status": "FYI",
+          "priority": 0.2,
+          "urgency": 0.1,
+          "entities": [
+            "bob"
+          ],
+          "sources": [
+            "sms"
+          ]
+        }
+      ],
+      "expect": {
+        "mode": {
+          "a-2": "notification"
+        },
+        "preference": {
+          "a-2": null
+        }
+      }
+    },
+    {
+      "id": "ask-what-broke",
+      "plane": "ask",
+      "title": "AC9 ground truth — 'what broke?' returns a grounded answer with provenance",
+      "question": "what broke?",
+      "context": {
+        "seeded_state": "incident INC-7 (api 5xx spike 06:15Z, unresolved)",
+        "expected_evidence": [
+          "INC-7 incident record + its alert event"
+        ]
+      },
+      "expect": {
+        "answer_contains": [
+          "api"
+        ],
+        "grounded": true,
+        "provenance_ids": [
+          "INC-7"
+        ]
+      },
+      "pending_reason": "T003.AC9 ask pipeline (compiler → PDP → OmniRoute) and its recorded-fixture interface are not present in base main; POST /api/context/ask is still the honest 202 ACK stub. No answer or provenance is invented."
+    },
+    {
+      "id": "ask-provenance-deploy",
+      "plane": "ask",
+      "title": "AC9 ground truth — 'why did the deploy fail?' cites resolvable provenance ids",
+      "question": "why did the deploy fail?",
+      "context": {
+        "seeded_state": "deploy run 42 failed: migration job rolled back on constraint violation",
+        "expected_evidence": [
+          "deploy run 42 record + migration failure event"
+        ]
+      },
+      "expect": {
+        "answer_contains": [
+          "migration"
+        ],
+        "grounded": true,
+        "provenance_ids": [
+          "deploy-42",
+          "migrate-fail-42"
+        ]
+      },
+      "pending_reason": "T003.AC9 ask pipeline and recorded-fixture interface are not present in base main; provenance ids are ground-truth labels, not invented results."
+    }
+  ]
+}
