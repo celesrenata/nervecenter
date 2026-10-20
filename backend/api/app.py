@@ -32,6 +32,7 @@ from backend.calendar import get_calendar_service
 from backend.communications import get_communications_service
 from backend.contacts import get_contacts_service
 from backend.connectors import get_mail_connector_service
+from backend.drafts import get_drafts_service
 from backend.email import get_email_service
 from backend.messages import get_messages_service
 from backend.voicemail import get_voicemail_service
@@ -52,6 +53,7 @@ from backend.api.endpoints import (
     compute,
     context,
     decisions,
+    drafts,
     entities,
     events,
     events_ws,
@@ -94,6 +96,7 @@ ALL_ROUTERS = (
     people.router,
     communications.router,
     conversations.router,
+    drafts.router,
     goals.router,
     tasks.router,
     evidence.router,
@@ -328,6 +331,13 @@ def create_app() -> FastAPI:
     # planes into it).
     communications_service = get_communications_service()
     target.state.communications_service = communications_service
+
+    # Drafts plane (gaps1 G-1.4 — R105, prompt2 §40–§41): in-process store of
+    # auditable, human-controlled drafts. The rule-based drafter is the
+    # deterministic fallback; a model-assisted drafter (if injected) is
+    # gated by the R107 inference policy before invocation. No endpoint in
+    # this plane sends — DRAFT -> DISCARDED is the only API transition.
+    target.state.drafts_service = get_drafts_service()
 
     # Briefing plane (prompt2 §30 — Briefings): a read-only, deterministic
     # aggregation over the personal-operations planes above. It owns no state
