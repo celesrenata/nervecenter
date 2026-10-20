@@ -10,7 +10,14 @@ Modules
 - ``prioritization`` — ContextPrioritizer for content ranking
 """
 
-from .compiler import BudgetConfig, CompiledSection, ContextCompiler, ContextSource
+from .compiler import (
+    PARTITION_ENGINEERING,
+    PARTITION_PERSONAL,
+    BudgetConfig,
+    CompiledSection,
+    ContextCompiler,
+    ContextSource,
+)
 from .prioritization import (
     ContextPrioritizer,
     PrioritizationConfig,
@@ -20,6 +27,8 @@ from .prioritization import (
 __all__ = [
     "ContextCompiler",
     "BudgetConfig",
+    "PARTITION_ENGINEERING",
+    "PARTITION_PERSONAL",
     "ContextSource",
     "CompiledSection",
     "ContextPrioritizer",

@@ -97,6 +97,8 @@ from schemas.nc_platform import (
     validate_nc_uri,
 )
 
+from .sensitivity import ModelTier, SensitivityClass
+
 #: PDP contract version stamped into decision notes for audit consumers.
 PDP_CONTRACT_VERSION = "nervcenter-pdp/v1"
 
@@ -163,6 +165,31 @@ class Decision:
     policy_id: str | None = None
     simulated: bool = False
     matched_policy_ids: tuple[str, ...] = ()
+    notes: tuple[str, ...] = ()
+
+
+# ---------------------------------------------------------------------------
+# INFER_ROUTE decision (R107 / §37–§39)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class InferRouteDecision:
+    """Outcome of an ``INFER_ROUTE`` decision (R107 / §37–§39).
+
+    Carries the routing metadata the inference layer needs: ``model_tier``,
+    ``remote_allowed``, ``policy_id``, and ``reason`` — plus the derived
+    ``sensitivity_class`` for audit. A ``remote_allowed=False`` outcome is
+    unconditionally ``LOCAL_ONLY`` regardless of the policy set: a remote
+    tier is only ever named by an explicit matching ``ALLOW`` policy, and a
+    confidential / ``LOCAL_ONLY`` input can never be routed remote.
+    """
+
+    model_tier: str
+    remote_allowed: bool
+    policy_id: str | None
+    reason: str
+    sensitivity_class: str
     notes: tuple[str, ...] = ()
 
 
@@ -772,6 +799,194 @@ class PolicyDecisionPoint:
             )
         return decision
 
+    # -- INFER_ROUTE decision (R107 / §37–§39) --------------------------------
+
+    def infer_route(
+        self,
+        principal,
+        context: Mapping[str, Any] | None = None,
+        *,
+        action: str = "resource.infer:route",
+        resource: NCResource | str | None = None,
+        simulate: bool = False,
+    ) -> InferRouteDecision:
+        """Decide how an inference request may be routed (R107 / §37–§39).
+
+        Reuses the same PDP engine as :meth:`evaluate` (no second policy
+        engine): a remote-allowed result requires an explicit matching
+        ``ALLOW`` policy, an explicit ``DENY`` wins, and default deny holds
+        when nothing matches. The inference request carries data-policy
+        metadata in ``context``:
+
+        - ``sensitivity_class`` / ``privacy`` — the canonical class
+          (``public`` / ``internal`` / ``confidential``);
+        - ``contains_personal_communications`` — bool; if true the input is
+          treated as ``confidential`` (§37: personal content never routes
+          remote);
+        - ``remote_provider_allowed`` — bool; a transport-level gate that
+          must also be true for a remote tier to be named.
+
+        Invariants (fail closed):
+
+        - ``confidential`` / ``LOCAL_ONLY`` input and any input with
+          ``contains_personal_communications`` are never routed remote —
+          ``remote_allowed`` is ``False`` and the tier is local.
+        - A missing or unresolvable sensitivity class fails closed to
+          ``confidential`` (local).
+        - A remote tier is named only when the class is remote-capable
+          (``public`` / ``internal``), no explicit ``DENY`` matches, an
+          ``ALLOW`` policy matches, and ``remote_provider_allowed`` is true.
+        """
+        # 1. principal shape (fail closed -> local-only)
+        if not isinstance(principal, NCPrincipal):
+            return InferRouteDecision(
+                model_tier=ModelTier.SMALL_LOCAL.value,
+                remote_allowed=False,
+                policy_id=None,
+                reason="principal is not an NCPrincipal; fail closed to local-only",
+                sensitivity_class=SensitivityClass.CONFIDENTIAL.value,
+                notes=("malformed_principal",),
+            )
+        if context is not None and not isinstance(context, Mapping):
+            return InferRouteDecision(
+                model_tier=ModelTier.SMALL_LOCAL.value,
+                remote_allowed=False,
+                policy_id=None,
+                reason="context must be a mapping; fail closed to local-only",
+                sensitivity_class=SensitivityClass.CONFIDENTIAL.value,
+                notes=("malformed_context",),
+            )
+        ctx: Mapping[str, Any] = context or {}
+
+        # 2. resolve the canonical sensitivity class (fail closed ->
+        #    confidential). Personal-communication inputs are confidential.
+        if bool(ctx.get("contains_personal_communications", False)):
+            class_ = SensitivityClass.CONFIDENTIAL
+            class_source = "contains_personal_communications"
+        else:
+            raw = ctx.get("sensitivity_class", ctx.get("privacy"))
+            if isinstance(raw, SensitivityClass):
+                class_ = raw
+                class_source = "sensitivity_class"
+            elif isinstance(raw, str):
+                try:
+                    class_ = SensitivityClass(raw)
+                    class_source = "sensitivity_class"
+                except ValueError:
+                    class_ = SensitivityClass.CONFIDENTIAL
+                    class_source = "unresolvable_sensitivity_class"
+            else:
+                class_ = SensitivityClass.CONFIDENTIAL
+                class_source = "missing_sensitivity_class"
+
+        notes = (f"sensitivity_class={class_.value} ({class_source})",)
+
+        # 3. hard floor: confidential / LOCAL_ONLY is never routed remote.
+        if class_ is SensitivityClass.CONFIDENTIAL:
+            return InferRouteDecision(
+                model_tier=ModelTier.SMALL_LOCAL.value,
+                remote_allowed=False,
+                policy_id=None,
+                reason="confidential / LOCAL_ONLY content; remote tier is disallowed",
+                sensitivity_class=class_.value,
+                notes=notes,
+            )
+
+        # 4. remote-capable (public / internal): run the policy engine.
+        if resource is None:
+            resource = f"nc://{principal.namespace}/inference/routing/model/route"
+        uri, namespace = self._extract_resource(resource)
+        if uri is None:
+            return InferRouteDecision(
+                model_tier=ModelTier.MEDIUM_LOCAL.value,
+                remote_allowed=False,
+                policy_id=None,
+                reason="route resource is not a valid nc:// URI; fail closed to local-only",
+                sensitivity_class=class_.value,
+                notes=notes + ("malformed_resource",),
+            )
+        if principal.namespace != namespace:
+            return InferRouteDecision(
+                model_tier=ModelTier.MEDIUM_LOCAL.value,
+                remote_allowed=False,
+                policy_id=None,
+                reason=(
+                    f"namespace mismatch: principal scoped to "
+                    f"{principal.namespace!r}, route resource in {namespace!r}"
+                ),
+                sensitivity_class=class_.value,
+                notes=notes + ("namespace_mismatch",),
+            )
+
+        eval_notes: list[str] = []
+        applicable: list[NCPolicy] = []
+        fail_closed: str | None = None
+        for policy in self._ordered_policies():
+            pnotes, ok, blocked = self._policy_applies(
+                policy, principal, action, uri, ctx, eval_notes
+            )
+            eval_notes.extend(pnotes)
+            if blocked is not None:
+                fail_closed = blocked
+                break
+            if ok:
+                applicable.append(policy)
+        if fail_closed is not None:
+            return InferRouteDecision(
+                model_tier=ModelTier.MEDIUM_LOCAL.value,
+                remote_allowed=False,
+                policy_id=None,
+                reason=f"policy evaluation failed closed ({fail_closed})",
+                sensitivity_class=class_.value,
+                notes=notes + tuple(eval_notes),
+            )
+
+        denies = [p for p in applicable if p.effect == "DENY"]
+        allows = [p for p in applicable if p.effect == "ALLOW"]
+        if denies:
+            top = denies[0]
+            return InferRouteDecision(
+                model_tier=ModelTier.MEDIUM_LOCAL.value,
+                remote_allowed=False,
+                policy_id=top.policy_id,
+                reason=f"explicit deny by policy {top.policy_id}",
+                sensitivity_class=class_.value,
+                notes=notes + tuple(eval_notes),
+            )
+
+        if not allows:
+            return InferRouteDecision(
+                model_tier=ModelTier.MEDIUM_LOCAL.value,
+                remote_allowed=False,
+                policy_id=None,
+                reason="no applicable ALLOW policy (default deny)",
+                sensitivity_class=class_.value,
+                notes=notes + tuple(eval_notes),
+            )
+
+        top = allows[0]
+        if not bool(ctx.get("remote_provider_allowed", False)):
+            return InferRouteDecision(
+                model_tier=ModelTier.MEDIUM_LOCAL.value,
+                remote_allowed=False,
+                policy_id=top.policy_id,
+                reason="remote provider not permitted by transport metadata; stays local",
+                sensitivity_class=class_.value,
+                notes=notes + tuple(eval_notes) + ("remote_provider_allowed=false",),
+            )
+
+        return InferRouteDecision(
+            model_tier=ModelTier.LARGE_REASONING.value,
+            remote_allowed=True,
+            policy_id=top.policy_id,
+            reason=(
+                f"remote allowed by policy {top.policy_id} "
+                f"(priority {top.priority}, version {top.version})"
+            ),
+            sensitivity_class=class_.value,
+            notes=notes + tuple(eval_notes),
+        )
+
     # -- internals -----------------------------------------------------------
 
     def _ordered_policies(self) -> list[NCPolicy]:
@@ -896,12 +1111,27 @@ def _as_action_mapping(action: str) -> Mapping[str, Any]:
     return {"action": action}
 
 
+#: Distinct, not-yet-wired future capability for the personal plane (R107 /
+#: §40–§41: response assistant / no impersonation). Exposing the name in the
+#: PDP keeps the capability *addressable by policy* without adding a sending
+#: endpoint or MCP tool. The capability is declared but no route is bound to
+#: it yet; a future ``SEND`` action can gate on it via a policy.
+SENDING_CAPABILITY = "personal.sending"
+
+#: Action used by :meth:`PolicyDecisionPoint.infer_route` so routing policies
+#: can match on it explicitly.
+INFER_ROUTE_ACTION = "resource.infer:route"
+
+
 __all__ = [
     "APPROVED_STATE",
     "ApprovalBinding",
     "Decision",
+    "INFER_ROUTE_ACTION",
+    "InferRouteDecision",
     "NO_WILDCARD_KINDS",
     "PDP_CONTRACT_VERSION",
     "PolicyDecisionPoint",
+    "SENDING_CAPABILITY",
     "verify_approval_binding",
 ]

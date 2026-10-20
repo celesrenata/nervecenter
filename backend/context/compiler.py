@@ -11,11 +11,18 @@ The context compiler:
 - Produces bounded ContextPackage for inference
 """
 
-from typing import Any
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
 from schemas.context import ContextPackage, ContextPurpose, ContextSection, ContextSectionKind
+
+#: Partition discriminator (R107 / §35). Context sources are tagged with the
+#: plane they belong to; the compiler enforces the personal/engineering
+#: firewall so the two planes do not leak into each other's corpora.
+PARTITION_ENGINEERING = "engineering"
+PARTITION_PERSONAL = "personal"
+
 
 
 class ContextSource(BaseModel):
@@ -35,6 +42,19 @@ class ContextSource(BaseModel):
         le=1.0,
         description="Relevance score for prioritization.",
     )
+    partition: Annotated[
+        Literal["engineering", "personal"],
+        Field(
+            default=PARTITION_ENGINEERING,
+            description=(
+                "Plane this source belongs to (R107 / §35 firewall). "
+                "Engineering compilation excludes ``personal`` sources by "
+                "default; personal compilation excludes ``engineering`` "
+                "sources by default. Cross-plane access requires an explicit "
+                "scoped grant."
+            ),
+        ),
+    ]
 
 
 class BudgetConfig(BaseModel):
@@ -112,6 +132,9 @@ class ContextCompiler(BaseModel):
         task_id: str | None = None,
         sources: list[ContextSource] | None = None,
         budget: BudgetConfig | None = None,
+        *,
+        personal: bool = False,
+        granted_communication_ids: list[str] | None = None,
     ) -> ContextPackage:
         """Compile a context package from sources within budget.
 
@@ -121,14 +144,37 @@ class ContextCompiler(BaseModel):
             task_id: The task this context is for, if any.
             sources: List of context sources to compile.
             budget: Token budget configuration.
+            personal: Compile for the *personal* plane. When ``False``
+                (default) the package is assembled for engineering use and
+                the firewall excludes every ``personal`` source (R107 / §35).
+                When ``True`` the package is assembled for personal use and
+                the firewall excludes every ``engineering`` source unless it
+                is explicitly granted via ``granted_communication_ids``.
+            granted_communication_ids: Explicit, scoped grants crossing the
+                partition firewall. An engineering compile may name specific
+                personal communication ids (an explicit relevant
+                relationship, §35); a personal compile may name specific
+                engineering record ids. Only *those* ids from the cross-plane
+                source are included — the rest of the other plane stays
+                out.
 
         Returns:
-            A ContextPackage with prioritized, bounded content.
+            A ContextPackage with prioritized, bounded content. Excluded
+            source ids (firewall decisions) are recorded in
+            ``package.metadata["firewall_excluded"]`` for audit.
         """
         sources = sources or []
         budget = budget or BudgetConfig(total_tokens=50000)
 
-        sections = self._compile_sections(sources, budget)
+        # R107 / §35 personal/engineering firewall (default: no cross-plane
+        # leakage; cross-plane access requires explicit scoped grants).
+        granted = set(granted_communication_ids or [])
+        included, excluded_ids = self._partition_gate(sources, personal, granted)
+        excluded = [
+            {"source_id": s.id, "partition": s.partition} for s in excluded_ids
+        ]
+
+        sections = self._compile_sections(included, budget)
         tokens_used = sum(s.tokens for s in sections)
 
         package = ContextPackage(
@@ -141,8 +187,36 @@ class ContextCompiler(BaseModel):
             sections=[self._to_context_section(s) for s in sections],
             context_hash=None,  # Will be computed by consumer
         )
-
+        if excluded:
+            package.metadata["firewall_excluded"] = excluded
         return package
+
+    def _partition_gate(
+        self,
+        sources: list[ContextSource],
+        personal: bool,
+        granted: set[str],
+    ) -> tuple[list[ContextSource], list[ContextSource]]:
+        """Apply the personal/engineering partition firewall (R107 / §35).
+
+        Engineering compilation excludes personal sources by default, and
+        personal compilation excludes engineering sources by default. A
+        source crosses the partition only when it is explicitly granted via
+        ``granted_communication_ids`` (a scoped relationship, not a blanket
+        cross-plane read). Returns ``(included, excluded)``.
+        """
+        included: list[ContextSource] = []
+        excluded: list[ContextSource] = []
+        for source in sources:
+            if personal:
+                cross = source.partition == PARTITION_ENGINEERING
+            else:
+                cross = source.partition == PARTITION_PERSONAL
+            if cross and source.id not in granted:
+                excluded.append(source)
+            else:
+                included.append(source)
+        return included, excluded
 
     def _generate_id(
         self,

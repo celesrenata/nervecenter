@@ -115,3 +115,11 @@ class ContextPackage(Record):
         default=None,
         description="Digest of the assembled content for reproducibility.",
     )
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Assembly metadata (R107 / §35): e.g. ``firewall_excluded`` lists "
+            "the sources the personal/engineering partition firewall kept out "
+            "of this package, for audit and re-verification."
+        ),
+    )

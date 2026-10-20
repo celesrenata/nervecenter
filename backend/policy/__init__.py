@@ -11,7 +11,20 @@ Modules
 """
 
 from .guardrails import GuardConfig, InferenceGuardrails, PolicyGuard
+from .pdp import (
+    INFER_ROUTE_ACTION,
+    SENDING_CAPABILITY,
+    InferRouteDecision,
+    PolicyDecisionPoint,
+)
 from .permissions import PermissionCheck, PermissionEnforcer, PermissionLevel
+from .sensitivity import (
+    ModelTier,
+    RoutingDecision,
+    SensitivityClass,
+    SensitivityClassification,
+    classify_sensitivity,
+)
 
 __all__ = [
     "GuardConfig",
@@ -20,4 +33,13 @@ __all__ = [
     "PermissionCheck",
     "PermissionEnforcer",
     "PermissionLevel",
+    "INFER_ROUTE_ACTION",
+    "InferRouteDecision",
+    "PolicyDecisionPoint",
+    "SENDING_CAPABILITY",
+    "ModelTier",
+    "RoutingDecision",
+    "SensitivityClass",
+    "SensitivityClassification",
+    "classify_sensitivity",
 ]
