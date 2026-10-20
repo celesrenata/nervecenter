@@ -27,6 +27,7 @@ import NerveDesign
 @main
 struct NerveWatchApp: App {
     @StateObject private var store = WatchDataStore()
+    @StateObject private var attentionStore = WatchAttentionStore()
     @StateObject private var themeStore = ThemeStore()
     @Environment(\.colorScheme) private var colorScheme
     @State private var path = NavigationPath()
@@ -34,13 +35,14 @@ struct NerveWatchApp: App {
     var body: some Scene {
         WindowGroup {
             NavigationStack(path: $path) {
-                WatchHomeView(store: store)
+                WatchHomeView(store: store, attentionStore: attentionStore)
                     .accessibilityIdentifier("watch.home")
                     .navigationDestination(for: WatchDestination.self) { destination in
                         destinationView(destination)
                     }
             }
             .environmentObject(store)
+            .environmentObject(attentionStore)
             .environmentObject(themeStore)
             .theme(themeStore.resolvedTheme(for: colorScheme))
             .task {

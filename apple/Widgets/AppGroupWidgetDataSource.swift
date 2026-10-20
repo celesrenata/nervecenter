@@ -74,18 +74,40 @@ public struct AppGroupWidgetDataSource: WidgetDataSource {
     }
 
     public func makeTile() async throws -> WidgetSnapshot {
+        // §67: the attention feed lives in `cached-state.json` regardless
+        // of which state file produces the tile below; read it once.
+        let attentionText = readAttentionText()
         // 1) Primary source: the phone's published state (tile included).
         if let published = readPublishedState() {
-            return WidgetSnapshot(tile: published.tile, updatedAt: published.updatedAt)
+            return WidgetSnapshot(tile: published.tile, updatedAt: published.updatedAt, attentionText: attentionText)
         }
         // 2) Fallback: the §73 cache plus optional compute rows.
         if let cache = readCachedState() {
             let tile = makeTile(from: cache)
-            return WidgetSnapshot(tile: tile, updatedAt: tile.updatedAt)
+            return WidgetSnapshot(tile: tile, updatedAt: tile.updatedAt, attentionText: attentionText)
         }
         // Honest absence: no published state, no cache → no tile. The views
         // render "Not connected" / "No data yet" — never fabricated data.
-        return WidgetSnapshot(tile: nil, updatedAt: nil)
+        return WidgetSnapshot(tile: nil, updatedAt: nil, attentionText: attentionText)
+    }
+
+    /// The §67 complication text from `cached-state.json`'s `attention`
+    /// key (`"3 NEED YOU"` / `"✓ CLEAR"`). `nil` when the file is absent or
+    /// malformed, or when the key is absent (the phone has not published
+    /// the personal plane) — the watch then renders the system tile
+    /// instead of a fake "CLEAR" (spec §61).
+    private func readAttentionText() -> String? {
+        let url = containerDirectory().appendingPathComponent(NerveWidgetPaths.cachedStateFile)
+        guard
+            let data = try? Data(contentsOf: url),
+            let file = WatchAttentionJSON.decodeAttentionFile(from: data),
+            let items = file.attention
+        else {
+            return nil
+        }
+        return WatchAttentionEngine.complicationText(
+            feed: AttentionFeedState(published: true, items: items)
+        )
     }
 
     // MARK: Reading

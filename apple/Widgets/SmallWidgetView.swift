@@ -24,11 +24,26 @@ public struct SmallWidgetView: View {
             Color.nerveWidgetCanvas
             switch state {
             case .connected(let snapshot):
+                #if os(watchOS)
+                if let attentionText = snapshot.attentionText {
+                    // §67: on the wrist, the complication prefers "n NEED
+                    // YOU" / "✓ CLEAR" over raw counts. Rendered only when
+                    // the phone actually published an attention feed; a
+                    // nil falls through to the system tile below (honest
+                    // absence — spec §61).
+                    AttentionComplicationView(text: attentionText)
+                } else if let tile = snapshot.tile {
+                    content(for: tile)
+                } else {
+                    HonestEmptyView(kind: .noData)
+                }
+                #else
                 if let tile = snapshot.tile {
                     content(for: tile)
                 } else {
                     HonestEmptyView(kind: .noData)
                 }
+                #endif
             case .notConnected:
                 HonestEmptyView(kind: .notConnected)
             case .noData:
@@ -80,6 +95,30 @@ public struct SmallWidgetView: View {
         return StaleState.evaluate(updatedAt: updatedAt).isStale
     }
 }
+
+#if os(watchOS)
+/// §67 complication content: "3 NEED YOU" / "✓ CLEAR", color-coded by
+/// meaning (critical red / healthy green).
+private struct AttentionComplicationView: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 12, weight: .bold))
+            .monospacedDigit()
+            .multilineTextAlignment(.center)
+            .lineLimit(2)
+            .minimumScaleFactor(0.6)
+            .foregroundStyle(
+                text.contains("CLEAR")
+                    ? Color.nerve(HealthColor.healthy.color)
+                    : Color.nerve(HealthColor.critical.color)
+            )
+            .padding(4)
+            .accessibilityLabel(text)
+    }
+}
+#endif
 
 // MARK: - Honest empty state (shared by all sizes)
 

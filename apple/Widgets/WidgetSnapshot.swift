@@ -15,10 +15,16 @@ public struct WidgetSnapshot: Sendable, Hashable {
     public var tile: NerveApps.WidgetTile?
     /// When the backing cache was last written. `nil` when there is no tile.
     public var updatedAt: Date?
+    /// §67 complication text ("3 NEED YOU" / "✓ CLEAR") read from the
+    /// snapshot's `attention` key. `nil` = the phone has not published the
+    /// personal plane — the watch renders the system tile (never a fake
+    /// "CLEAR"; spec §61).
+    public var attentionText: String?
 
-    public init(tile: NerveApps.WidgetTile?, updatedAt: Date? = nil) {
+    public init(tile: NerveApps.WidgetTile?, updatedAt: Date? = nil, attentionText: String? = nil) {
         self.tile = tile
         self.updatedAt = updatedAt
+        self.attentionText = attentionText
     }
 
     /// The most specific available timestamp: the snapshot-level
@@ -85,6 +91,8 @@ extension WidgetDataSource {
             return hasFile ? .noData : .notConnected
         }
         let updatedAt = snapshot.updatedAt ?? tile.updatedAt
-        return .connected(snapshot: WidgetSnapshot(tile: tile, updatedAt: updatedAt))
+        return .connected(
+            snapshot: WidgetSnapshot(tile: tile, updatedAt: updatedAt, attentionText: snapshot.attentionText)
+        )
     }
 }
