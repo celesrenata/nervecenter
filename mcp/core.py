@@ -155,7 +155,7 @@ def register_all_tools(registry: ToolRegistry, base_url: str | None = None) -> T
 
 
 def build_registry(base_url: str | None = None) -> ToolRegistry:
-    """A :class:`ToolRegistry` pre-loaded with all 18 §45 tools."""
+    """A :class:`ToolRegistry` pre-loaded with all 29 tools (18 §45 + 11 R112 personal)."""
     return register_all_tools(ToolRegistry(), base_url)
 
 

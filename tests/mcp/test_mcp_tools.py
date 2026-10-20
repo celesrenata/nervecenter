@@ -2,7 +2,9 @@
 
 Every tool is exercised offline through a ``httpx.MockTransport`` injected
 into :class:`mcp.api.NerveAPI`: the expected HTTP method, path, query/body
-shape, and the §29 ``Nerve-Trace-Id`` header are asserted per tool.
+shape, and the §29 ``Nerve-Trace-Id`` header are asserted per tool. The R112
+personal-operations tools (11 more, 29 total) have their full contract in
+``test_personal_tools.py``.
 """
 
 from __future__ import annotations
@@ -38,6 +40,22 @@ TOOL_ROUTES: dict[str, tuple[str, str, str]] = {
     "create_planned_change": ("POST", "/api/changes", "body"),
 }
 
+#: The 11 R112 personal tools added on top of the 18 §45 names (see
+#: ``test_personal_tools.py`` for their full route contract).
+PERSONAL_TOOLS: set[str] = {
+    "get_attention",
+    "get_daily_brief",
+    "get_person",
+    "get_conversation",
+    "search_communications",
+    "get_commitments",
+    "get_waiting_on",
+    "create_followup",
+    "snooze_attention",
+    "resolve_attention",
+    "draft_reply",
+}
+
 
 def _call(
     registry: Any, name: str, arguments: dict[str, Any], api: NerveAPI | None
@@ -54,9 +72,10 @@ def _api(handler: Any) -> NerveAPI:
 
 
 def test_all_tools_catalogue_matches_spec() -> None:
-    """ALL_TOOLS is exactly the §45 list with schema + route metadata."""
-    assert [t["name"] for t in ALL_TOOLS] == list(TOOL_ROUTES)
-    assert len(ALL_TOOLS) == 18
+    """ALL_TOOLS is the §45 list followed by the R112 personal tools (29)."""
+    assert [t["name"] for t in ALL_TOOLS[: len(TOOL_ROUTES)]] == list(TOOL_ROUTES)
+    assert len(ALL_TOOLS) == 18 + len(PERSONAL_TOOLS)
+    assert {t["name"] for t in ALL_TOOLS[len(TOOL_ROUTES):]} == PERSONAL_TOOLS
     for entry in ALL_TOOLS:
         assert entry["method"] in ("GET", "POST")
         assert entry["path"].startswith("/api/")
@@ -71,13 +90,13 @@ def test_resolve_base_url_env_override(monkeypatch: Any) -> None:
     assert resolve_base_url("http://arg:1") == "http://arg:1"
 
 
-def test_build_tools_returns_eighteen_bound_tools() -> None:
-    """build_tools() yields 18 Tool instances, one per §45 name."""
+def test_build_tools_returns_twenty_nine_bound_tools() -> None:
+    """build_tools() yields 29 Tool instances (18 §45 + 11 R112 personal)."""
     tools = build_tools("http://unit:8000")
-    assert len(tools) == 18
-    assert {t.name for t in tools} == set(TOOL_ROUTES)
+    assert len(tools) == 18 + len(PERSONAL_TOOLS)
+    assert {t.name for t in tools} == set(TOOL_ROUTES) | PERSONAL_TOOLS
     registry = build_registry()
-    assert len(registry.list_tools()) == 18
+    assert len(registry.list_tools()) == 18 + len(PERSONAL_TOOLS)
 
 
 def test_get_tools_proxy_paths() -> None:

@@ -1,9 +1,10 @@
 """§45 tool catalogue and construction.
 
-``ALL_TOOLS`` holds the spec §45 tool list (18 tools) as plain schema entries
-(name, description, JSON-schema input, plus the §46 API operation each one
-proxies). ``build_tools()`` turns that catalogue into :class:`mcp.tools.Tool`
-instances bound to a §46 API base URL (argument → ``NERVE_API`` env →
+``ALL_TOOLS`` holds the spec §45 tool list (18 tools) plus the R112
+personal-operations tools (11 more, 29 total) as plain schema entries (name,
+description, JSON-schema input, plus the §46 API operation each one proxies).
+``build_tools()`` turns that catalogue into :class:`mcp.tools.Tool` instances
+bound to a §46 API base URL (argument → ``NERVE_API`` env →
 ``http://localhost:8000``); every proxied call carries a fresh
 ``Nerve-Trace-Id`` (spec §29) via :class:`mcp.api.NerveAPI`.
 
@@ -11,6 +12,14 @@ POSTs the backend does not implement yet (create_goal, update_goal,
 create_task, report_claim, report_artifact, create_planned_change) are still
 proxied: the API is dependency-tolerant and answers 2xx — typically 202 with
 ``request_id`` + ``timestamp`` — and any 2xx is treated as success.
+
+R112 personal tools: the eleven new tools proxy the personal-operations
+routes on the same §46 API (attention, briefing, people, conversations,
+communications, waiting-on, followups, drafts). ``create_followup`` and
+``draft_reply`` create local records only — they never send anything to any
+channel. ``get_commitments`` targets the canonical ``GET /api/commitments``
+route (spec §52) which the backend has not shipped yet; it is kept as an
+honest contract descriptor, not a guessed route.
 """
 
 from __future__ import annotations
@@ -319,6 +328,152 @@ _SPEC: list[tuple[str, str, dict[str, Any], list[str], str, str, str]] = [
         "/api/changes",
         "plain",
     ),
+    # ---- R112 personal-operations tools (11) ----------------------------
+    (
+        "get_attention",
+        "List the ranked attention queue with each item's priority and 'why' "
+        "(optionally filtered by state) (§46 GET /api/attention).",
+        {
+            "state": _string_arg(
+                "Optional lifecycle state filter: NOW|TODAY|SOON|WAITING_ON|FYI|SUPPRESSED|RESOLVED"
+            ),
+            "limit": {"type": "integer", "minimum": 1, "description": "Optional page size (default 50)"},
+        },
+        [],
+        "GET",
+        "/api/attention",
+        "plain",
+    ),
+    (
+        "get_daily_brief",
+        "Compose one daily briefing over the personal-operations planes; the "
+        "morning brief is the full §30 daily brief (midday/evening are check-ins) "
+        "(§46 GET /api/briefing).",
+        {"kind": _string_arg("Briefing slot: morning | midday | evening (default morning)")},
+        [],
+        "GET",
+        "/api/briefing",
+        "plain",
+    ),
+    (
+        "get_person",
+        "Fetch one canonical person with its normalized identity links (§46 GET /api/people/{id}).",
+        {"id": _id_arg("Person id")},
+        ["id"],
+        "GET",
+        "/api/people/{id}",
+        "plain",
+    ),
+    (
+        "get_conversation",
+        "Fetch one cross-channel conversation with its communications in chronological "
+        "order (normalized records: refs only, no raw content; §46 GET /api/conversations/{id}).",
+        {"id": _id_arg("Conversation id")},
+        ["id"],
+        "GET",
+        "/api/conversations/{id}",
+        "plain",
+    ),
+    (
+        "search_communications",
+        "List/search normalized cross-channel communications, optionally filtered by "
+        "person and channel (chronological, refs only — §46 GET /api/communications).",
+        {
+            "person_id": _id_arg("Optional person id to filter by"),
+            "channel": _string_arg("Optional channel: email|imessage|sms|rcs|voicemail"),
+        },
+        [],
+        "GET",
+        "/api/communications",
+        "plain",
+    ),
+    (
+        "get_commitments",
+        "List open commitments — 'what did I promise people?' (spec §52; canonical "
+        "§46 GET /api/commitments). CONTRACT BLOCKER: the backend has not shipped this "
+        "route yet, so the call answers 404 until it does.",
+        {},
+        [],
+        "GET",
+        "/api/commitments",
+        "plain",
+    ),
+    (
+        "get_waiting_on",
+        "List outgoing requests that went unanswered, most-waiting first, optionally "
+        "filtered by status (open|resolved|cancelled|all; default open) "
+        "(§46 GET /api/waiting-on).",
+        {"status": _string_arg("Optional status filter: open|resolved|cancelled|all")},
+        [],
+        "GET",
+        "/api/waiting-on",
+        "plain",
+    ),
+    (
+        "create_followup",
+        "Create a tracked follow-up (R104 §57): target_kind + target_id name the "
+        "originating record (e.g. waiting_on + request id, commitment + finding id). "
+        "Proxies §46 POST /api/followups; only creates a local record — sends nothing.",
+        {
+            "target_kind": _string_arg("Originating record kind (waiting_on, commitment, ...)"),
+            "target_id": _string_arg("Originating record id"),
+            "reason": _string_arg("Why this follow-up must happen"),
+            "person_id": _id_arg("Optional person involved"),
+            "due_at": _string_arg("Optional due instant (ISO-8601)"),
+        },
+        ["target_kind", "target_id", "reason"],
+        "POST",
+        "/api/followups",
+        "plain",
+    ),
+    (
+        "snooze_attention",
+        "Defer one attention item to a later window (it stays in the live queue) "
+        "(§46 POST /api/attention/{id}/snooze).",
+        {
+            "id": _id_arg("Attention item id"),
+            "until": _string_arg("Optional ISO-8601 instant to wake at"),
+        },
+        ["id"],
+        "POST",
+        "/api/attention/{id}/snooze",
+        "plain",
+    ),
+    (
+        "resolve_attention",
+        "Mark one attention item RESOLVED (handled) (§46 POST /api/attention/{id}/resolve).",
+        {"id": _id_arg("Attention item id")},
+        ["id"],
+        "POST",
+        "/api/attention/{id}/resolve",
+        "plain",
+    ),
+    (
+        "draft_reply",
+        "Create a local reply DRAFT for a conversation (channel + text). The drafts API "
+        "only ever creates DRAFT state — it never sends anything to any channel "
+        "(sending happens only in the relay). Proxies §46 POST /api/drafts.",
+        {
+            "channel": _string_arg("Channel: email|imessage|sms|rcs|voicemail"),
+            "text": _string_arg("Draft body (local-only, human-reviewed)"),
+            "conversation_id": _id_arg("Optional conversation the draft belongs to"),
+            "communication_ref": _string_arg("Optional communication ref being replied to"),
+            "basis": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional: why this draft exists",
+            },
+            "evidence": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional: communication / evidence refs backing the draft",
+            },
+        },
+        ["channel", "text"],
+        "POST",
+        "/api/drafts",
+        "plain",
+    ),
 ]
 
 
@@ -335,7 +490,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
 
 
 def build_tools(base_url: str | None = None) -> list[Tool]:
-    """Build the 18 §45 :class:`Tool` instances bound to a §46 API base URL."""
+    """Build the 29 :class:`Tool` instances (18 §45 + 11 R112 personal) bound to a §46 API base URL."""
     resolved = resolve_base_url(base_url)
     tools: list[Tool] = []
     for name, description, properties, required, method, path, kind in _SPEC:

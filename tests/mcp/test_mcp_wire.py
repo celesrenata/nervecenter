@@ -41,15 +41,30 @@ SPEC_TOOLS = {
     "create_planned_change",
 }
 
+#: R112 personal-operations tools (11 more on top of the 18 §45 names).
+PERSONAL_TOOLS = {
+    "get_attention",
+    "get_daily_brief",
+    "get_person",
+    "get_conversation",
+    "search_communications",
+    "get_commitments",
+    "get_waiting_on",
+    "create_followup",
+    "snooze_attention",
+    "resolve_attention",
+    "draft_reply",
+}
+
 
 def _mock_api(handler: Any) -> NerveAPI:
     return NerveAPI("http://unit-test", transport=httpx.MockTransport(handler))
 
 
 def test_import_surface_and_all_tools_count() -> None:
-    """``import mcp`` exposes the §45 catalogue (18 tools) plus the core API."""
-    assert len(mcp.ALL_TOOLS) == 18
-    assert {t["name"] for t in mcp.ALL_TOOLS} == SPEC_TOOLS
+    """``import mcp`` exposes the 29-tool catalogue (18 §45 + 11 R112) plus the core API."""
+    assert len(mcp.ALL_TOOLS) == len(SPEC_TOOLS) + len(PERSONAL_TOOLS)
+    assert {t["name"] for t in mcp.ALL_TOOLS} == SPEC_TOOLS | PERSONAL_TOOLS
     for name in ("build_registry", "build_server", "handle_message", "register_all_tools"):
         assert hasattr(mcp, name), name
     for name in ("Tool", "ToolError", "ToolRegistry", "validate_args", "NerveAPI", "MCPClient"):
@@ -80,7 +95,7 @@ def test_ping_returns_empty_result() -> None:
 
 
 def test_tools_list_has_all_spec_tools() -> None:
-    """tools/list advertises all 18 §45 tools with name/description/inputSchema."""
+    """tools/list advertises all 29 tools (18 §45 + 11 R112) with name/description/inputSchema."""
     reg = build_registry()
     result = handle_message({"jsonrpc": "2.0", "id": 3, "method": "tools/list"}, reg, None)
     assert result is not None
@@ -210,7 +225,7 @@ def test_build_server_stdio_and_http() -> None:
     stdio_server = build_server("stdio")
     assert stdio_server.name == SERVER_INFO["name"]
     assert stdio_server.transport == "stdio"
-    assert len(stdio_server.registry.list_tools()) == 18
+    assert len(stdio_server.registry.list_tools()) == len(SPEC_TOOLS) + len(PERSONAL_TOOLS)
 
     http_server = build_server("http")
     assert http_server.app is not None
@@ -245,7 +260,7 @@ def test_http_app_serves_both_mcp_path_spellings() -> None:
             assert body["jsonrpc"] == "2.0"
             assert body["id"] == 1
             tools = body["result"]["tools"]
-            assert {tool["name"] for tool in tools} == SPEC_TOOLS
+            assert {tool["name"] for tool in tools} == SPEC_TOOLS | PERSONAL_TOOLS
         # Sanity: the explicit health route is unaffected.
         health = client.get("/mcp/health")
         assert health.status_code == 200
