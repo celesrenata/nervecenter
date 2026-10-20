@@ -1,8 +1,11 @@
-"""Briefing endpoints (prompt2 §30 — Briefings).
+"""Briefing endpoints (prompt2 §30 — Briefings; §52 — Operational State).
 
 Contract:
 - ``GET /api/briefing``  → one composed briefing; query ``?kind=
-                          morning|midday|evening`` (default ``morning``).
+                           morning|midday|evening`` (default ``morning``).
+- ``GET /api/briefing/operational`` → the §52 Daily Operational State rollup
+  (AC-R17) as a bare object (not the §46 ``ListResponse`` envelope),
+  consumed by the ``nerve today`` CLI (AC-R11).
 
 A read-only, deterministic aggregation across the personal-operations planes
 (attention, waiting-on, calendar, email, messages, voicemail). The store is
@@ -13,13 +16,21 @@ ingest, no write, and no ``now`` query param: the clock is pinned by the
 compose call (defaults to the wall clock) so the four §30 sections render
 exactly and the screen shows the honest closing line when nothing needs
 attention.
+
+The operational-state rollup (R109) projects the same planes plus the
+persistence-backed services (goals / incidents / approvals) from
+``app.state.services`` — sections whose owning service is not wired render
+as honest empty lists, never invented data.
 """
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastapi import APIRouter, HTTPException, Query, Request
 
-from backend.api.models import Briefing, BriefingKind
+from backend.api.models import Briefing, BriefingKind, OperationalState
+from backend.briefing.operational import compose_operational
 from backend.briefing.service import BriefingService, get_briefing_service
 
 router = APIRouter(prefix="/api/briefing", tags=["briefing"])
@@ -60,3 +71,32 @@ async def get_briefing(
         )
     svc = _service(request)
     return svc.compose(kind=kind_enum)
+
+
+def _services(request: Request) -> dict[str, Any]:
+    """The persistence-backed service map on ``app.state`` (may be empty).
+
+    ``wire_dependencies`` populates this at startup from the durable engine;
+    when no ``NERVE_DB_URL`` is configured it is an empty dict, and the
+    operational-state composer renders those sections as honest empties.
+    """
+    services = getattr(request.app.state, "services", None)
+    return services if isinstance(services, dict) else {}
+
+
+@router.get("/operational", response_model=OperationalState)
+async def get_operational(request: Request) -> OperationalState:
+    """The §52 Daily Operational State rollup (AC-R17).
+
+    A bare object — *not* wrapped in the §46 ``ListResponse`` envelope —
+    projecting the eight §52 sections from their owning services at compose
+    time. The clock defaults to the wall clock; the in-memory planes are
+    always present, and any persistence-backed service that is not wired
+    renders its section as an honest empty list.
+    """
+    return await compose_operational(
+        _services(request),
+        detection=None,
+        waiting_on=None,
+        calendar=None,
+    )

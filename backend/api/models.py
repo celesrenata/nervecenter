@@ -763,3 +763,31 @@ class Briefing(BaseModel):
     today: list[BriefingEvent] = Field(default_factory=list)
     overnight: BriefingOvernight = Field(default_factory=BriefingOvernight)
     empty: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Daily Operational State (prompt2 §52 — AC-R17, R109)
+# ---------------------------------------------------------------------------
+class OperationalState(BaseModel):
+    """The composed Daily Operational State (prompt2 §52 — AC-R17).
+
+    A flat, read-only rollup consumed by the ``nerve today`` CLI command
+    (AC-R11) and the §64 ``get_daily_brief`` MCP tool (AC-R10). It is *not*
+    wrapped in the §46 ``ListResponse`` envelope — the CLI reads the bare
+    object — and it owns no state: every section is a flat projection of its
+    owning service at compose time. ``as_of`` pins the clock the time-relative
+    sections were computed against, so the rollup is deterministic and
+    reproducible. Sections whose owning service is not wired (no
+    ``NERVE_DB_URL``) render as empty lists, never invented data.
+    """
+
+    as_of: datetime
+    open_commitments: list[dict[str, Any]] = Field(default_factory=list)
+    incoming_requests: list[dict[str, Any]] = Field(default_factory=list)
+    waiting_on: list[dict[str, Any]] = Field(default_factory=list)
+    upcoming_deadlines: list[dict[str, Any]] = Field(default_factory=list)
+    pending_approvals: list[dict[str, Any]] = Field(default_factory=list)
+    calendar_today: list[dict[str, Any]] = Field(default_factory=list)
+    active_incidents: list[dict[str, Any]] = Field(default_factory=list)
+    blocked_goals: list[dict[str, Any]] = Field(default_factory=list)
+    empty: bool = False

@@ -1826,6 +1826,31 @@ OpenAPI is canonical.
 
 Generate client libraries where practical.
 
+## §63 API mapping (personal surface → flat API)
+
+The §63 personal surface names are *mapped* (not aliased) onto the flat API:
+the canonical flat route is the only implementation, and the personal name is
+the conceptual label. Every mapped endpoint is registered and returns `200`
+with an empty-list envelope on a fresh backend (no `NERVE_DB_URL`); no existing
+route's behavior changes.
+
+| §63 personal surface | Flat route (canonical) | Implementation module |
+| --- | --- | --- |
+| `/api/personal/attention` | `GET /api/attention` | `backend/api/endpoints/attention.py` |
+| `/api/personal/people` | `GET /api/people` | `backend/api/endpoints/people.py` |
+| `/api/personal/communications` | `GET /api/communications` | `backend/api/endpoints/communications.py` |
+| `/api/personal/briefings` | `GET /api/briefing` | `backend/api/endpoints/briefing.py` |
+| `/api/personal/briefings/operational` | `GET /api/briefing/operational` | `backend/api/endpoints/briefing.py` (R109) |
+| `/api/personal/drafts` | `GET /api/drafts` | `backend/api/endpoints/drafts.py` |
+
+The Daily Operational State (`GET /api/briefing/operational`, §52) is a bare
+object (not the `ListResponse` envelope) consumed by the `nerve today` CLI
+(§65, AC-R11) and the `get_daily_brief` MCP tool (§64, AC-R10). Its eight
+sections each read from their owning service — detection (commitments /
+requests / deadlines), waiting-on, calendar, and the persistence-backed
+`app.state.services` map (goals / incidents / approvals); an unwired service
+renders its section as an honest empty list.
+
 ---
 
 # 47. CLI
