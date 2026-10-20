@@ -10,7 +10,7 @@
 #   deferred   - consciously postponed
 
 version: 1
-updated: "2026-10-19"
+updated: "2026-10-20"
 spec_section: 95
 
 workstreams:
@@ -158,6 +158,78 @@ workstreams:
       - Defect fixed (T-DEPMIGRATE): "deploy.sh retag step invoked `kubectl apply -k ... --image` — `kubectl apply` has no `--image` flag; replaced with `kubectl kustomize` (pure render, no cluster write) piped through `sed` to /tmp/rendered.yaml, then `kubectl apply -f /tmp/rendered.yaml`"
       - Defect fixed (T-DEPMIGRATE): "both `docker build` invocations now pass `--platform linux/amd64` (cluster nodes are amd64; prior arm64 builds caused `exec /usr/local/bin/uvicorn: no such file or directory`)"
       - Defect fixed (T-DEPMIGRATE): "nats-deployment.yaml container args now include `--http_port 8222` so the :8222/varz liveness+readiness probes pass on fresh images (durable in source; parent had live-patched the cluster)"
+
+  - id: personal-reasoning-policy-closure
+    name: Personal Reasoning & Policy Closure (G-1, AC-R01-AC-R18)
+    owner: backend
+    spec: specs/personal-reasoning-policy-closure
+    closed_at: "2026-10-20"
+    closed_at_head: e0217d5a89e6c2a7f9a61bcf21769e369efeaaf3
+    status: done
+    description: >
+      In-memory personal plane closed end-to-end across all 18 acceptance criteria:
+      communications foundation (R101), policy firewall/labels/PDP (R107),
+      cross-channel normalization (R102), deterministic commitment/request/deadline
+      detection (R103), follow-up lifecycle (R104), policy-gated drafts (R105),
+      end-to-end detection to follow-up to attention wiring (R106, scenario 61),
+      attention budget / quiet-hours / escalation policy (R108), daily operational
+      state (R109, sections 52/63), cross-channel search + memory extraction
+      (R110), MCP 29-tool contract (R112), personal CLI commands (R113), and the
+      final evidence gate (R111).
+    owned_paths:
+      - backend/communications
+      - backend/policy
+      - backend/followups
+      - backend/drafts
+      - backend/api
+      - mcp
+      - cli
+      - tests/backend
+      - tests/mcp
+      - tests/cli
+      - synthetic-lab
+    tasks:
+      - "R101 cdb2539 - communications foundation (Person/identity/Communication/Conversation, resolution + merge, API endpoints)"
+      - "R107 90f5009 - personal policy foundation (sensitivity classifier, partition firewall, INFER_ROUTE PDP)"
+      - "R102 b926716 - normalize message/email/voicemail planes into communications"
+      - "R103 f036960 - deterministic commitment/request/deadline detection"
+      - "R104 bdc131f - follow-up lifecycle, due evaluation, attention propagation"
+      - "R105 795bf38 - policy-gated deterministic drafts plane"
+      - "R106 e0217d5 - end-to-end pipeline: detection to follow-up to attention wiring (scenario 61)"
+      - "R108 3da8c2b - attention budget, quiet periods, deadline escalation policy"
+      - "R109 1521681 - daily operational state (eight §52 sections + §63 mapping)"
+      - "R110 9c2cd96 - cross-channel search + durable memory extraction"
+      - "R112 7eaeec1 - MCP personal tool contract (29 tools, honest route metadata)"
+      - "R113 a1ba1ce - CLI personal attention/briefing/people/communication commands"
+      - "R111 (this commit) - final evidence gate + status record (AC-R18)"
+    evidence:
+      - Command: "`.venv/bin/python -m pytest tests/ -m \"not integration\" -q`"
+        Result: "1003 passed, 0 failed, 3 warnings (21.24s) - full non-integration suite"
+      - Command: "`.venv/bin/python -m pytest tests/mcp/ -q`"
+        Result: "34 passed, 1 warning - includes the 29-tool contract assertions (test_build_tools_returns_twenty_nine_bound_tools, test_import_surface_and_all_tools_count: 18 spec-45 + 11 R112 = 29)"
+      - Command: "`PYTHONPATH=. .venv/bin/python -m cli --help` (plus attention/today/people/communication --help)"
+        Result: "exit 0 on all five - root CLI lists attention, brief, commitments, communication, people, today; all four personal commands wired"
+      - Command: "`.venv/bin/python -m pytest tests/backend/test_detection_wiring.py tests/backend/test_communications_normalize.py -q`"
+        Result: "44 passed - section 61 wiring (R106) + section 62 Alice cross-channel scenario (R102)"
+      - Command: "`cd apple && bash scripts/test-apple.sh`"
+        Result: "PASS 104 tests (NerveSharedTests 13 / NerveRelayTests 74 / NerveAppsTests 17), 0 failures"
+      - Command: "`PYTHONPATH=synthetic-lab .venv/bin/python -m synthetic_lab`"
+        Result: "exit 0 - cases 19 | pass 17 | fail 0 | pending 2 (ask-what-broke, ask-provenance-deploy); detection precision=1.000 recall=1.000 f1=1.000; REGRESSION: no"
+      - Command: "`PYTHONPATH=. .venv/bin/python -c \"import backend.api.app; print('OK')\"` (plus fresh-worktree variant at e0217d5)"
+        Result: "OK - exit 0 in main checkout and in a fresh detached worktree at e0217d5"
+    known_open_boundaries:
+      - id: G-1.10
+        boundary: "personal-plane persistence is in-memory"
+        status: "explicitly out of scope per spec line 6 (durable personal persistence deferred)"
+      - id: contract-blocker
+        boundary: "GET /api/commitments route not yet shipped"
+        status: "MCP get_commitments catalogs it as a contract blocker (mcp/tools_module.py:393); CLI commitments command targets it"
+      - id: ask-fixture
+        boundary: "synthetic-lab's 2 ask-plane cases pending ask_fixture.json"
+        status: "T003-04 pipeline exists at /api/context/ask (backend/api/endpoints/context.py) but synthetic-lab/ask_fixture.json is unpopulated; 2 cases stay pending, no results invented"
+      - id: gaps4-G-2.5
+        boundary: "paired phone+watch device verification outstanding"
+        status: "hardware/constrained egress (contentdelivery.apple.com stall); verify path PARTIAL per gaps4 G-2.5"
 
 cross-workstream-defects:
   - id: def-001
