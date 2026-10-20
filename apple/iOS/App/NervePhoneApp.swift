@@ -25,6 +25,7 @@ struct NervePhoneApp: App {
         server: ServerConfig(host: "nerv.celestium.life")
     )
     @StateObject private var store = PhoneDataStore()
+    @StateObject private var personalStore = PersonalDataStore()
     @StateObject private var themeStore = ThemeStore()
     @Environment(\.colorScheme) private var colorScheme
 
@@ -82,45 +83,28 @@ struct NervePhoneApp: App {
 struct AppShell: View {
     @EnvironmentObject private var environment: PhoneEnvironment
     @StateObject private var store = PhoneDataStore()
+    @StateObject private var personalStore = PersonalDataStore()
     @State private var selectedTab: PhoneTab = PhoneDebug.tab ?? .overview
 
     var body: some View {
         TabView(selection: $selectedTab) {
-            OverviewView(store: store)
+            // New Today tab (prompt2 §66)
+            TodayView(store: personalStore)
                 .tabItem {
-                    Label("Overview", systemImage: PhoneTab.overview.symbolName)
+                    Label("Today", systemImage: "today")
                 }
-                .tag(PhoneTab.overview)
-                .accessibilityIdentifier("phone.tab.overview")
+                .tag(PhoneTab.overview) // Using overview to avoid breaking the enum
+                .accessibilityIdentifier("phone.tab.today")
 
-            GoalsView(store: store)
+            // Engineering group now wrapped as a single tab (prompt2 §56)
+            EngineeringView(store: store)
                 .tabItem {
-                    Label("Goals", systemImage: PhoneTab.goals.symbolName)
+                    Label("Engineering", systemImage: "gauge.with.dots.needle.50percent")
                 }
-                .tag(PhoneTab.goals)
-                .accessibilityIdentifier("phone.tab.goals")
+                .tag(PhoneTab.goals) // Using GoalsTag for Engineering group (doesn't matter visually)
+                .accessibilityIdentifier("phone.tab.engineering")
 
-            IncidentsView(store: store)
-                .tabItem {
-                    Label("Incidents", systemImage: PhoneTab.incidents.symbolName)
-                }
-                .tag(PhoneTab.incidents)
-                .accessibilityIdentifier("phone.tab.incidents")
-
-            AgentsView(store: store)
-                .tabItem {
-                    Label("Agents", systemImage: PhoneTab.agents.symbolName)
-                }
-                .tag(PhoneTab.agents)
-                .accessibilityIdentifier("phone.tab.agents")
-
-            SystemsView(store: store)
-                .tabItem {
-                    Label("Systems", systemImage: PhoneTab.systems.symbolName)
-                }
-                .tag(PhoneTab.systems)
-                .accessibilityIdentifier("phone.tab.systems")
-
+            // Ask tab unchanged
             AskView(store: store)
                 .tabItem {
                     Label("Ask", systemImage: PhoneTab.ask.symbolName)
