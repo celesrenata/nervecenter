@@ -35,7 +35,10 @@ spec:
           # the `nervecenter` Harbor project. A :latest placeholder would
           # break mcp with ImagePullBackOff (no such tag in Harbor).
           image: "registry.celestium.life/nervecenter/mcp:0545873"
-          imagePullPolicy: IfNotPresent
+          # Always: Harbor tags are short git SHAs that can be republished in
+          # place (arch fix on 2026-10-26), so a node-cached image under the
+          # same tag must not be reused.
+          imagePullPolicy: Always
           ports:
             - name: http
               containerPort: 8000

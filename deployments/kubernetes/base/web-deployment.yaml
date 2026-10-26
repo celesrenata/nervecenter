@@ -24,7 +24,10 @@ spec:
       containers:
         - name: web
           image: "registry.celestium.life/nervecenter/web:latest"
-          imagePullPolicy: IfNotPresent
+          # Always: Harbor tags are short git SHAs that can be republished in
+          # place (arch fix on 2026-10-26), so a node-cached image under the
+          # same tag must not be reused.
+          imagePullPolicy: Always
           env:
             - name: API_UPSTREAM
               valueFrom:

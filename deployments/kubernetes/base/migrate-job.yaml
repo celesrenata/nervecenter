@@ -31,7 +31,10 @@ spec:
           # Same image as the api Deployment; deploy.sh retags both via
           # `kubectl kustomize --image registry.celestium.life/nervecenter/api=TAG`.
           image: "registry.celestium.life/nervecenter/api:latest"
-          imagePullPolicy: IfNotPresent
+          # Always: Harbor tags are short git SHAs that can be republished in
+          # place (arch fix on 2026-10-26), so a node-cached image under the
+          # same tag must not be reused.
+          imagePullPolicy: Always
           command:
             - "python"
             - "-m"
