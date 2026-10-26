@@ -6,13 +6,10 @@
 # Middleware (its only 3 middlewares are prefix-strip / buffering), so SSO is
 # enforced by pointing the Ingress at the `nervecenter-oauth` Service.
 #
-# Route map (2026-10-26 redeploy state):
+# Route map (2026-10-26):
 #   /mcp/  -> mcp  (:8000)  DIRECT, OPEN  (programmatic MCP JSON-RPC API)
-#   /      -> web  (:80)    OPEN          (SPA at / and /api/ — gate not routed;
-#                                         see the / route comment below)
-#
-# To re-activate SSO, restore the / backend to nervecenter-oauth:4180 after the
-# Keycloak `nervecenter` client + real nervecenter-oauth Secret are recreated.
+#   /      -> nervecenter-oauth (:4180)  GATED  (Keycloak SSO -> web nginx ->
+#                                              SPA at / and /api/)
 #
 # The gate reverse-proxies authenticated traffic to the web nginx (:80), which
 # in turn fans out in-cluster:
@@ -61,18 +58,17 @@ spec:
                 name: mcp
                 port:
                   number: 8000
-          # OPEN (2026-10-26): the SSO gate (nervecenter-oauth:4180) cannot be
-          # routed until the Keycloak `nervecenter` client is recreated in the
-          # realm `celestium` and its client-secret lands in the
-          # `nervecenter-oauth` Secret (both were lost in the ~2026-10-22
-          # cluster reset). A placeholder client-secret would send every
-          # visitor into a login redirect loop, so the SPA is served open
-          # (in-cluster app login via NerveCenter-minted JWTs still applies).
-          # Re-point this to nervecenter-oauth:4180 to re-activate SSO.
+          # GATED: SSO gate -> web nginx -> (SPA | /api/). Everything else.
+          # The `nervecenter` Keycloak client was recreated in the live
+          # celestium realm via the Admin API on 2026-10-26 (never re-importing
+          # the realm, per the SSO rollout doc) with a confidential
+          # standard-flow + S256 PKCE configuration matching this deployment's
+          # `--code-challenge-method=S256` args; its client-secret lives in the
+          # out-of-band `nervecenter-oauth` Secret (see secrets.yaml.example).
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: web
+                name: nervecenter-oauth
                 port:
-                  number: 80
+                  number: 4180

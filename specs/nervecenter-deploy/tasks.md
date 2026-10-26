@@ -170,11 +170,8 @@ Keycloak `nervecenter` client. Fresh full redeploy from `0545873`:
   `alembic=005_nc_platform`.
 - **Manifest drift from old cluster state (committed this session):**
   - `mcp-deployment.yaml` — pin `86a6a93` → `0545873` (old tag lost, `13d359b`).
-  - `ingress.yaml` — `/` backend `nervecenter-oauth:4180` → `web:80` OPEN
-    (`0d10eb1`). The SSO gate is deployed but unrouted: the Keycloak client was
-    lost in the reset and a placeholder `client-secret` would loop every visitor
-    into Keycloak. Re-point `/` to `nervecenter-oauth:4180` after recreating the
-    client + real `nervecenter-oauth` Secret.
+  - `ingress.yaml` — `/` briefly served open via `web:80` (`0d10eb1`) while the
+    Keycloak client was being recreated; gate re-routed the same day (below).
 - **Verification (all from this host, 2026-10-26):**
   - Pods: api, mcp, nats, web, postgres-0, nervecenter-oauth all `1/1 Running`,
     zero restarts; migrate Job `Succeeded` (`1/1 Completed`).
@@ -193,7 +190,40 @@ Keycloak `nervecenter` client. Fresh full redeploy from `0545873`:
   - `NERVE_MOCK_INFER=1` and `NERVE_OMNIROUTE_URL` point at an in-cluster
     `omniroute.nervecenter.svc` that does not exist — inference answers are
     mock; no OmniRoute failure expected on the happy path.
-  - SSO gate inert by design (see ingress note above).
   - web nginx still fans `/mcp/` → api (404 via web); the ingress serves
     `/mcp/` direct from the mcp service, so this only matters for clients that
     reach the web Service directly.
+
+### SSO activation (2026-10-26, after the redeploy) — VERIFIED
+
+The `nervecenter` Keycloak client was recreated in the **live** `celestium`
+realm via the Admin API (`admin-cli` password grant against the
+`sso/keycloak-bootstrap` admin; realm NOT re-imported — per
+`sources/kube/sso/APPLICATION-ROLLOUT.md`: import skips existing realms,
+reconcile live changes through the Admin API). Client shape mirrors the
+working `comfyui` gate client: confidential, standard-flow only,
+`S256` PKCE, `groups` protocol mapper, scopes
+`openid profile email` (+web-origins/acr/roles). The fresh client-secret was
+stored out-of-band in `sso/keycloak-clients` (`NERVECENTER_CLIENT_SECRET`)
+and `nervecenter/nervecenter-oauth` (`client-secret`); the gate pod was
+re-rolled to pick it up, and the Ingress `/` backend was restored to
+`nervecenter-oauth:4180` (`ingress.yaml` committed).
+
+Verification (public host, this session):
+- `GET https://nervecenter.celestium.life/` → **302** to
+  `https://sso.celestium.life/realms/celestium/protocol/openid-connect/auth?client_id=nervecenter&code_challenge_method=S256&redirect_uri=https://nervecenter.celestium.life/oauth2/callback...`
+  (gate active, correct client, S256 challenge present).
+- `GET /mcp/health` → **200** (still open, direct to mcp).
+- Client-secret probe against the token endpoint returned
+  `unauthorized_client` ("not enabled to retrieve service account") — i.e.
+  the secret **authenticated** (`invalid_client` would mean a mismatch);
+  service-account flow is off by design, same as the other web gate clients.
+- Full browser login + callback/token-exchange not exercised end-to-end from
+  this host (requires the operator's Keycloak credentials); the redirect,
+  client configuration, and secret validity are all verified, which is the
+  same depth the existing gate runbook's activation check stops at.
+
+Staging scripts updated on the SSO host (`ssh://celes@192.168.42.254:sources/kube/sso`):
+`keycloak/render_realm.py` (`CLIENTS` + `nervecenter`) and
+`distribute_client_secrets.py` (target → `nervecenter/nervecenter-oauth`),
+so a future fresh realm import / secret distribution stays coherent.
