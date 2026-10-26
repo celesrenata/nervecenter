@@ -73,17 +73,17 @@ IDs are stable: **T003-01 … T003-12**. AC cross-refs are to
 
 ```text
 [x] Draft spec.md + plan.md (gap-closure T003)
-[ ] T003-01  ADR: HTTP-as-v0 transport, gRPC deferred
-[ ] T003-02  Remove stale e2e 404 masks; re-green the suite
-[ ] T003-03  OmniRoute transport + telemetry into routes plane
-[ ] T003-04  Ask pipeline with provenance (202 ACK = degradation only)
-[ ] T003-05  synthetic-lab corpus + replay + CI regression gate
-[ ] T003-06  Apple dev-sign / XCUITest verification path
-[ ] T003-07  iPhone personal views + tab reorg (T003.AC1/AC2)
-[ ] T003-08  Watch personal experience + wrist actions (T003.AC3)
-[ ] T003-09  Widgets §68/§69 + timeline cadence (T003.AC4)
-[ ] T003-10  Relay email capture via mail-connector plane (T003.AC5)
-[ ] T003-11  Relay voicemail/calendar scope-in (T003.AC6)
+[x] T003-01  ADR: HTTP-as-v0 transport, gRPC deferred                — 9a51c59 (ADR-0010)
+[x] T003-02  Remove stale e2e 404 masks; re-green the suite          — c34712b (+ 2026-10-26 ask.spec.ts T003-04 contract update; 60/60 green)
+[x] T003-03  OmniRoute transport + telemetry into routes plane       — 9a51c59
+[x] T003-04  Ask pipeline with provenance (202 ACK = degradation only) — 64ba432
+[x] T003-05  synthetic-lab corpus + replay + CI regression gate      — 357b327 (2 ask cases honestly pending: ask_fixture.json unpopulated — no real OmniRoute transport per R107)
+[x] T003-06  Apple dev-sign / XCUITest verification path             — harness + patch_uitests.py + docs/audit/2026-10-18-baseline committed
+[x] T003-07  iPhone personal views + tab reorg (T003.AC1/AC2)        — ba27754
+[x] T003-08  Watch personal experience + wrist actions (T003.AC3)    — 7b5eded
+[x] T003-09  Widgets §68/§69 + timeline cadence (T003.AC4)           — 8d935eb + fcafccb
+[x] T003-10  Relay email capture via mail-connector plane (T003.AC5) — c6d2def
+[x] T003-11  Relay voicemail/calendar scope-in (T003.AC6)            — c6d2def
 [ ] T003-12  Evidence pass + gap log (AC1–AC12)
 ```
 

@@ -26,10 +26,10 @@ Verdict key: IMPLEMENTED / PARTIAL / ABSENT.
 | 8 | Secrets | PARTIAL |
 | 9 | Observability | PARTIAL |
 | 10 | LocalStack / object storage | LocalStack ABSENT repo-wide; S3 client + memory backend IMPLEMENTED |
-| 11 | Attention queue | ABSENT |
-| 12 | Ideas / goals | PARTIAL |
-| 13 | Photos / health / Apple connectors | ABSENT (Apple shells exist, no HealthKit/PhotoKit) |
-| 14 | Web console | IMPLEMENTED for the §48 view set; view depth unverified |
+| 11 | Attention queue | IMPLEMENTED (in-memory; P0) — see Since-baseline §2026-10-26 |
+| 12 | Ideas / goals | IMPLEMENTED (incl. `DELETE /api/goals/{id}`) |
+| 13 | Photos / health / Apple connectors | ABSENT for HealthKit/PhotoKit; Apple app shells now render personal surfaces |
+| 14 | Web console | IMPLEMENTED — 21 routed views (incl. P0–P4 personal surfaces) |
 | 15 | Approvals / audit | PARTIAL |
 
 ### 1. Resource registry (PARTIAL)
@@ -137,9 +137,15 @@ Verdict key: IMPLEMENTED / PARTIAL / ABSENT.
   `default_level` [:72](backend/policy/permissions.py:72).
 - **`_get_subject_level` ignores subject and resource and always returns
   `default_level`** [:93–95](backend/policy/permissions.py:93).
-- Re-exported only
-  ([backend/policy/__init__.py:14](backend/policy/__init__.py:14)); 0
-  callers in `backend/api/`. No Cedar (`cedar` grep = 0).
+- The legacy `PermissionEnforcer` is re-exported only
+  ([backend/policy/__init__.py:14](backend/policy/__init__.py:14)) and remains
+  a no-op scaffold. **UPDATED 2026-10-26:** the "0 callers in
+  `backend/api/`" C0 claim is stale — the real decision point,
+  `PolicyDecisionPoint` [backend/policy/pdp.py:612](backend/policy/pdp.py:612),
+  is now wired into the ask + drafts pipelines (R107 PDP pre-flight):
+  [backend/context/ask.py:305](backend/context/ask.py:305) runs the PDP
+  before any inference hop, and [backend/drafts/drafter.py](backend/drafts/drafter.py)
+  gates draft dispatch. No Cedar (`cedar` grep = 0).
 - Real authentication is JWT/SSO:
   [backend/api/auth.py:1–5](backend/api/auth.py:1) (SSO/OIDC discovery
   [:6–8](backend/api/auth.py:6), break-glass login).
@@ -194,19 +200,35 @@ Verdict key: IMPLEMENTED / PARTIAL / ABSENT.
   (`backend/storage/contracts.py`) and the "honest-failure" rules documented
   in [backend/storage/s3.py:9–24](backend/storage/s3.py:9).
 
-### 11. Attention queue (ABSENT)
+### 11. Attention queue (IMPLEMENTED — in-memory, P0)
 
-- `attention` grep in `backend/` = 0; in `tests/` = 0. The abstraction is
-  only specified in the addendum [prompt2.md](prompt2.md) (ATTENTION section,
-  §1–2); no backend implementation exists.
+- **UPDATED 2026-10-26 (was ABSENT at the 2026-10-10 C0 baseline).** The
+  abstraction now has a live backend: `AttentionService`
+  [backend/attention/service.py:51](backend/attention/service.py:51)
+  (create/get/list/resolve/suppress/acknowledge/snooze) and
+  `AttentionPolicyService` (quiet periods + budget + ranking)
+  [backend/attention/policy.py:223](backend/attention/policy.py:223).
+  Exposed at `/api/attention`
+  [backend/api/endpoints/attention.py:38](backend/api/endpoints/attention.py:38)
+  with `resolve`/`suppress`/`acknowledge`/`snooze` actions. Tests:
+  [tests/backend/test_attention.py](tests/backend/test_attention.py),
+  [tests/backend/test_attention_policy.py](tests/backend/test_attention_policy.py).
+  Store is in-memory (no durable persistence yet). See the Since-baseline
+  §2026-10-26 block for the full P0–P4 plane map.
 
-### 12. Ideas / goals (PARTIAL)
+### 12. Ideas / goals (IMPLEMENTED)
 
 - `GoalService` [backend/goals/service.py:129](backend/goals/service.py:129).
 - Reconciliation is task-progress-only: `GoalReconciler`
   [backend/goals/reconciliation.py:157](backend/goals/reconciliation.py:157);
   "ground truth is the actual state of the tasks"
   [:3–6](backend/goals/reconciliation.py:3).
+- **UPDATED 2026-10-26:** the goal API is a full CRUD surface —
+  `DELETE /api/goals/{goal_id}` (204) at
+  [backend/api/endpoints/goals.py:138](backend/api/endpoints/goals.py:138),
+  exercised by the web UI's delete affordance
+  ([web/src/views/GoalsView.tsx](web/src/views/GoalsView.tsx)) and e2e
+  `GL-3` ([web/tests/e2e/views-a.spec.ts](web/tests/e2e/views-a.spec.ts)).
 - MCP tools: `get_goal` [mcp/tools_module.py:173](mcp/tools_module.py:173),
   `create_goal` [:182](mcp/tools_module.py:182), `update_goal`
   [:197](mcp/tools_module.py:197).
@@ -217,9 +239,14 @@ Verdict key: IMPLEMENTED / PARTIAL / ABSENT.
   Watch (`Watch/Store/WatchDataStore.swift`,
   `Watch/Store/WatchSnapshotSource.swift`), Widgets
   (`apple/Widgets/NerveCenterWidgetBundle.swift` + 5 view/provider files), and
-  an iOS app shell (`apple/iOS/App/` — 12 Swift files:
-  `NervePhoneApp.swift`, 6 views, `PhoneFetchService.swift`,
-  `PhoneDataStore.swift`, `WireModels.swift`).
+  an iOS app shell (`apple/iOS/App/`) — **UPDATED 2026-10-26:** 13 view files
+  spanning the engineering + personal surfaces
+  (Overview/Today/Engineering/Ask + Inbox/People/Waiting/Briefing/Goals/
+  Incidents/Systems/Agents + `ServerConfigSheet`), wired as the
+  Today | Engineering | Ask tab reorg
+  ([apple/iOS/App/NervePhoneApp.swift:90–113](apple/iOS/App/NervePhoneApp.swift:90));
+  the phone Overview header carries the theme picker
+  ([apple/iOS/App/Views/OverviewView.swift:32](apple/iOS/App/Views/OverviewView.swift:32)).
 - `HealthKit|PhotoKit` grep in `apple/` = 0 — no photo or health
   integration; widget/watch data sources are in-memory or snapshot-based.
 
@@ -232,6 +259,11 @@ Verdict key: IMPLEMENTED / PARTIAL / ABSENT.
   Decisions, Ask) plus `LoginView`
   ([web/src/App.tsx:26](web/src/App.tsx:26)). React 18 + Vite + TypeScript
   ([web/package.json:19–35](web/package.json:19)).
+- **UPDATED 2026-10-26:** `web/src/views/` now holds **21** views — the §48
+  set plus the Personal Operations Plane (P0–P4) surfaces
+  (Now, Briefing, Calendar, Messages, Email, Voicemail, Contacts, WaitingOn,
+  Downloads, Settings) and `AuthCallback`, all routed in
+  [web/src/App.tsx:47–68](web/src/App.tsx:47).
 - View depth (real data vs mock) is Unverified from source alone:
   `web/src/api/mockClient.ts` exists alongside
   [web/src/api/client.ts](web/src/api/client.ts).
@@ -260,12 +292,22 @@ Verdict key: IMPLEMENTED / PARTIAL / ABSENT.
 
 ### Client / SDK state
 
-- `tests/backend/` (16 files) covers events
-  ([tests/backend/test_events_api.py:178](tests/backend/test_events_api.py:178)
-  et seq.), tasks ([tests/backend/test_tasks_dependencies.py](tests/backend/test_tasks_dependencies.py)),
-  agents, orchestration, persistence, auth/SSO, object storage,
-  observability. `tests/mcp/` covers tools + wire.
-- Attention and photo/health: zero test coverage (grep = 0 in `tests/`).
+- **UPDATED 2026-10-26:** `tests/backend/` now holds **38** files. Beyond
+  events ([tests/backend/test_events_api.py:178](tests/backend/test_events_api.py:178)
+  et seq.), tasks
+  ([tests/backend/test_tasks_dependencies.py](tests/backend/test_tasks_dependencies.py)),
+  agents, orchestration, persistence, auth/SSO, object storage, and
+  observability, it covers the Personal Operations Plane (P0–P4):
+  [tests/backend/test_attention.py](tests/backend/test_attention.py),
+  [tests/backend/test_attention_policy.py](tests/backend/test_attention_policy.py),
+  [tests/backend/test_email.py](tests/backend/test_email.py),
+  [tests/backend/test_mail_connector.py](tests/backend/test_mail_connector.py),
+  [tests/backend/test_voicemail.py](tests/backend/test_voicemail.py), and
+  [tests/backend/policy/](tests/backend/policy/). `tests/mcp/` covers tools +
+  wire.
+- **UPDATED 2026-10-26 (was "Attention … zero test coverage"):** attention
+  now has dedicated tests (see above). Photo/health: still zero — no
+  HealthKit/PhotoKit in `apple/` and no photo/health backend.
 - SDKs partial: Python
   (`sdk/python/nervcenter_sdk/client.py`, `groups.py`; tests at
   [sdk/python/tests/test_nervcenter_sdk.py](sdk/python/tests/test_nervcenter_sdk.py));
@@ -366,10 +408,12 @@ The governing baseline is [docs/nervcenter-spec.md](docs/nervcenter-spec.md)
 ([:1831](docs/nervcenter-spec.md:1831)); §48 Web UI
 ([:1866](docs/nervcenter-spec.md:1866)); §52 Apple Platform
 ([:1970](docs/nervcenter-spec.md:1970)). The personal-operations/attention
-addendum lives in [prompt2.md](prompt2.md) (v0.1, extends the parent spec) and
-is not yet implemented (capability 11). Workstream tracking:
+addendum lives in [prompt2.md](prompt2.md) (v0.1, extends the parent spec);
+**UPDATED 2026-10-26:** its phases P0–P4 (§75–§79) are now implemented in
+the backend (see the since-baseline block below) and surfaced in the web
+console — capability 11 no longer reads ABSENT. Workstream tracking:
 [docs/implementation-status.yaml](docs/implementation-status.yaml)
-(spec §95, last updated 2026-09-29). NC-SPEC-2026-010 is the
+(spec §95; last updated 2026-10-26). NC-SPEC-2026-010 is the
 AWS-like-local-cloud successor spec; this inventory is its C0
 current-state baseline.
 
@@ -402,12 +446,15 @@ current-state baseline.
    `default_level`
    ([backend/policy/permissions.py:93–95](backend/policy/permissions.py:93)),
    so every `check()` passes for any subject at or below the default level.
-6. **Absent PDP wiring** — `PermissionEnforcer` is re-exported
-   ([backend/policy/__init__.py:14](backend/policy/__init__.py:14)) but
-   invoked nowhere in the API; no Cedar policy engine exists, so the real
-   authorization path is JWT/SSO only
-   ([backend/api/auth.py:1–5](backend/api/auth.py:1)) with no
-   resource-level policy decision point.
+6. **~Absent PDP wiring~ — RESOLVED 2026-10-26 (was "invoked nowhere in the
+   API; real authorization is JWT/SSO only").** The real decision point,
+   `PolicyDecisionPoint` [backend/policy/pdp.py:612](backend/policy/pdp.py:612),
+   is now the R107 policy firewall wired into the grounded-ask and drafts
+   pipelines: pre-flight before any inference hop at
+   [backend/context/ask.py:305](backend/context/ask.py:305), and draft
+   dispatch gating in [backend/drafts/drafter.py](backend/drafts/drafter.py).
+   The `PermissionEnforcer` legacy scaffold (Hard Defect 5) remains a
+   re-export-only no-op, but it is no longer the authorization path.
 
 ## Open Questions
 
@@ -479,3 +526,80 @@ here for continuity; the machine-readable form of the same items lives in
 6. **Python suite baseline is 601.** `pytest tests/ -m "not integration" -q`
   → 601 passed, 0 failed (2026-10-19); the canonical test commands are
   documented in [`README.md`](../../README.md) §Testing.
+
+## Since the 2026-10-19 refresh (T007, 2026-10-26)
+
+Material changes that landed between the 2026-10-19 refresh and this
+T007 (G-4.3) documentation refresh; verified against the live tree on
+2026-10-26.
+
+1. **Personal Operations Plane P0–P4 implemented in the backend.** The
+   `prompt2.md` §75–§79 phases closed on 2026-10-20
+   (`specs/personal-reasoning-policy-closure`, AC-R01–R18, closed at head
+   `e0217d5`): communication ingestion + cross-channel normalization
+   (`backend/communications/`), contact resolution
+   (`backend/contacts/`), conversation threads
+   (`backend/messages/`, `backend/conversations`), commitment/deadline
+   extraction (`backend/communications/detection/`), the attention engine
+   (`backend/attention/`), the follow-up engine
+   (`backend/followups/`, `backend/waiting_on/`), briefings
+   (`backend/briefing/`), response/draft assistant (`backend/drafts/`),
+   calendar (`backend/calendar/`), and voicemail (`backend/voicemail/`).
+   HTTP surface: `/api/attention`, `/api/communications`, `/api/contacts`,
+   `/api/messages`, `/api/email`, `/api/voicemail`, `/api/calendar`,
+   `/api/waiting-on`, `/api/followups`, `/api/briefing`, plus the
+   mail-connector registry at `/api/mail-connectors`
+   ([backend/api/endpoints/mail_connectors.py:42](backend/api/endpoints/mail_connectors.py:42),
+   backed by `MailConnectorService`
+   [backend/connectors/mail/service.py:65](backend/connectors/mail/service.py:65)
+   and `backend/email/EmailService`).
+2. **Policy PDP wired into the ask + drafts pipelines (R107).** The
+   `PolicyDecisionPoint` [backend/policy/pdp.py:612](backend/policy/pdp.py:612)
+   now runs pre-flight before any inference hop
+   ([backend/context/ask.py:305](backend/context/ask.py:305)) and gates
+   draft dispatch ([backend/drafts/drafter.py](backend/drafts/drafter.py));
+   `POST /api/context/ask` is the real grounded-ask pipeline
+   ([backend/api/endpoints/context.py:4](backend/api/endpoints/context.py:4)).
+   The "unwired inference" hard-defect claim from the C0 baseline is
+   therefore stale for the ask path: `backend.inference.omniroute` is
+   imported by [backend/context/ask.py:52](backend/context/ask.py:52).
+   (The legacy `PermissionEnforcer` scaffold remains a no-op — see Hard
+   Defect 5.)
+3. **JWT/SSO auth is the real authorization path.** `backend/api/auth.py`
+   (SSO/OIDC discovery, break-glass login) + `backend/api/auth_service.py`
+   (HS256 mint/verify, AC-S02/S03/S05) — see §7 above.
+4. **Web console grew to 21 routed views** (was 11). The P0–P4 surfaces
+   Now/Briefing/Calendar/Messages/Email/Voicemail/Contacts/WaitingOn plus
+   Downloads/Settings and `AuthCallback` are routed alongside the §48 set
+   ([web/src/App.tsx:47–68](web/src/App.tsx:47)). The goals view gained a
+   delete affordance (`goalsApi.delete`,
+   [web/src/views/GoalsView.tsx](web/src/views/GoalsView.tsx)) hitting
+   `DELETE /api/goals/{id}`
+   ([backend/api/endpoints/goals.py:138](backend/api/endpoints/goals.py:138)),
+   e2e-covered by `GL-3` in
+   [web/tests/e2e/views-a.spec.ts](web/tests/e2e/views-a.spec.ts) — web
+   e2e baseline 61/0.
+5. **Apple phone shipped the Today | Engineering | Ask reorg + theme
+   picker.** `apple/iOS/App/Views` now holds 13 view files (personal
+   surfaces Today/Inbox/People/Waiting/Briefing landed), the TabView is
+   the three-group reorg
+   ([apple/iOS/App/NervePhoneApp.swift:90–113](apple/iOS/App/NervePhoneApp.swift:90)),
+   and the Overview header carries the `ThemePreference` picker
+   ([apple/iOS/App/Views/OverviewView.swift:32](apple/iOS/App/Views/OverviewView.swift:32))
+   backed by the publishable `ThemeStore`
+   ([apple/Shared/Sources/NerveDesign/Theme.swift:110](apple/Shared/Sources/NerveDesign/Theme.swift:110)).
+   Apple suite baseline is now **110** (NerveSharedTests 13 /
+   NerveRelayTests 74 / NerveAppsTests 23; the 6 ThemeStore unit tests are
+   new) asserted by
+   [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh).
+6. **Python suite baseline is 1003.** `pytest tests/ -m "not integration" -q`
+   → 1003 passed, 0 failed (2026-10-26), up from the 2026-10-19 baseline of
+   601 — the delta is mostly the P0–P4 plane tests plus policy-PDP tests
+   ([tests/backend/policy/](tests/backend/policy/)).
+7. **D2 watch bundle-ID convergence is verified in the tracked tree.**
+   `apple/Distribution/xcodegen/NerveWatch.xcodegen.yml` and the
+   regenerated `apple/Distribution/Generated/NerveWatch.xcodeproj/project.pbxproj`
+   both carry `com.celesrenata.NervePhone.watch` (app) /
+   `com.celesrenata.NervePhone.watch.widgets` (widget extension); a stray
+   nested generated project with the old `com.celesrenata.NerveWatch` IDs is
+   untracked junk pending human `rm -rf` approval (gaps4 D2 → CLOSED).

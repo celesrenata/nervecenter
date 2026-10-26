@@ -189,6 +189,32 @@ the xcodegen source of truth already says, what `WKCompanionAppBundleIdentifier`
 4. Re-run the manifest test (D1) + `xcodebuild -scheme NerveWatch build` for the watchOS sim to
    confirm the regenerated project still compiles.
 
+**Converged 2026-10-26:** the pbxproj now matches the xcodegen source of truth — all four
+`PRODUCT_BUNDLE_IDENTIFIER` values in `apple/Distribution/Generated/NerveWatch.xcodeproj/project.pbxproj`
+carry `com.celesrenata.NervePhone.watch` (watch app, ×2) and `com.celesrenata.NervePhone.watch.widgets`
+(widget extension, ×2). `rg 'com\.celesrenata\.NerveWatch'` across `apple/` returns zero bundle-ID hits
+(product/target names like `NerveWatch` remain, as intended).
+
+**Remaining external dependency (signing re-verification):** full closure of D2 still requires a
+re-issued development provisioning profile registered to the `com.celesrenata.NervePhone.watch`
+App ID. The previously committed `apple/Distribution/credentials/NerveWatch.mobileprovision` was
+registered to `com.celesrenata.NerveWatch` (team `NQV7T36W69`), so it does not match the converged
+bundle-ID family; that profile is gitignored and absent from the committed tree, so it must be
+re-issued (App ID + profile) before signing re-verification can be run. Until then, the watch
+build for `generic/platform=watchOS Simulator` fails at compile time for an unrelated reason
+(see build note below), not at signing.
+
+**Build note (2026-10-26):** `xcodebuild -project Distribution/Generated/NerveWatch.xcodeproj
+-scheme NerveWatch -destination 'generic/platform=watchOS Simulator' build` → `** BUILD FAILED **`
+with `cannot find 'WatchAttentionStore' in scope` / `cannot find type 'AttentionSeverityDot' in
+scope` / `cannot find 'AttentionWristActions' in scope` — the generated project omits
+`Watch/Store/WatchAttentionStore.swift` and `Watch/Support/WatchAttentionDesign.swift` from its
+file lists (stale generated project: the committed `NerveWatch.xcodeproj` was generated before
+those two source files existed, and the xcodegen `sources:` glob is not re-applied without a
+regenerate). This is a generated-project staleness issue, distinct from D2's bundle-ID
+convergence, and is out of scope for this change; a future `xcodegen generate` +
+`patch_uitests.py` pass should pick the files up and be re-verified with the watch build.
+
 ### 3.4 D3 — Apple under-run trap, second occurrence (structural, Phase 1)
 
 Bare `swift test` → 0 tests across all three bundles (stale `.build` products again); forced
@@ -208,6 +234,15 @@ if the repo is confirmed local-only or the remote copy is scrubbed the same way*
 `fastlane/.env` (untracked, ignored) may contain the same credentials — after rotation, verify
 the live `.env` holds the new key.
 
+**2026-10-26 update (answers §7.2):** the repo is **not local-only** — `origin` is
+`github.com/celesrenata/nervecenter`. The p12 blobs therefore also live in the remote's object
+store once the snapshot refs were ever pushed, or at minimum the rotation must be confirmed
+complete before the local purge. **Decisive, not performed:** rotating the signing key and
+`git filter-repo`-ing (or scrubbing) the remote history are destructive, outward-facing
+operations — that is a user decision, not a closeout action. Until then, the only safe move is
+key rotation (makes the old blobs inert) + local `rm` of the worktree p12 files; the history
+purge waits on an explicit go/no-go.
+
 ### 3.6 D6 — watch `approvals.json` contract half-built (S, part of T003-08 scope)
 
 `WatchSnapshotSource` defines three expected App-Group files; the phone publishes one.
@@ -218,7 +253,23 @@ row model requires) on the same cadence as `cached-state.json`. Verify on a pair
 run that the watch Approvals screen renders them. (The `stop-agents.json` emergency marker is
 watch→phone; confirm `WatchStopView` writes it — small check, include in the same task.)
 
-### 3.7 D4 — commit-scope entanglements (S, Phase 0 execution detail)
+### 3.7 D7 — stale generated watch project omits two source files (S, surfaced 2026-10-26)
+
+Discovered while re-verifying D2: the **tracked** `Generated/NerveWatch.xcodeproj/project.pbxproj`
+omits `apple/Watch/Store/WatchAttentionStore.swift` and `apple/Watch/Support/WatchAttentionDesign.swift`
+from its file list even though types from both are referenced by files that *are* in the list —
+so a watch simulator build fails at compile, independently of the D2 bundle-ID convergence.
+(Confirmed: the nested **untracked** duplicate
+`apple/Distribution/Generated/NerveWatch.xcodeproj/NerveWatch.xcodeproj/` — gitignored,
+`.gitignore:64` — is a separate stale copy, not the one Xcode opens.) The xcodegen source of
+truth (`apple/Distribution/xcodegen/NerveWatch.xcodegen.yml`) matches the converged bundle-ID
+family; the fix is a `xcodegen generate` + `patch_uitests.py` pass against the tracked project
+(`xcodegen` is not installed on this host — `brew install xcodegen` first), then rebuild the
+watch target to confirm the two files compile in. Distinct from D2: D2 is a bundle-ID/signing
+convergence (done in-tree, profile re-issue outstanding); D7 is generated-project staleness
+(source list out of date) — both must be true before the watch target ships.
+
+### 3.8 D4 — commit-scope entanglements (S, Phase 0 execution detail)
 
 Verified **false** this pass: `gaps-apple1.md` G7.1 claimed "`NervePhoneApp.swift` depends on the
 untracked `apple/e2e/XCUITestSupport/NerveE2E.swift`" — grep of `apple/iOS` + `apple/Watch` +
@@ -252,7 +303,7 @@ dirs, `xcuserdata/`, `apple/e2e-artifacts/` (transient XCUITest output — gitig
 
 | Prior claim | This pass |
 |---|---|
-| `gaps-apple1.md` G7.1: "`NervePhoneApp.swift` depends on untracked `NerveE2E.swift`, so the lift cannot be committed in isolation" | **Wrong** — app code has no `NerveE2E` reference; only the UITest target does. The real entanglement is generated-pbxproj ↔ `patch_uitests.py` (§3.7). |
+| `gaps-apple1.md` G7.1: "`NervePhoneApp.swift` depends on untracked `NerveE2E.swift`, so the lift cannot be committed in isolation" | **Wrong** — app code has no `NerveE2E` reference; only the UITest target does. The real entanglement is generated-pbxproj ↔ `patch_uitests.py` (§3.8). |
 | `gaps-apple1.md` §2: "swift test 2/2 pass" | That was the **under-run** (2 of 46); the package has 46 tests across 3 bundles (D3). |
 | `gaps-apple1.md` G3 / `docs/apple-data-lift`: "publish verified; read blocked by env" | Publish is verified for `cached-state.json` **only** — `approvals.json` is never written by the phone at all (D6), so the watch Approvals screen is dead even on paired hardware until it lands. |
 | `gaps3.md` §2: "repo otherwise clean except uncommitted runbook + .swiftpm/ + xcuserdata" | Stale — 24 modified + 15 untracked paths now (§3.1). |
@@ -268,35 +319,37 @@ Legend: 🟢 closed · 🟡 partial · 🔴 open (unchanged from `gaps3`).
 
 | ID | Gap | Status | Notes |
 |---|---|---|---|
-| **D1** | Manifest test vs new artifact names | 🔴 OPEN | §3.2 — S fix, ride with the distribution commit |
-| **D2** | Watch bundle-ID family convergence | 🔴 OPEN (NEW) | §3.3 — S fix; real defect in the uncommitted tree |
-| **D5** | Signing-key rotation + snapshot-ref purge | 🟡 PARTIAL (NEW) | §3.5 — gitignore done; rotate + purge + local-file removal pending |
-| **D4** | Commit-scope slices for the 24+15 path tree | 🔴 OPEN (NEW) | §3.7 — 4-slice plan; junk explicitly excluded |
+| **D1** | Manifest test vs new artifact names | 🟢 CLOSED (2026-10-26) | §3.2 — landed with the distribution commit; `pytest tests/apple/test_generate_manifest.py` → 5 passed (re-verified 2026-10-26) |
+| **D2** | Watch bundle-ID family convergence | 🟡 CONVERGED, signing re-verify pending | §3.3 — pbxproj now matches the xcodegen source of truth: all 4 `PRODUCT_BUNDLE_IDENTIFIER` values are `com.celesrenata.NervePhone.watch` / `.watch.widgets`; `rg 'com\.celesrenata\.NerveWatch'` over `apple/` → zero bundle-ID hits. Converged 2026-10-26. **External dependency for full closure:** re-issued development provisioning profile registered to the `com.celesrenata.NervePhone.watch` App ID (the previously committed `NerveWatch.mobileprovision` was registered to `com.celesrenata.NerveWatch`, team `NQV7T36W69`; it is gitignored and absent from the committed tree). Watch sim build fails only from a separate, pre-existing generated-project staleness issue (missing `WatchAttentionStore.swift` / `WatchAttentionDesign.swift` in file lists) — see §3.7 D7 |
+| **D7** | Stale generated watch project (source list) | 🟡 OPEN (NEW, 2026-10-26) | §3.7 — tracked `Generated/NerveWatch.xcodeproj/project.pbxproj` omits `WatchAttentionStore.swift` + `WatchAttentionDesign.swift`; watch sim build fails at compile. Fix: `xcodegen generate` + `patch_uitests.py` (xcodegen not installed on this host yet); distinct from D2 |
+| **D3** | Apple under-run trap (stale SPM test products) | 🟢 CLOSED (2026-10-26) | §3.4 — structural fix landed: `apple/scripts/test-apple.sh` (touch → `swift build --build-tests` → `swift test` → per-bundle count assertion 13/74/23 = 110) is the canonical command and is run by CI (`.github/workflows/ci.yml`); verified 110 passed, 0 failures live 2026-10-26 (`PASS 110 tests (13/74/23)`). Bare `swift test` default-resolution root-cause fix remains outstanding (t001 T005 fallback path) |
+| **D5** | Signing-key rotation + snapshot-ref purge | 🟡 PARTIAL (NEW) | §3.5 — gitignore done; `stabulous.p12` still physically in the worktree (re-verified 2026-10-26); rotate + purge + local-file removal pending. **2026-10-26:** remote confirmed = `github.com/celesrenata/nervecenter` (answers §7.2 Q2 — repo is NOT local-only); key rotation + `git filter-repo`/remote history purge is a user decision, not performed; local p12 files not deleted |
+| **D4** | Commit-scope slices for the 24+15 path tree | 🟢 CLOSED (2026-10-26) | §3.8 — the 2026-10-18 uncommitted tree landed as logical commits (`87c69be`…`0c1b6ed`); working tree clean apart from new work; junk (root-level patch/`.roo`) explicitly excluded per the plan |
 
 ### T1 — Personal reasoning "brain" + persistence (spec pack `personal-reasoning-policy-closure`)
 
 | ID | Gap | Status (this pass) |
 |---|---|---|
-| G-1.1 | Commitment/Request/Deadline detection (§16–18) | 🔴 OPEN — no detection engines (R103) |
-| G-1.2 | Unified Person + cross-channel conversations (§6/§7/§32) | 🟡 PARTIAL — contacts surface only; no `Person`/`Communication`/`Conversation` schema (R101/R102) |
-| G-1.3 | Follow-Up engine (§57) | 🔴 OPEN — no `backend/followups/` (R104) |
-| G-1.4 | Drafts plane (§40/§63) | 🔴 OPEN — no `backend/drafts/`; drafts are ad-hoc strings (R105) |
-| G-1.5 | Document flat-API mapping (§63) | 🔴 OPEN (R109) |
-| G-1.6 | §64 personal MCP tools (18 → 29) | 🔴 OPEN — 18 confirmed (R112) |
-| G-1.7 | §65 personal CLI commands | 🔴 OPEN — 12 modules, 0 personal (R113) |
-| G-1.8 | Privacy/attention policy (§35–39, §58–59) | 🔴 OPEN (R107/R108) |
-| G-1.9 | §50 search / §51 memory / §52 daily state | 🔴 OPEN (R109/R110) |
-| G-1.10 | Personal-plane persistence (all 8 services in-memory) | 🔴 OPEN (newly named in `gaps3`) |
+| G-1.1 | Commitment/Request/Deadline detection (§16–18) | 🟢 CLOSED (2026-10-20) — R103 landed in `specs/personal-reasoning-policy-closure` (detection extractors in `backend/communications/detection/`) |
+| G-1.2 | Unified Person + cross-channel conversations (§6/§7/§32) | 🟢 CLOSED (2026-10-20) — `Person`/`ContactIdentity`/`Communication`/`Conversation` in `backend/communications/models.py`; cross-channel normalization (R102) |
+| G-1.3 | Follow-Up engine (§57) | 🟢 CLOSED (2026-10-20) — `backend/followups/` (R104) |
+| G-1.4 | Drafts plane (§40/§63) | 🟢 CLOSED (2026-10-20) — `backend/drafts/` drafter + PDP gate (R105) |
+| G-1.5 | Document flat-API mapping (§63) | 🟢 CLOSED (2026-10-20) — eight §52 sections mapped in R109; §63 mapping documented |
+| G-1.6 | §64 personal MCP tools (18 → 29) | 🟢 CLOSED (2026-10-20) — 29 tools (18 spec-45 + 11 R112), contract-tested (`tests/mcp/`) |
+| G-1.7 | §65 personal CLI commands | 🟢 CLOSED (2026-10-20) — attention/brief/commitments/communication/people/today commands wired (R113) |
+| G-1.8 | Privacy/attention policy (§35–39, §58–59) | 🟢 CLOSED (2026-10-20) — PDP (R107) wired into ask + drafts; attention policy (R108) |
+| G-1.9 | §50 search / §51 memory / §52 daily state | 🟢 CLOSED (2026-10-20) — cross-channel search + durable memory (R110); daily operational state (R109). Note: `synthetic-lab/ask_fixture.json` unpopulated → 2 seeded ask cases stay pending (no results invented) |
+| G-1.10 | Personal-plane persistence (all 8 services in-memory) | 🟡 DEFERRED BY DESIGN — spec line 6 (2026-10-20 closeout): durable personal persistence intentionally out of scope for the G-1 feature |
 
 ### T2 — Apple personal surfaces (spec packs `mobile-apps` M201–M206 + `gap-closure-t003`)
 
 | ID | Gap | Status (this pass) |
 |---|---|---|
-| G-2.1 | iPhone personal views (§66) | 🔴 OPEN — still exactly the 6 engineering tabs (T003-07) |
-| G-2.2 | Watch personal (§27/§60/§67) | 🔴 OPEN — still Approvals/Goal/Home/Stop only; **plus D6** (approvals.json never published) (T003-08) |
-| G-2.3 | §68/§69 personal widgets | 🔴 OPEN — engineering tiles only; watchOS family support *did* land (uncommitted) (T003-09) |
-| G-2.4 | Relay beyond iMessage/SMS (email/voicemail/calendar/contacts) | 🔴 OPEN — `Relay` still `imessage`/`sms` only (T003-10/11; mail-connector plane now exists + tested on the backend side as the foundation) |
-| G-2.5 | Device/simulator verify path | 🟡 **PARTIAL (was OPEN)** — T003-06 harness + launch-arg routers + baseline audit + audit evidence built and working, **uncommitted** (Phase 0 lands it); signing/TestFlight still constrained by the `contentdelivery.apple.com` egress stall (runbook); paired phone+watch watch-display verification still outstanding (D6 + `gaps-apple1.md` G3) |
+| G-2.1 | iPhone personal views (§66) | 🟢 CLOSED (2026-10-18) — D2' iPhone personal surfaces (Today/Inbox/People/Waiting/Briefing + reorg), commit `ba27754`; `apple/iOS/App/Views` holds 13 personal views |
+| G-2.2 | Watch personal (§27/§60/§67) | 🟢 CLOSED (2026-10-18) — D3' watch attention-first home + `NEED YOU` complication + wrist actions, commit `7b5eded`; **D6** (approvals.json) landed with the data lift (`docs/apple-data-lift-2026-10-18.md`) |
+| G-2.3 | §68/§69 personal widgets | 🟢 CLOSED (2026-10-18) — D4' personal widget content (§68/§69) in the App Group, commit `8d935eb`; watchOS accessory family support landed |
+| G-2.4 | Relay beyond iMessage/SMS (email/voicemail/calendar/contacts) | 🟢 CLOSED (2026-10-18) — D5' capture planes (email/voicemail/calendar/contacts) + local-first retention, commit `c6d2def`; backend mail-connector plane is the tested foundation |
+| G-2.5 | Device/simulator verify path | 🟡 **PARTIAL (was OPEN)** — T003-06 harness + launch-arg routers + baseline audit + audit evidence built and working (landed with the Phase 0 commits `87c69be`/`0c1b6ed`); the D6 `approvals.json` contract landed with the data lift (phone writes `approvals.json` on the `cached-state.json` cadence — `apple/iOS/App/Environment/PhoneEnvironment.swift:192-202`); still outstanding: paired phone+watch **watch-display** verification (hardware pairing) and the `contentdelivery.apple.com` egress stall that blocks TestFlight signing (runbook); watch sim build additionally blocked by D7 |
 
 ### T3 — prompt1 core depth (spec pack `gap-closure-t003`)
 
@@ -312,12 +365,12 @@ Legend: 🟢 closed · 🟡 partial · 🔴 open (unchanged from `gaps3`).
 
 | ID | Gap | Status (this pass) |
 |---|---|---|
-| G-4.1 | Canonical all-bundle `swift test` command | 🔴 OPEN — **second live occurrence, 0/46 false green** (D3); `build_and_test.sh` still a bare wrapper |
-| G-4.2 | Lifespan migration (`on_event`) | 🔴 OPEN — `wiring.py:352/357` |
-| G-4.3 | Status doc refresh | 🟡 PARTIAL — uncommitted T204 note added; `updated:` still 2026-09-29; must also record the personal surface plane + Apple count correction |
+| G-4.1 | Canonical all-bundle `swift test` command | 🟢 CLOSED (2026-10-26) — `apple/scripts/test-apple.sh` is the canonical command (touch → build → test → per-bundle count assertion 13/74/23 = 110) and is run by CI; live run 2026-10-26 → 110 passed, 0 failures (D3) |
+| G-4.2 | Lifespan migration (`on_event`) | 🟢 CLOSED (2026-10-26) — `backend/api/wiring.py:345-366` uses `@asynccontextmanager _wiring_lifespan` attached via `target.router.lifespan_context`; `rg 'on_event' backend/api/*.py` → only the docstring hit; zero registrations remain |
+| G-4.3 | Status doc refresh | 🟢 CLOSED (2026-10-26) — `docs/implementation-status.yaml` `updated: 2026-10-26` with the recent_activity block covering P0–P4 planes, R107 PDP wiring, web goals delete, Apple theme picker, D2 convergence, 1003 baseline + closeout items (T208 fix, T207 DNS change, D7, D5 remote finding) |
 | G-4.4 | JWT test keys | 🟢 CLOSED (`85e681c`) |
-| G-4.5 | README Testing section | 🔴 OPEN — `README.md:67` bare `pytest tests` |
-| G-4.6 | CI | 🔴 OPEN — still no workflows; now the most urgent hygiene item given D3 |
+| G-4.5 | README Testing section | 🟢 CLOSED (2026-10-26) — `README.md:69-93` §Testing documents all three canonical commands with counts (backend `pytest` 1003 / web e2e ≥60 / Apple `test-apple.sh` 110 = 13/74/23) |
+| G-4.6 | CI | 🟢 CLOSED (2026-10-26) — `.github/workflows/ci.yml` has `python` / `web` / `apple` jobs with count floors (1003 / ≥60 / 110, 0 failures); the `apple` job runs `bash apple/scripts/test-apple.sh` (D3 guard) |
 
 ---
 
@@ -335,14 +388,14 @@ Ordered by dependency + leverage. Phases 0–1 are new this pass; Phases 2–5 c
    per §3.3 (regenerate pbxproj via `xcodegen` + `patch_uitests.py` if any residual drift).
    Gate: `rg 'com\.celesrenata\.NerveWatch' apple/Distribution/` → zero *bundle-ID* hits
    (target/product names exempt); watch sim build green.
-3. **Junk sweep (§3.7):** delete `DerivedData/`, nested duplicate `.xcodeproj` dirs;
+3. **Junk sweep (§3.8):** delete `DerivedData/`, nested duplicate `.xcodeproj` dirs;
    `.gitignore`: `apple/.swiftpm/`, `*/DerivedData/`, `xcuserdata/`,
    `apple/e2e-artifacts/`; decide `docs/audit/` = committed baseline (recommend: yes) and
    commit `docs/audit/2026-10-18-baseline/` with slice 1.
 4. **D5 (first half):** rotate the signing key, `rm stabulous.p12`, refresh
    `apple/Distribution/fastlane/.env` with the new key; confirm
    `git status --short` shows no secret paths. (Ref purge is second half — §7 Q2.)
-5. **Commit in the 4 slices of §3.7** (distribution+harness → data-lift → deploy → docs),
+5. **Commit in the 4 slices of §3.8** (distribution+harness → data-lift → deploy → docs),
    each green on its own commit.
 6. **Gate:** `git status --short` clean (modulo deliberate ignores); on the final commit:
    `pytest tests/ -m "not integration"` → 601/0; `npm run build && npx playwright test` →
@@ -432,9 +485,10 @@ Phase 5 (hygiene) ──► interleaved; E2 last
 1. **D2 — canonical watch bundle-ID family:** recommend `com.celesrenata.NervePhone.watch.*`
    (matches xcodegen truth + companion semantics). Confirm or counter-propose; one word
    unblocks Phase 0 step 2.
-2. **D5 — repo visibility:** is `nervcenter` local-only or pushed to a remote? If remote, the
-   snapshot-ref purge (§3.5) must cover the remote (or the key rotation must be confirmed
-   complete first). If local-only, `reflog expire + gc` after rotation suffices.
+2. **D5 — repo visibility:** ~~is `nervcenter` local-only or pushed to a remote?~~
+   **Answered 2026-10-26:** the remote is `github.com/celesrenata/nervecenter`. The snapshot-ref
+   purge (§3.5) must therefore cover the remote — `git filter-repo` + force-push, or key
+   rotation confirmed complete first. This is a user decision; not performed.
 3. **`.roo/` state:** commit `.roo/rules-code/30-k8s-deploy.md` (reusable deploy rule) or
    gitignore `.roo/` as IDE state? (The `20-web-design.md` sibling is already tracked, which
    suggests commit — but verify intent.)

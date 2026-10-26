@@ -2,7 +2,7 @@
 
 **Feature ID:** personal-reasoning-policy-closure
 **Created:** 2026-10-14
-**Status:** Draft
+**Status:** Done (2026-10-20; tasks.md + AC-R01–R18 evidence in docs/implementation-status.yaml)
 **Branch target:** main (repo root: nervcenter)
 **Upstream spec:** [prompt2.md](../../prompt2.md) §5–§8 (entities/events), §6–§7 (Person/Communication), §16–§19 (detection), §20–§23 (attention), §28–§29 (escalation), §32 (cross-channel conversation), §35–§39 (privacy policy), §40–§41 (response assistant / no impersonation), §50–§52 (search/memory/daily state), §55–§60 (actions, snooze, follow-up, budget, quiet), §63–§65 (API/MCP/CLI), §70–§72 (privacy, auditability, failure principle)
 **Gap source:** [gaps1.md](../../gaps1.md) G-1.1–G-1.9 (T1 — the personal "reasoning" layer), Phase 1–2 of its sequenced closure plan

@@ -10,7 +10,7 @@
 #   deferred   - consciously postponed
 
 version: 1
-updated: "2026-10-20"
+updated: "2026-10-26"
 spec_section: 95
 
 workstreams:
@@ -212,7 +212,7 @@ workstreams:
       - Command: "`.venv/bin/python -m pytest tests/backend/test_detection_wiring.py tests/backend/test_communications_normalize.py -q`"
         Result: "44 passed - section 61 wiring (R106) + section 62 Alice cross-channel scenario (R102)"
       - Command: "`cd apple && bash scripts/test-apple.sh`"
-        Result: "PASS 104 tests (NerveSharedTests 13 / NerveRelayTests 74 / NerveAppsTests 17), 0 failures"
+        Result: "PASS 110 tests (NerveSharedTests 13 / NerveRelayTests 74 / NerveAppsTests 23), 0 failures"
       - Command: "`PYTHONPATH=synthetic-lab .venv/bin/python -m synthetic_lab`"
         Result: "exit 0 - cases 19 | pass 17 | fail 0 | pending 2 (ask-what-broke, ask-provenance-deploy); detection precision=1.000 recall=1.000 f1=1.000; REGRESSION: no"
       - Command: "`PYTHONPATH=. .venv/bin/python -c \"import backend.api.app; print('OK')\"` (plus fresh-worktree variant at e0217d5)"
@@ -299,7 +299,7 @@ summary:
   status: complete
   uvicorn_boot: "SUCCESS"
   pip_install: "SUCCESS"
-  pytest_count: 9 tests (9 passed, 0 failed) [wave-1 baseline; see recent_activity for current]
+  pytest_count: 1003 tests (1003 passed, 0 failed) [2026-10-26 baseline; see recent_activity for history]
   ruff_status: Fixed 29 errors; 86 remaining in existing code (not blocking)
   defects_fixed:
     - Created `create_app()` factory in `backend/api/app.py`
@@ -387,3 +387,132 @@ recent_activity:
           pytest tests/ -m "not integration" -q -> 601 passed, 0 failed
           (2026-10-19). The wave-1 "9 tests" figure in summary.pytest_count
           is the wave-1 baseline only.
+  - date: "2026-10-26"
+    summary: >
+      T007 (G-4.3) documentation refresh + gaps4 closeout items. The
+      personal planes P0-P4 are implemented (personal-reasoning-policy-closure
+      closed 2026-10-20), the R107 PDP is wired into ask + drafts, the web
+      console ships 21 routed views with a goals delete affordance, the
+      Apple phone ships the Today|Engineering|Ask reorg plus a theme
+      picker, and the watch bundle-ID family (D2) is converged in the
+      tracked tree.
+    items:
+      - id: personal-planes-p0-p4
+        title: Personal Operations Plane P0-P4 implemented
+        detail: >
+          prompt2.md phases P0-P4 (ss75-ss79) are built and tested:
+          backend/attention, backend/communications (+ detection),
+          backend/contacts, backend/messages, backend/email,
+          backend/voicemail, backend/calendar, backend/waiting_on,
+          backend/followups, backend/briefing, backend/drafts; HTTP surface
+          /api/attention, /api/communications, /api/contacts, /api/messages,
+          /api/email, /api/voicemail, /api/calendar, /api/waiting-on,
+          /api/followups, /api/briefing, plus the mail-connector registry at
+          /api/mail-connectors (MailConnectorService at
+          backend/connectors/mail/service.py:65). Web console grew to 21
+          routed views (web/src/App.tsx:47-68). Tests: tests/backend now 38
+          files (was 16), incl. test_attention.py,
+          test_attention_policy.py, test_email.py,
+          test_mail_connector.py, test_voicemail.py, tests/backend/policy/.
+      - id: r107-pdp-wired
+        title: R107 PDP wired into ask + drafts pipelines
+        detail: >
+          PolicyDecisionPoint (backend/policy/pdp.py:612) runs pre-flight
+          before any inference hop (backend/context/ask.py:305) and gates
+          draft dispatch (backend/drafts/drafter.py); POST /api/context/ask
+          is the real grounded-ask pipeline
+          (backend/api/endpoints/context.py). The C0 "unwired inference" and
+          "absent PDP wiring" hard-defect claims in
+          docs/architecture/current-state.md are stale; the legacy
+          PermissionEnforcer remains a no-op scaffold (Hard Defect 5).
+      - id: web-goals-delete
+        title: Web goals delete affordance (GL-3)
+        detail: >
+          goalsApi.delete (web/src/api/client.ts) + inline-confirm delete in
+          web/src/views/GoalsView.tsx hitting DELETE /api/goals/{id}
+          (backend/api/endpoints/goals.py:138, 204); e2e GL-3 in
+          web/tests/e2e/views-a.spec.ts. Web e2e baseline 61/0.
+      - id: apple-theme-picker
+        title: Apple theme picker + publishable ThemeStore
+        detail: >
+          ThemeStore (apple/Shared/Sources/NerveDesign/Theme.swift:110) is
+          now a publishable ObservableObject (@Published preference,
+          UserDefaults.didChangeNotification observer, preferenceBinding);
+          the phone Overview header (apple/iOS/App/Views/OverviewView.swift)
+          carries a ThemePreference menu picker (overview.theme) writing
+          nerveTheme. 6 new ThemeStore unit tests (resolution, persistence,
+          no-op, unknown-raw fallback, cross-store sync) -> NerveAppsTests
+          23; apple suite baseline now 110 (13/74/23), asserted by
+          apple/scripts/test-apple.sh.
+      - id: apple-tab-reorg
+        title: Apple phone Today|Engineering|Ask reorg shipped
+        detail: >
+          apple/iOS/App/Views now holds 13 view files (Today/Inbox/People/
+          Waiting/Briefing personal surfaces landed); TabView reorg at
+          apple/iOS/App/NervePhoneApp.swift:90-113. Supersedes the
+          2026-10-18 data-lift "still open" note.
+      - id: d2-converged
+        title: Watch bundle-ID family (D2) converged in tracked tree
+        detail: >
+          apple/Distribution/xcodegen/NerveWatch.xcodegen.yml and the
+          tracked NerveWatch.xcodeproj/project.pbxproj both carry
+          com.celesrenata.NervePhone.watch / .watch.widgets (all 4
+          PRODUCT_BUNDLE_IDENTIFIER values). A stray nested duplicate
+          generated project (gitignored, .gitignore:64) still holds the old
+          IDs and is junk pending human rm -rf. gaps4 D2 -> CONVERGED, not
+          CLOSED: the committed provisioning profile
+          (apple/Distribution/credentials/NerveWatch.mobileprovision) is
+          registered to com.celesrenata.NerveWatch, team NQV7T36W69, so the
+          converged family signs only after a re-issued profile.
+      - id: python-count-1003
+        title: Python suite baseline is now 1003
+        detail: >
+          pytest tests/ -m "not integration" -q -> 1003 passed, 0 failed
+          (2026-10-26), up from 601 on 2026-10-19 (P0-P4 plane + policy
+          PDP tests).
+      - id: t208-proxy-headers-fix
+        title: T208 mixed-content redirect fix landed in Dockerfile.api
+        detail: >
+          uvicorn's default forwarded_allow_ips=127.0.0.1,::1 silently
+          dropped X-Forwarded-Proto behind the nginx/Traefik hops, so
+          FastAPI issued http:// Location headers from an https:// page
+          (mixed-content block, 2026-09-30 audit D4). Dockerfile.api CMD is
+          now uvicorn ... --proxy-headers --forwarded-allow-ips "*"
+          (comment block at lines 11-16). Boot-verified locally under
+          uvicorn 0.54.0: /api/health -> 200. Not yet live: requires api
+          image rebuild + Harbor push + deploy retag, then a
+          curl -D - check that the Location is https://.
+      - id: t207-public-dns-changed
+        title: T207 premise changed — host now resolves publicly
+        detail: >
+          nervecenter.celestium.life no longer NXDOMAINs on the public
+          internet: the zone now points at frameshift.net ->
+          24.19.103.182 (Cloudflare tunnel), replacing the 2026-09-30
+          Route53 NXDOMAIN finding. However curl from this host returned
+          no response (HTTP code 000, 2026-10-26), so resolution !=
+          routing; end-to-end serving must be re-verified from a host
+          that reaches the K3s cluster (this host's kubeconfig has no
+          nervecenter namespace). T207 stays OPEN until that check.
+      - id: d7-stale-watch-project
+        title: D7 — tracked generated watch project omits two sources
+        detail: >
+          apple/Distribution/Generated/NerveWatch.xcodeproj/project.pbxproj
+          does not list apple/Watch/Store/WatchAttentionStore.swift or
+          apple/Watch/Support/WatchAttentionDesign.swift, both of which
+          are referenced by listed files — watch sim build fails at
+          compile. Distinct from D2 (bundle-ID/signing). Fix:
+          xcodegen generate + patch_uitests.py against the tracked project
+          (xcodegen not installed on this host yet), then rebuild the
+          watch target.
+      - id: d5-remote-visibility
+        title: D5 — repo is NOT local-only; purge decision pending user
+        detail: >
+          origin is github.com/celesrenata/nervecenter, so the p12 blobs in
+          the unreachable snapshot commits (a91b896, d9d9360, bbd5764,
+          2b645cf, a8cdf22) must be treated as potentially remote-visible.
+          Key rotation makes the old blobs inert; git filter-repo +
+          force-push history purge is a destructive outward-facing
+          operation — user decision, not performed this pass. Local
+          worktree p12 files (stabulous.p12 at repo root, gitignored
+          line 52; apple/Distribution/credentials/ gitignored) were
+          deliberately not deleted.

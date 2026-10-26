@@ -17,6 +17,8 @@ import { expect, test } from '@playwright/test'
  *   TA-2  Task DAG: dependency graph (SVG edges) + concurrency badges.
  *   GL-1  Goals: "+ New Goal" opens a form and POSTs, then refreshes the list.
  *   GL-2  Goals: real progress/status/due-date + empty-state guidance copy.
+ *   GL-3  Goals: inline-confirm delete issues DELETE /api/goals/{id} (204)
+ *           and removes the row; cancel dismisses without a request.
  *
  * Console-error policy mirrors `views.spec.ts`:
  *   - `page.on('console')` type 'error' FAILs the test, EXCEPT the two
@@ -72,6 +74,21 @@ function attachConsoleCapture(page: import('@playwright/test').Page, cap: Consol
     // The mock backend has no ws route, so the failed upgrade is handled
     // in-state (badge → Reconnecting) and is not a request failure.
     if (HAS_WS_PATH(req.url())) return
+    // Playwright/Chromium artifact (reproduced in zz-repro): a
+    // `route.fulfill({ status: 204 })` is delivered to the page — the app
+    // fetch resolves `status=204 ok=true` — but the network service still
+    // cancels the pending stream, so `requestfailed` fires
+    // `net::ERR_ABORTED` on the bodyless 204. GL-3 proves delivery
+    // app-side (the row is removed only after the DELETE resolves), so
+    // this network-layer abort is filtered exactly like the WS upgrade
+    // above. Scoped to the goals DELETE so any other failure still
+    // fails the test.
+    if (
+      req.method() === 'DELETE' &&
+      req.url().includes('/api/goals') &&
+      (req.failure()?.errorText ?? '').includes('ERR_ABORTED')
+    )
+      return
     cap.failedRequests.push(
       `${req.method()} ${req.url()} -> ${req.failure()?.errorText ?? 'unknown'}`,
     )
@@ -341,6 +358,61 @@ test.describe('Goals (GL)', () => {
 
       // The form closed after success.
       await expect(page.getByRole('form', { name: /Create a new goal/i })).toHaveCount(0)
+
+      assertConsoleClean(cap)
+    } finally {
+      detach()
+    }
+  })
+
+  test('GL-3: delete confirms inline, then DELETE /api/goals/{id} → 204 removes the row', async ({ page }) => {
+    const cap: ConsoleCapture = { errors: [], pageErrors: [], failedRequests: [] }
+    const detach = attachConsoleCapture(page, cap)
+
+    const goal = {
+      id: 'goal-1',
+      title: 'Ship the observability plane',
+      status: 'active',
+      progress: 0.5,
+      deadline: '2026-12-01',
+      priority: 2,
+    }
+    let deletePath: string | null = null
+
+    // Function predicate: the glob `**/api/goals*` cannot cross the `/`
+    // boundary, so it would never intercept `DELETE /api/goals/{id}` — the
+    // predicate below matches the list URL and every per-goal URL.
+    await page.route((url: URL) => url.pathname.startsWith('/api/goals'), (route) => {
+      if (route.request().method() === 'DELETE') {
+        deletePath = route.request().url().split('/api/').pop() ?? null
+        return route.fulfill({ status: 204, headers: { 'Content-Length': '0' } })
+      }
+      return fulfillList(route, [goal])
+    })
+
+    try {
+      await visitAuthenticated(page, '/goals')
+
+      const card = page.getByTestId('goal-card-goal-1')
+      await expect(card).toBeVisible()
+
+      // First tap: no request issued, inline confirmation shows the row identity.
+      await page.getByTestId('goal-delete-goal-1').click()
+      await expect(page.getByText('Delete “Ship the observability plane”?')).toBeVisible()
+      expect(deletePath).toBeNull()
+
+      // Cancel: confirmation dismisses, the goal remains, still no request.
+      await page.getByTestId('goal-cancel-delete-goal-1').click()
+      await expect(page.getByTestId('goal-delete-goal-1')).toBeVisible()
+      await expect(card).toBeVisible()
+      expect(deletePath).toBeNull()
+
+      // Confirm: DELETE is issued and the row is removed locally.
+      await page.getByTestId('goal-delete-goal-1').click()
+      await page.getByTestId('goal-confirm-delete-goal-1').click()
+      expect(deletePath).toBe('goals/goal-1')
+      await expect(page.getByTestId('goal-card-goal-1')).toHaveCount(0)
+      await expect(page.getByText(/No goals yet/)).toBeVisible()
 
       assertConsoleClean(cap)
     } finally {

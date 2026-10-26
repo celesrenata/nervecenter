@@ -1,6 +1,8 @@
 import XCTest
+import SwiftUI
 import NerveApps
 import NerveModels
+import NerveDesign
 
 final class NerveAppsTests: XCTestCase {
     func testAskAnswerProvenance() {
@@ -434,5 +436,113 @@ final class NerveAppsTests: XCTestCase {
         XCTAssertEqual(makeContent(dayOffset: -1).dueLabel(reference: reference), "overdue")
         let farAway = makeContent(dayOffset: 10).dueLabel(reference: reference)
         XCTAssertNotNil(farAway)
+    }
+}
+
+// MARK: - ThemeStore (gaps-apple1 G5)
+
+/// Unit tests for ``ThemeStore`` — preference persistence, resolution,
+/// no-op semantics, and cross-store sync over a shared UserDefaults suite.
+///
+/// A dedicated suite (`nerve-theme-test`) isolates every test from the
+/// host app's `.standard` storage; the domain is removed before each test.
+final class ThemeStoreTests: XCTestCase {
+    private static let suiteName = "nerve-theme-test"
+
+    private func makeDefaults() -> UserDefaults? {
+        let defaults = UserDefaults(suiteName: Self.suiteName)
+        defaults?.removeObject(forKey: ThemeStore.storageKey)
+        return defaults
+    }
+
+    /// `.system` defers to the view's effective color scheme.
+    func testResolvedThemeSystemFollowsColorScheme() {
+        guard let defaults = makeDefaults() else {
+            return XCTFail("could not open test defaults suite")
+        }
+        let store = ThemeStore(defaults: defaults, preference: ThemePreference.system.rawValue)
+
+        XCTAssertEqual(store.resolvedTheme(for: .light), .light)
+        XCTAssertEqual(store.resolvedTheme(for: .dark), .dark)
+    }
+
+    /// An explicit preference wins over the running color scheme in both
+    /// directions.
+    func testResolvedThemeExplicitPreferenceWins() {
+        guard let defaults = makeDefaults() else {
+            return XCTFail("could not open test defaults suite")
+        }
+        let light = ThemeStore(defaults: defaults, preference: ThemePreference.light.rawValue)
+        XCTAssertEqual(light.resolvedTheme(for: .dark), .light)
+
+        let dark = ThemeStore(defaults: defaults, preference: ThemePreference.dark.rawValue)
+        XCTAssertEqual(dark.resolvedTheme(for: .light), .dark)
+    }
+
+    /// `setPreference` persists the raw value and updates the resolved
+    /// preference; the init seed is written to storage as well.
+    func testSetPreferencePersistsAndUpdatesPreference() {
+        guard let defaults = makeDefaults() else {
+            return XCTFail("could not open test defaults suite")
+        }
+        let store = ThemeStore(defaults: defaults)
+        XCTAssertEqual(store.themePreference, .system)
+
+        store.setPreference(.dark)
+        XCTAssertEqual(store.themePreference, .dark)
+        XCTAssertEqual(defaults.string(forKey: ThemeStore.storageKey), "dark")
+    }
+
+    /// Setting the same value is a no-op: storage is untouched and the
+    /// published state is stable.
+    func testSetPreferenceNoOpWhenUnchanged() {
+        guard let defaults = makeDefaults() else {
+            return XCTFail("could not open test defaults suite")
+        }
+        let store = ThemeStore(defaults: defaults, preference: ThemePreference.dark.rawValue)
+        XCTAssertEqual(defaults.string(forKey: ThemeStore.storageKey), "dark")
+
+        store.setPreference(.dark)
+        XCTAssertEqual(store.themePreference, .dark)
+        XCTAssertEqual(store.preference, "dark")
+        XCTAssertEqual(defaults.string(forKey: ThemeStore.storageKey), "dark")
+    }
+
+    /// An unknown raw value falls back to `.system` for resolution without
+    /// discarding the stored string (forward-compatible with new
+    /// preferences shipped later).
+    func testUnknownRawFallsBackToSystem() {
+        guard let defaults = makeDefaults() else {
+            return XCTFail("could not open test defaults suite")
+        }
+        let store = ThemeStore(defaults: defaults, preference: "neon")
+
+        XCTAssertEqual(store.themePreference, .system)
+        XCTAssertEqual(store.preference, "neon")
+        XCTAssertEqual(store.resolvedTheme(for: .light), .light)
+        XCTAssertEqual(store.resolvedTheme(for: .dark), .dark)
+    }
+
+    /// Two live stores on the same suite stay in sync: a write through
+    /// store A is picked up by store B via the UserDefaults did-change
+    /// notification (delivered on the main queue, so this test pumps the
+    /// main run loop until the sync lands or the deadline passes).
+    func testCrossStoreSyncViaNotification() {
+        guard let defaults = makeDefaults() else {
+            return XCTFail("could not open test defaults suite")
+        }
+        let a = ThemeStore(defaults: defaults, preference: ThemePreference.light.rawValue)
+        let b = ThemeStore(defaults: defaults)
+        XCTAssertEqual(b.themePreference, .light)
+
+        a.setPreference(.dark)
+
+        let deadline = Date().addingTimeInterval(2.0)
+        while b.themePreference != .dark && Date() < deadline {
+            RunLoop.main.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTAssertEqual(b.themePreference, .dark)
+        XCTAssertEqual(b.preference, "dark")
     }
 }

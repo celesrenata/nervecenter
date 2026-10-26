@@ -161,6 +161,14 @@ const GoalsView = () => {
     deadline: '',
   })
 
+  // Delete-flow state (GL-3). The delete is destructive, so it confirms
+  // inline: the first tap reveals the row identity plus Cancel/Confirm, and
+  // the DELETE is only issued on explicit confirm. No window.confirm — it
+  // is invisible to the e2e harness and to keyboard-only users.
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null)
+  const [deleting, setDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
   const loadGoals = async () => {
     const response = await assertOk(await goalsApi.list(), 'goals')
     const rows = (response.data ?? []) as any[]
@@ -242,6 +250,38 @@ const GoalsView = () => {
     }
   }
 
+  const requestDelete = (goalId: string) => {
+    if (deleting) return
+    setDeleteError(null)
+    setConfirmDelete(goalId)
+  }
+
+  const cancelDelete = () => {
+    if (deleting) return
+    setConfirmDelete(null)
+  }
+
+  /**
+   * Issue `DELETE /goals/{id}` (backend: 204 on success, 404 unknown id).
+   * On success the row is removed locally; on failure the `ApiError`
+   * `status — detail` lands in the delete-error banner and the row stays.
+   */
+  const confirmDeleteGoal = async () => {
+    const goalId = confirmDelete
+    if (!goalId) return
+    setDeleting(true)
+    setDeleteError(null)
+    try {
+      assertOk(await goalsApi.delete(goalId), 'delete goal')
+      setGoals((prev) => prev.filter((g) => g.id !== goalId))
+      setConfirmDelete(null)
+    } catch (err) {
+      setDeleteError(formatApiError(err))
+    } finally {
+      setDeleting(false)
+    }
+  }
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap justify-between items-center gap-4">
@@ -262,6 +302,16 @@ const GoalsView = () => {
         >
           <p className="font-semibold mb-1">Goals unavailable</p>
           <p className="text-sm font-mono break-words">{listError}</p>
+        </div>
+      )}
+
+      {deleteError && (
+        <div
+          role="alert"
+          className="text-red-700 dark:text-red-300 bg-red-100 dark:bg-red-900/40 border border-red-300 dark:border-red-700 p-4 rounded-lg"
+        >
+          <p className="font-semibold mb-1">Delete failed</p>
+          <p className="text-sm font-mono break-words">{deleteError}</p>
         </div>
       )}
 
@@ -452,6 +502,45 @@ const GoalsView = () => {
                   <span className="text-primary tabular-nums">
                     P{goal.priority}
                   </span>
+                </div>
+                <div className="flex items-center justify-between gap-3 mt-3 pt-3 border-t border-line">
+                  {confirmDelete === goal.id ? (
+                    <>
+                      <span className="text-sm text-red-700 dark:text-red-300">
+                        Delete “{goal.name}”?
+                      </span>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <button
+                          type="button"
+                          onClick={cancelDelete}
+                          disabled={deleting}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 disabled:opacity-50"
+                          data-testid={`goal-cancel-delete-${goal.id}`}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          onClick={confirmDeleteGoal}
+                          disabled={deleting}
+                          className="px-3 py-1.5 rounded-lg text-xs font-medium bg-red-600 hover:bg-red-700 text-white disabled:opacity-50"
+                          data-testid={`goal-confirm-delete-${goal.id}`}
+                        >
+                          {deleting ? 'Deleting…' : 'Delete'}
+                        </button>
+                      </div>
+                    </>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => requestDelete(goal.id)}
+                      disabled={deleting}
+                      className="text-sm text-red-700 dark:text-red-300 hover:underline disabled:opacity-50"
+                      data-testid={`goal-delete-${goal.id}`}
+                    >
+                      Delete goal
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

@@ -2,7 +2,7 @@
 
 **Spec:** [`spec.md`](./spec.md)
 **Plan:** [`plan.md`](./plan.md)
-**Status:** Planned
+**Status:** Done (2026-10-26)
 **Scope:** G-0.1–G-0.4 stabilization workstreams plus the G-4 hygiene closure defined by AC001–AC008.
 
 > **gaps2 delta (2026-10-14 evening) — T002/T003/T004 are SUPERSEDED by
@@ -34,12 +34,12 @@
 | T002 | G-0.2 mail-connector tests | None | [`tests/backend/test_mail_connector.py`](../../tests/backend/test_mail_connector.py) | AC001 | ⚠️ **superseded** → [`phase0-integrity` P0-03](../phase0-integrity/tasks.md) |
 | T003 | G-0.1 mail-connector commit | T002 green | [`backend/connectors/mail/`](../../backend/connectors/mail/), [`backend/api/endpoints/mail_connectors.py`](../../backend/api/endpoints/mail_connectors.py), [`backend/api/models.py`](../../backend/api/models.py), router region of [`backend/api/app.py`](../../backend/api/app.py), assigned web/theme commit surfaces, Git commits | AC002 | ⚠️ **superseded** → [`phase0-integrity` P0-04](../phase0-integrity/tasks.md) |
 | T004 | G-0.3 build artifacts | None; final gate follows T003 where clean-tree evidence includes its commit | [`.gitignore`](../../.gitignore), [`web/dist/`](../../web/dist/), [`web/Dockerfile`](../../web/Dockerfile) if present | AC003 | ⚠️ **superseded** → [`phase0-integrity` P0-05](../phase0-integrity/tasks.md) |
-| T005 | G-0.4 e2e masks / Apple runner | None | [`apple/Package.swift`](../../apple/Package.swift), [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh) if needed | AC004 | [ ] |
-| T006 | G-4.2 lifespan migration | None | [`backend/api/wiring.py`](../../backend/api/wiring.py), lifespan region of [`backend/api/app.py`](../../backend/api/app.py) | AC005 | [ ] |
-| T007 | G-4.3 documentation refresh | None | [`docs/implementation-status.yaml`](../../docs/implementation-status.yaml), [`docs/architecture/current-state.md`](../../docs/architecture/current-state.md) | AC006 | [ ] |
+| T005 | G-0.4 e2e masks / Apple runner | None | [`apple/Package.swift`](../../apple/Package.swift), [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh) if needed | AC004 | [x] (fallback path) |
+| T006 | G-4.2 lifespan migration | None | [`backend/api/wiring.py`](../../backend/api/wiring.py), lifespan region of [`backend/api/app.py`](../../backend/api/app.py) | AC005 | [x] |
+| T007 | G-4.3 documentation refresh | None | [`docs/implementation-status.yaml`](../../docs/implementation-status.yaml), [`docs/architecture/current-state.md`](../../docs/architecture/current-state.md) | AC006 | [x] (2026-10-26) |
 | T009 | G-4.4 JWT key hygiene | None | [`tests/backend/test_auth_sso.py`](../../tests/backend/test_auth_sso.py) | AC007 | [x] |
-| T010 | G-4.5 canonical test documentation | None | [`README.md`](../../README.md) | AC008 | [ ] |
-| T008 | Integration gate | T002, T003, T004, T005, T006, T007, T009, T010 | Verification only; this file's log and command evidence | AC001–AC008 | [ ] |
+| T010 | G-4.5 canonical test documentation | None | [`README.md`](../../README.md) | AC008 | [x] |
+| T008 | Integration gate | T002, T003, T004, T005, T006, T007, T009, T010 | Verification only; this file's log and command evidence | AC001–AC008 | [x] (2026-10-26) |
 
 ## Detailed task checklists
 
@@ -104,10 +104,10 @@ git status --short
 
 ### T005 — E2E masks / Apple test runner (G-4.1)
 
-- [ ] Investigate the default [`apple/Package.swift`](../../apple/Package.swift) test-target resolution and platform gating.
-- [ ] Prefer a root-cause fix that makes `swift test` run `NerveAppsTests`, `NerveRelayTests`, and `NerveSharedTests` by default without breaking the build.
-- [ ] If SwiftPM cannot provide that default behavior safely, add executable [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh) that runs all three bundles explicitly with `swift test --filter` and fails on any bundle failure.
-- [ ] Ensure the canonical runner is suitable for the e2e-mask/CI invocation and is documented by T010; do not count a two-test default run as complete.
+- [x] Investigate the default [`apple/Package.swift`](../../apple/Package.swift) test-target resolution and platform gating. (Diagnosed: stale SPM test products under-run bare `swift test` — `gaps3.md` §3 / `gaps4.md` §3.4.)
+- [ ] Prefer a root-cause fix that makes `swift test` run `NerveAppsTests`, `NerveRelayTests`, and `NerveSharedTests` by default without breaking the build. (Outstanding: bare `swift test` still under-runs; the task's fallback clause below is satisfied.)
+- [x] If SwiftPM cannot provide that default behavior safely, add executable [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh) that runs all three bundles explicitly with `swift test --filter` and fails on any bundle failure. (Landed: touch → `swift build --build-tests` → `swift test` → per-bundle count assertion 13/74/23 = 110; count updated 2026-10-26 after the ThemeStore tests landed.)
+- [x] Ensure the canonical runner is suitable for the e2e-mask/CI invocation and is documented by T010; do not count a two-test default run as complete. (CI `apple` job runs `bash apple/scripts/test-apple.sh`; README §Testing documents it.)
 
 **Verification:**
 
@@ -120,10 +120,10 @@ Run the applicable command (default test or fallback script) and retain evidence
 
 ### T006 — FastAPI lifespan migration (G-4.2)
 
-- [ ] Replace `on_event("startup"/"shutdown")` in [`backend/api/wiring.py`](../../backend/api/wiring.py) with an `@asynccontextmanager` lifespan handler.
-- [ ] Preserve startup-before-request and shutdown-after-request ordering for `wire_dependencies(target)` and `teardown_dependencies(target)`.
-- [ ] Wire the lifespan into both the module-level `app` and `create_app()` in [`backend/api/app.py`](../../backend/api/app.py), preserving T003's router mount.
-- [ ] Keep [`tests/backend/test_app_wiring.py`](../../tests/backend/test_app_wiring.py) green and confirm no `on_event` usage remains in the migrated path.
+- [x] Replace `on_event("startup"/"shutdown")` in [`backend/api/wiring.py`](../../backend/api/wiring.py) with an `@asynccontextmanager` lifespan handler. (Landed: `wire_dependencies`/`teardown_dependencies` via `_wiring_lifespan` at `backend/api/wiring.py:345-366`.)
+- [x] Preserve startup-before-request and shutdown-after-request ordering for `wire_dependencies(target)` and `teardown_dependencies(target)`. (Full non-integration suite green: 1003 passed.)
+- [x] Wire the lifespan into both the module-level `app` and `create_app()` in [`backend/api/app.py`](../../backend/api/app.py), preserving T003's router mount. (e2e boots the dependency-free `app` on :8000 and exercises it end-to-end.)
+- [x] Keep [`tests/backend/test_app_wiring.py`](../../tests/backend/test_app_wiring.py) green and confirm no `on_event` usage remains in the migrated path. (9 passed; `rg on_event` hits only the docstring describing the migration.)
 
 **Verification:**
 
@@ -137,10 +137,10 @@ rg 'on_event|asynccontextmanager|lifespan' backend/api/wiring.py backend/api/app
 
 ### T007 — Structural documentation refresh (G-4.3)
 
-- [ ] Refresh [`docs/implementation-status.yaml`](../../docs/implementation-status.yaml) against the real tree.
-- [ ] Refresh [`docs/architecture/current-state.md`](../../docs/architecture/current-state.md) to list personal planes P0–P4, the mail-connector plane, policy PDP, event bus, persistence, and JWT/SSO auth with correct paths.
-- [ ] Correct stale top-level references to `backend/events/` and `backend/knowledge/` where they do not exist.
-- [ ] Leave [`audit-gaps.md`](../../audit-gaps.md) unchanged and limit this task to structural accuracy, not a full evidence re-verification.
+- [x] Refresh [`docs/implementation-status.yaml`](../../docs/implementation-status.yaml) against the real tree.
+- [x] Refresh [`docs/architecture/current-state.md`](../../docs/architecture/current-state.md) to list personal planes P0–P4, the mail-connector plane, policy PDP, event bus, persistence, and JWT/SSO auth with correct paths.
+- [x] Correct stale top-level references to `backend/events/` and `backend/knowledge/` where they do not exist.
+- [x] Leave [`audit-gaps.md`](../../audit-gaps.md) unchanged and limit this task to structural accuracy, not a full evidence re-verification.
 
 **Verification:**
 
@@ -172,11 +172,11 @@ pytest tests/backend/test_auth_sso.py -W always
 
 ### T010 — Canonical test commands in README (G-4.5)
 
-- [ ] Add a `Testing` section to [`README.md`](../../README.md).
-- [ ] Document Python: `pip install -e ".[dev]"` and `pytest tests/ -m "not integration"`.
-- [ ] Document web Playwright e2e: `cd web && npm install && npm run e2e`.
-- [ ] Document Apple: `cd apple && swift build && swift test`, or [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh) when T005 uses the fallback.
-- [ ] State expected results without presenting them as verified until the corresponding command evidence exists (for example, `559+ passed, 0 failed`).
+- [x] Add a `Testing` section to [`README.md`](../../README.md).
+- [x] Document Python: `pip install -e ".[dev]"` and `pytest tests/ -m "not integration"`.
+- [x] Document web Playwright e2e: `cd web && npm install && npm run e2e`. (README documents the equivalent canonical form `cd web && npm ci && npm run build && npx playwright test`; `npm run e2e` = `playwright test` per `web/package.json`.)
+- [x] Document Apple: `cd apple && swift build && swift test`, or [`apple/scripts/test-apple.sh`](../../apple/scripts/test-apple.sh) when T005 uses the fallback. (README documents the canonical `bash apple/scripts/test-apple.sh` per the T005 fallback path.)
+- [x] State expected results without presenting them as verified until the corresponding command evidence exists (for example, `559+ passed, 0 failed`). (README now states 1003 / ≥60 / 110, each backed by a same-day run: `pytest` 1003 passed, `npx playwright test` 60 passed, `test-apple.sh` 110 passed 0 failures (13/74/23) — 2026-10-26.)
 
 **Verification:**
 
@@ -217,12 +217,12 @@ git diff --check
 |  | T002 / AC001 |  | Pending |  |
 |  | T003 / AC002 |  | Blocked until T002 | Must include the G-0.2 mail-connector commit identifier |
 |  | T004 / AC003 |  | Pending |  |
-|  | T005 / AC004 |  | Pending |  |
-|  | T006 / AC005 |  | Pending |  |
-|  | T007 / AC006 |  | Pending |  |
+| 2026-10-26 | T005 / AC004 | `bash apple/scripts/test-apple.sh` | Passed: 110 tests, 0 failures (13/74/23) | Closed via the task's fallback path; bare `swift test` default-resolution root-cause fix still outstanding (D3 mitigation only). Count 104→110 same day (ThemeStore tests landed in NerveAppsTests 17→23) |
+| 2026-10-26 | T006 / AC005 | `pytest tests/backend/test_app_wiring.py -q`; `rg on_event backend/api/*.py` | Passed: 9 passed; no `on_event` in migrated code | Lifespan via `@asynccontextmanager` in `backend/api/wiring.py` |
+| 2026-10-26 | T007 / AC006 | `python -c "import yaml; yaml.safe_load(open('docs/implementation-status.yaml'))"`; existence/non-empty asserts on both status docs; `rg 'backend/events/\|backend/knowledge/' docs/...` | Passed: YAML valid (`updated: 2026-10-26`, 9 workstreams, 2 recent_activity entries); both docs present/non-empty; every `backend/events/` / `backend/knowledge/` reference points at a real, existing path (both dirs exist — per the §note at the top, T007 is a content refresh, not a path fix) | `implementation-status.yaml` gained a 2026-10-26 recent_activity block (personal planes P0–P4, R107 PDP wiring, web goals delete, Apple theme picker + 110-suite baseline, D2 convergence, 1003 pytest baseline); `current-state.md` corrected capabilities 11/12/13/14, the PDP wiring claim, the test-count claims, Hard Defect 6 (RESOLVED), and gained a "Since the 2026-10-19 refresh (T007, 2026-10-26)" block |
 |  | T009 / AC007 | `.venv/bin/python -m pytest tests/backend/test_auth_sso.py -W always -q` | Passed: 9 passed, 22 warnings; no PyJWT `InsecureKeyLengthWarning` remains | FastAPI `on_event`, Starlette/httpx, and SQLAlchemy warnings remain for separate T006/dependency cleanup |
-|  | T010 / AC008 |  | Pending |  |
-|  | T008 / AC001–AC008 |  | Blocked until all prerequisites | Final clean-tree and all-suite gate |
+| 2026-10-26 | T010 / AC008 | `rg 'Testing\|pytest tests/ -m\|playwright\|test-apple\.sh' README.md` | Passed: README §Testing documents all three canonical commands with expected results now backed by same-day evidence (1003 / ≥60 / 110) |  |
+| 2026-10-26 | T008 / AC001–AC008 | `pytest tests/ -m "not integration"`; `cd web && npx playwright test`; `bash apple/scripts/test-apple.sh` | All three suites green: 1003 / 60 / 110, 0 failures | Gate now unblocked — T007's doc refresh landed (status docs current at 2026-10-26); T002–T004 superseded by `phase0-integrity` (P0-03/P0-04/P0-05), whose mail-plane is verified green (37 passed). T008 closed. |
 
 ## AC coverage matrix
 

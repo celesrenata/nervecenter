@@ -14,7 +14,7 @@ public struct OverviewView: View {
 
     public var body: some View {
         VStack(spacing: Spacing.lg) {
-            Header()
+            Header(store: store)
             ComputeSection()
             AgentsSection()
             IncidentsSection()
@@ -30,21 +30,40 @@ public struct OverviewView: View {
 
 extension OverviewView {
     struct Header: View {
+        let store: PhoneDataStore
         @EnvironmentObject var env: PhoneEnvironment
+        @EnvironmentObject var themeStore: ThemeStore
+        @State private var showingServerConfig = false
 
         var body: some View {
             HStack {
                 VStack(alignment: .leading, spacing: Spacing.xxs) {
                     Text("NERVECENTER")
                         .font(.headline.weight(.bold))
-                    Button(action: { /* TODO: open server config */ }) {
+                    Button {
+                        showingServerConfig = true
+                    } label: {
                         Text(env.server.host)
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
                     }
+                    .accessibilityLabel("Server: \(env.server.host). Open server configuration.")
+                    .accessibilityIdentifier("overview.serverConfig")
                 }
                 Spacer()
+                Picker("Theme", selection: themeStore.preferenceBinding) {
+                    Text("System").tag(ThemePreference.system)
+                    Text("Light").tag(ThemePreference.light)
+                    Text("Dark").tag(ThemePreference.dark)
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .accessibilityIdentifier("overview.theme")
                 HealthBadge(systemHealth: env.cacheState.systemHealth)
+            }
+            .sheet(isPresented: $showingServerConfig) {
+                ServerConfigSheet(store: store)
+                    .environmentObject(env)
             }
         }
 

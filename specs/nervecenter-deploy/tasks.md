@@ -121,3 +121,32 @@ Remaining: **T205** (rebuild + redeploy web), **T206** (bake real-mode env), **T
 - Live verification (production bundle, Playwright chromium headless, not the dev-server harness): `GET /` → 200 with new asset hash (old hash absent); `GET /api/health` → 200 real Postgres 16.15 + NATS ok (api regression clean). All 10 views render (sidebar + route content each); Overview/Goals show live `/api/goals` data ("Goal 1"/"Goal 2"); no `esnixi` fixture text anywhere; 0 uncaught page errors. Console errors = only the known 404s for `/api/systems` + `/api/decisions` (`/api/overview`, `/api/timeline` 404s are curl-confirmed dead-ends but never fetched by the current views). **D1 (blank page) and D2 (mock mode) resolved.**
 - T208: **NOT fixable web-only** — api pod runs bare `uvicorn … --port 8000` (default `forwarded_allow_ips=127.0.0.1,::1`); live test from the web pod proved `X-Forwarded-Proto: https` is ignored (still `307 → http://`). Requires backend change (`--forwarded-allow-ips "*"` or `FORWARDED_ALLOW_IPS` env → api image/manifest retag). `web/nginx.conf.template` unchanged; `/api/events|entities|evidence` mixed-content blocks remain until the api is retagged.
 - T207 remains open: the URL still resolves only on the home network (public NXDOMAIN).
+
+### Re-verify (2026-10-26) — premise drift + code fix landed
+
+- **T207 status changed — the public-DNS premise is stale.** `nervecenter.celestium.life`
+  now resolves **publicly**: the NS chain points at `frameshift.net` →
+  `24.19.103.182` (a Cloudflare tunnel exit; the 2026-09-30 NXDOMAIN against Route53
+  `ns-*.awsdns-*` NS records no longer reflects the zone). Whether the tunnel actually
+  serves the K3s ingress end-to-end is **not verified from this host** — a curl to the
+  public endpoint returned no response (`curl -o /dev/null -w '%{http_code}'` → `000`,
+  2026-10-26), so the host may resolve but not yet route. Re-confirm from the home
+  network / a host with cluster access before closing T207.
+- **T208 code fix landed.** `Dockerfile.api` CMD is now
+  `uvicorn backend.api.app:app --host 0.0.0.0 --port 8000 --proxy-headers --forwarded-allow-ips "*"`
+  (root cause per the 2026-09-30 note: uvicorn's default `forwarded_allow_ips=127.0.0.1,::1`
+  silently drops `X-Forwarded-Proto` from the nginx/Traefik hops). Boot-verified locally
+  (uvicorn 0.54.0): app starts, `GET /api/health` → 200. **Not yet live:** the fix only
+  takes effect after an api image rebuild + Harbor push + deploy retag — the running
+  `api` pod still runs the old image.
+- **Live-cluster re-verification is not possible from this host.**
+  `kubectl config current-context=default` shows **no `nervecenter` namespace** on the
+  reachable cluster (the K3s cluster that carries the `nervecenter` namespace is not
+  connected to this kubeconfig). Consequently T205/T206/T207/T208 cannot be re-verified
+  against the live cluster from here; this session re-verified only: the public-DNS
+  change above, the T208 code fix + local boot, and the 2026-09-30 RESOLVED log for
+  T205/T206 (unchanged, already complete in the log above).
+- **Remaining to close T208 live:** rebuild + push an api image from this
+  `Dockerfile.api`, retag the `api` Deployment, then `curl -D - https://nervecenter.celestium.life/api/events/`
+  from a network that reaches the cluster — the `Location` header must now be
+  `https://` (the 2026-09-30 mixed-content blocker is expected to disappear).

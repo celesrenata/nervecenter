@@ -2,7 +2,7 @@
 
 **Feature ID:** web-quality-audit
 **Created:** 2026-09-30
-**Status:** Active
+**Status:** Active (PARTIAL — W101 semantic token system + SVG icon set + emoji-navigation removal landed; W102 login surface partly (break-glass copy removed, SSO entry pending S102); W103 new responsive/focus/login e2e (AC-W06/W07) still to be verified. 2026-10-26)
 **Branch target:** main (repo root: nervcenter)
 **Upstream:** [prompot.md](../../prompot.md) §48–51 (views), §71 (auth), new rules `.roo/rules/20-web-design.md` + `.roo/rules/20-web-quality.md`
 **Companion:** [specs/sso-integration/spec.md](../sso-integration/spec.md) (AC-S06 login surface)

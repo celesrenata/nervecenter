@@ -57,6 +57,14 @@ public struct ServerConfig: Codable, Hashable, Sendable {
         URL(string: "\(scheme)://\(host):\(port)/api")
     }
 
+    /// The health endpoint (`<scheme>://<host>:<port>/api/health`) — used by
+    /// the §70 server-config sheet's connection test. `nil` when the base URL
+    /// cannot be formed (empty host).
+    public var healthURL: URL? {
+        guard let base = apiBaseURL else { return nil }
+        return base.appendingPathComponent("health")
+    }
+
     public var webSocketURL: URL? {
         let wsScheme = (scheme == "https") ? "wss" : "ws"
         return URL(string: "\(wsScheme)://\(host):\(port)/ws/events")

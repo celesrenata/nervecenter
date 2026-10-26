@@ -817,7 +817,10 @@ const realApi = {
     const res = await apiFetch('/context/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ question: message, message }),
+      // The T003-04 AskRequest is `extra: "forbid"` — only `question` (plus an
+      // optional `context`) is accepted. The legacy `message` alias is no
+      // longer part of the contract and would trip the 422 rejection.
+      body: JSON.stringify({ question: message }),
     })
     return { data: await responseOrThrow(res), status: res.status }
   },
@@ -830,6 +833,11 @@ const realApi = {
   getGoal: async (goalId: string) => {
     const res = await apiFetch(`/goals/${goalId}`)
     return { data: await responseOrThrow(res), status: res.status }
+  },
+  deleteGoal: async (goalId: string) => {
+    const res = await apiFetch(`/goals/${goalId}`, { method: 'DELETE' })
+    if (!res.ok && res.status !== 204) throw await apiErrorFromResponse(res)
+    return { data: null, status: res.status }
   },
 
   // Attention (prompt2 Phase P0 — Personal Operations Plane)
@@ -1194,6 +1202,11 @@ const mockApi = {
     await delay(50)
     const goal = mockGoals.find((g) => g.id === goalId)
     return { data: goal, status: goal ? 200 : 404 }
+  },
+  deleteGoal: async (goalId: string) => {
+    await delay(50)
+    const exists = mockGoals.some((g) => g.id === goalId)
+    return { data: null, status: exists ? 204 : 404 }
   },
 
   // Attention (prompt2 Phase P0 — Personal Operations Plane). Mock returns the
@@ -1770,6 +1783,7 @@ export const askApi = {
 export const goalsApi = {
   list: () => api.getGoals(),
   get: (goalId: string) => api.getGoal(goalId),
+  delete: (goalId: string) => api.deleteGoal(goalId),
 }
 
 export const modelsApi = {

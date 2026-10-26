@@ -466,7 +466,9 @@ def client():
 def test_router_returns_bare_operational_state(client):
     """The route returns the §52 rollup as a *bare* object (no ``data``/``meta``
     envelope), with all eight sections and the in-memory planes populated from
-    the live singletons."""
+    the live singletons. The clock is pinned through the route's optional
+    ``now`` param so ``calendar_today`` is exact regardless of the wall clock
+    (no time-bomb: the default wall-clock behaviour is unchanged)."""
     from backend.communications.detection import get_detection_service
     from backend.waiting_on import get_waiting_on_service
     from backend.calendar import get_calendar_service
@@ -484,7 +486,10 @@ def test_router_returns_bare_operational_state(client):
         "end": PINNED_NOW.replace(hour=9, minute=30).isoformat(),
     })
 
-    r = client.get("/api/briefing/operational")
+    # ``Z`` suffix (not ``+00:00``): a ``+`` in a query value is URL-decoded to a
+    # space before it reaches the handler.
+    now = PINNED_NOW.isoformat().replace("+00:00", "Z")
+    r = client.get(f"/api/briefing/operational?now={now}")
     assert r.status_code == 200
     body = r.json()
     # Bare object — not the §46 ListResponse envelope.
@@ -516,7 +521,8 @@ def test_router_reads_persistence_backed_services(client):
             {"approval_id": "ap:1", "state": "WAITING_FOR_APPROVAL"},
         ]),
     }
-    body = client.get("/api/briefing/operational").json()
+    now = PINNED_NOW.isoformat().replace("+00:00", "Z")
+    body = client.get(f"/api/briefing/operational?now={now}").json()
     assert [g["id"] for g in body["blocked_goals"]] == ["g:blocked"]
     assert [i["id"] for i in body["active_incidents"]] == ["i:active"]
     assert [a["approval_id"] for a in body["pending_approvals"]] == ["ap:1"]

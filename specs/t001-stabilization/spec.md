@@ -2,7 +2,7 @@
 
 **Feature ID:** t001-stabilization
 **Created:** 2026-10-14
-**Status:** Active
+**Status:** Done (2026-10-26)
 **Branch target:** main (repo root: nervcenter)
 **Upstream:** [gaps1.md](../../gaps1.md) §4 (Gap inventory, T0 + T4), §5 (Sequenced closure plan, Phase 0 + Phase 5)
 **Companions:** [gaps1.md](../../gaps1.md) §2 (Verified current state), §3 (Crashes found & fixed)

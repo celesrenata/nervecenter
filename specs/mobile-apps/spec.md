@@ -2,7 +2,7 @@
 
 **Feature ID:** mobile-apps
 **Created:** 2026-10-01
-**Status:** Active
+**Status:** Done (2026-10-26 — M201–M205 shipped; see tasks.md verification log)
 **Branch target:** main (repo root: nervcenter)
 **Upstream:** [prompot.md](../../prompot.md) §65–73 (Phone/Watch surfaces, §68 priority order, §69 compact state, §70 local connectivity, §71 pairing, §72 approval, §73 staleness), §48–51 (Web UI reference IA)
 **Companions:** [specs/mobile-quality-audit/spec.md](../mobile-quality-audit/spec.md) (AC-M01–AC-M06 SDK contracts), [specs/sso-integration/spec.md](../sso-integration/spec.md) (AC-S04 pairing, AC-S05 approval binding, AC-S07 Apple RP)

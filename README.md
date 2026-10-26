@@ -73,19 +73,19 @@ runs the same three; a deliberately red test must fail CI.
 
 | Plane | Command | Expect |
 | --- | --- | --- |
-| Python | `pytest tests/ -m "not integration"` | 601 passed, 0 failed |
-| Web | `cd web && npm ci && npm run build && npx playwright test` | ≥60 passed |
-| Apple | `bash apple/scripts/test-apple.sh` | 46 tests, 0 failures (13 / 31 / 2) |
+| Python | `pytest tests/ -m "not integration"` | 1003 passed, 0 failed |
+| Web | `cd web && npm ci && npm run build && npx playwright test` | ≥60 passed (60 passed) |
+| Apple | `bash apple/scripts/test-apple.sh` | 110 tests, 0 failures (13 / 74 / 23) |
 
 Notes:
 
-- The Python gate is **601 passing tests** as of 2026-10-19 (integration tests are
+- The Python gate is **1003 passing tests** as of 2026-10-26 (integration tests are
   excluded from the default run via the `not integration` marker).
 - The Apple count assertion in [`apple/scripts/test-apple.sh`](apple/scripts/test-apple.sh)
   defeats the stale-test-product under-run trap (`gaps4.md` §3.4, D3): the script
   `touch`es the test sources, rebuilds with `swift build --build-tests`, runs
   `swift test`, and **asserts the per-bundle counts** (NerveSharedTests 13 /
-  NerveRelayTests 31 / NerveAppsTests 2 = **46 total**). `apple/build_and_test.sh`
+  NerveRelayTests 74 / NerveAppsTests 23 = **110 total**). `apple/build_and_test.sh`
   delegates to it; the count assertion doubles as the cold-cache guard on a
   fresh macOS runner.
 - The Web build step (`npm run build`) keeps the Playwright suite green against

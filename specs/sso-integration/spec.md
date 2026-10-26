@@ -2,7 +2,7 @@
 
 **Feature ID:** sso-integration
 **Created:** 2026-09-30
-**Status:** Active
+**Status:** Active (PARTIAL — S101 backend auth done: signed JWT + device pairing + approval binding in `backend/api/auth.py`, test-verified. S102 web SSO wiring, S103 Apple OIDC RP (PKCE) + Keychain + biometric gate (still `InMemoryCredentialStore` only — `apple/Shared/Sources/NerveAuth/CredentialStore.swift:16`), S104 Authentik provider + deploy env open. 2026-10-26)
 **Branch target:** main (repo root: nervcenter)
 **Upstream spec:** [prompot.md](../../prompot.md) §70–72 (Local Connectivity, Authentication, Sensitive Approval), §48–51 (Web UI), §95 (workstreams)
 

@@ -85,7 +85,19 @@ def _services(request: Request) -> dict[str, Any]:
 
 
 @router.get("/operational", response_model=OperationalState)
-async def get_operational(request: Request) -> OperationalState:
+async def get_operational(
+    request: Request,
+    now: str | None = Query(
+        default=None,
+        description=(
+            "Optional ISO-8601 UTC instant that pins the rollup clock. When "
+            "omitted the wall clock is used (the live CLI / MCP surfaces never "
+            "pass it). Exposed so the time-relative sections (calendar "
+            "today, blocked goals, waiting-on day counts) can be asserted "
+            "deterministically without a clock time-bomb."
+        ),
+    ),
+) -> OperationalState:
     """The §52 Daily Operational State rollup (AC-R17).
 
     A bare object — *not* wrapped in the §46 ``ListResponse`` envelope —
@@ -96,6 +108,7 @@ async def get_operational(request: Request) -> OperationalState:
     """
     return await compose_operational(
         _services(request),
+        now=now,
         detection=None,
         waiting_on=None,
         calendar=None,

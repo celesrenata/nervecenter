@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 
 #if canImport(SwiftUI)
 import SwiftUI
@@ -94,23 +95,93 @@ public enum ThemePreference: String, CaseIterable, Codable, Sendable {
 
 /// Holds the user's theme preference and resolves it to a concrete ``Theme``.
 ///
-/// Persistence is a plain `@AppStorage` string (no keychain) under the
-/// `nerveTheme` key. Resolution of `.system` defers to the *effective*
-/// appearance of the running view, so app roots pass the SwiftUI
-/// `colorScheme` into ``resolvedTheme(for:)`` — that keeps the store
-/// platform-agnostic (no UIApplication / NSAppearance reads in the shared
-/// module) and re-resolves live as the OS appearance changes.
+/// Persistence is a plain `UserDefaults` string (no keychain) under the
+/// `nerveTheme` key. The preference is `@Published` — a picker bound to
+/// ``setPreference(_:)`` therefore re-renders live, and the app roots'
+/// `.theme(themeStore.resolvedTheme(for:))` injection updates without a
+/// relaunch. A `UserDefaults.didChangeNotification` observer keeps other
+/// live instances (phone + watch share nothing, but a widget or a test may
+/// hold a second store on the same suite) in sync.
+///
+/// Resolution of `.system` defers to the *effective* appearance of the
+/// running view, so app roots pass the SwiftUI `colorScheme` into
+/// ``resolvedTheme(for:)`` — that keeps the store platform-agnostic (no
+/// UIApplication / NSAppearance reads in the shared module) and re-resolves
+/// live as the OS appearance changes.
 public final class ThemeStore: ObservableObject {
-    /// The persisted user preference (raw ``ThemePreference`` value).
-    @AppStorage("nerveTheme") public var preference: String = ThemePreference.system.rawValue
+    /// UserDefaults key for the persisted raw preference.
+    public static let storageKey = "nerveTheme"
 
-    public init(preference: String = ThemePreference.system.rawValue) {
-        self.preference = preference
+    /// The persisted user preference (raw ``ThemePreference`` value).
+    @Published public private(set) var preference: String
+
+    private let defaults: UserDefaults
+    private var storageObserver: NSObjectProtocol?
+    private var isInternalWrite = false
+
+    /// - Parameters:
+    ///   - defaults: the `UserDefaults` suite to persist to (tests pass a
+    ///     dedicated suite; production uses `.standard`).
+    ///   - preference: optional seed value. When given, it is used and
+    ///     written to storage; when absent, the stored value (or
+    ///     `.system`) is loaded.
+    public init(defaults: UserDefaults = .standard, preference: String? = nil) {
+        self.defaults = defaults
+        self.preference = preference ?? defaults.string(forKey: Self.storageKey) ?? ThemePreference.system.rawValue
+        if let preference {
+            defaults.set(preference, forKey: Self.storageKey)
+        }
+        // NOTE: the block-based `UserDefaults.addObserver(forName:...)` overload
+        // is unavailable in this SDK generation; register on the default
+        // NotificationCenter instead (scoping via `object:` keeps it to this
+        // suite). The `using:` block runs on the main queue so `@Published`
+        // mutations stay main-thread safe.
+        self.storageObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: defaults,
+            queue: OperationQueue.main,
+            using: { [weak self] _ in
+                self?.syncFromStorage()
+            }
+        )
+    }
+
+    deinit {
+        if let storageObserver {
+            NotificationCenter.default.removeObserver(storageObserver)
+        }
     }
 
     /// The current ``ThemePreference`` (falls back to `.system`).
     public var themePreference: ThemePreference {
         ThemePreference(rawValue: preference) ?? .system
+    }
+
+    /// Persist and publish a new preference. No-op when unchanged.
+    public func setPreference(_ p: ThemePreference) {
+        guard p.rawValue != preference else { return }
+        isInternalWrite = true
+        defaults.set(p.rawValue, forKey: Self.storageKey)
+        isInternalWrite = false
+        preference = p.rawValue
+    }
+
+    /// SwiftUI binding for pickers (`Picker("Theme", selection: …)`).
+    public var preferenceBinding: Binding<ThemePreference> {
+        Binding(
+            get: { [weak self] in self?.themePreference ?? .system },
+            set: { [weak self] in self?.setPreference($0) }
+        )
+    }
+
+    /// Pick up external writes to the same suite (another live store, a
+    /// test, or a future widget). Skips our own writes.
+    private func syncFromStorage() {
+        guard !isInternalWrite,
+              let stored = defaults.string(forKey: Self.storageKey),
+              stored != preference
+        else { return }
+        preference = stored
     }
 
     /// Resolve the current preference against the running view's scheme.
