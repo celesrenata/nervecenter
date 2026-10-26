@@ -150,3 +150,50 @@ Remaining: **T205** (rebuild + redeploy web), **T206** (bake real-mode env), **T
   `Dockerfile.api`, retag the `api` Deployment, then `curl -D - https://nervecenter.celestium.life/api/events/`
   from a network that reaches the cluster — the `Location` header must now be
   `https://` (the 2026-09-30 mixed-content blocker is expected to disappear).
+
+### Full redeploy (2026-10-26) — post-reset recovery, VERIFIED
+
+The ~2026-10-22 cluster reset had wiped the `nervecenter` namespace, the Harbor
+`nervecenter` project (all images, including the pinned `mcp:86a6a93`), and the
+Keycloak `nervecenter` client. Fresh full redeploy from `0545873`:
+
+- **Harbor:** `nervecenter` project recreated via API (private, owner admin).
+  `api`, `mcp`, `web` built at `0545873` and pushed. First pass was built
+  arm64 (host default) and CrashLoopBackOff'd with `exec ... no such file or
+  directory` on the amd64 nodes; rebuilt with `--platform linux/amd64` and
+  re-pushed under the same tag — hence `imagePullPolicy: Always` now on all
+  four NerveCenter manifests (commit `5fa47ad`).
+- **Cluster:** namespace + out-of-band secrets recreated out-of-band
+  (`harbor-pull`, `nervecenter-env` per `secrets.yaml.example` doc-1 values,
+  `nervecenter-oauth` placeholder). `kubectl apply -k` with `:latest` →
+  `:0545873` retag. Migration Job ran against fresh Postgres 16 (pgvector) —
+  `alembic=005_nc_platform`.
+- **Manifest drift from old cluster state (committed this session):**
+  - `mcp-deployment.yaml` — pin `86a6a93` → `0545873` (old tag lost, `13d359b`).
+  - `ingress.yaml` — `/` backend `nervecenter-oauth:4180` → `web:80` OPEN
+    (`0d10eb1`). The SSO gate is deployed but unrouted: the Keycloak client was
+    lost in the reset and a placeholder `client-secret` would loop every visitor
+    into Keycloak. Re-point `/` to `nervecenter-oauth:4180` after recreating the
+    client + real `nervecenter-oauth` Secret.
+- **Verification (all from this host, 2026-10-26):**
+  - Pods: api, mcp, nats, web, postgres-0, nervecenter-oauth all `1/1 Running`,
+    zero restarts; migrate Job `Succeeded` (`1/1 Completed`).
+  - `/api/health` (port-forward and via Traefik LB) → `status ok`, db
+    `ok` (PostgreSQL 16.15, pgvector_available), nats `connected` + JetStream.
+  - `/mcp/health` (port-forward + LB) → `healthy`; SPA `/` → 200.
+  - **T207 closed live:** public `https://nervecenter.celestium.life/` → 200
+    from this host (Cloudflare tunnel now routes to the ingress);
+    `/api/health` and `/mcp/health` 200 over the public host with valid
+    cert-manager TLS.
+  - **T208 closed live:** `GET /api/events/` over the public host → HTTP 200,
+    no `Location` 307, no mixed content (T208 `--proxy-headers` fix confirmed
+    end-to-end).
+- **Known state after this deploy:**
+  - Fresh empty database (data reset accepted by operator).
+  - `NERVE_MOCK_INFER=1` and `NERVE_OMNIROUTE_URL` point at an in-cluster
+    `omniroute.nervecenter.svc` that does not exist — inference answers are
+    mock; no OmniRoute failure expected on the happy path.
+  - SSO gate inert by design (see ingress note above).
+  - web nginx still fans `/mcp/` → api (404 via web); the ingress serves
+    `/mcp/` direct from the mcp service, so this only matters for clients that
+    reach the web Service directly.
