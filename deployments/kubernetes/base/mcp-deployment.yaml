@@ -29,11 +29,12 @@ spec:
     spec:
       containers:
         - name: mcp
-          # Pinned to the cluster-running image (kubectl -n nervecenter get
-          # deploy mcp -o jsonpath='...containers[0].image' on 2026-10-15);
-          # a later `kubectl apply -k` with the :latest placeholder would
+          # Pinned to the deploy commit built + pushed to Harbor on
+          # 2026-10-26; the old pin (86a6a93, from the 2026-10-15 cluster
+          # state) was lost in the ~2026-10-22 cluster reset, which deleted
+          # the `nervecenter` Harbor project. A :latest placeholder would
           # break mcp with ImagePullBackOff (no such tag in Harbor).
-          image: "registry.celestium.life/nervecenter/mcp:86a6a93"
+          image: "registry.celestium.life/nervecenter/mcp:0545873"
           imagePullPolicy: IfNotPresent
           ports:
             - name: http
