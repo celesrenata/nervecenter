@@ -6,9 +6,13 @@
 # Middleware (its only 3 middlewares are prefix-strip / buffering), so SSO is
 # enforced by pointing the Ingress at the `nervecenter-oauth` Service.
 #
-# Route map:
+# Route map (2026-10-26 redeploy state):
 #   /mcp/  -> mcp  (:8000)  DIRECT, OPEN  (programmatic MCP JSON-RPC API)
-#   /      -> nervecenter-oauth (:4180)  GATED  (covers the SPA at / and /api/)
+#   /      -> web  (:80)    OPEN          (SPA at / and /api/ — gate not routed;
+#                                         see the / route comment below)
+#
+# To re-activate SSO, restore the / backend to nervecenter-oauth:4180 after the
+# Keycloak `nervecenter` client + real nervecenter-oauth Secret are recreated.
 #
 # The gate reverse-proxies authenticated traffic to the web nginx (:80), which
 # in turn fans out in-cluster:
@@ -57,11 +61,18 @@ spec:
                 name: mcp
                 port:
                   number: 8000
-          # GATED: SSO gate -> web nginx -> (SPA | /api/). Everything else.
+          # OPEN (2026-10-26): the SSO gate (nervecenter-oauth:4180) cannot be
+          # routed until the Keycloak `nervecenter` client is recreated in the
+          # realm `celestium` and its client-secret lands in the
+          # `nervecenter-oauth` Secret (both were lost in the ~2026-10-22
+          # cluster reset). A placeholder client-secret would send every
+          # visitor into a login redirect loop, so the SPA is served open
+          # (in-cluster app login via NerveCenter-minted JWTs still applies).
+          # Re-point this to nervecenter-oauth:4180 to re-activate SSO.
           - path: /
             pathType: Prefix
             backend:
               service:
-                name: nervecenter-oauth
+                name: web
                 port:
-                  number: 4180
+                  number: 80
