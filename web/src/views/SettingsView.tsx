@@ -207,6 +207,22 @@ export function SettingsView() {
             <code className="text-xs">apple/Distribution</code> notes for the relay build.
           </p>
         </div>
+
+        <div className="rounded-md border border-line bg-hover/40 p-4 flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="font-medium text-primary mb-1">Manage your connections</p>
+            <p className="text-sm text-secondary">
+              Register, verify, sync, and diagnose every connector — and see each
+              connection's live status at a glance.
+            </p>
+          </div>
+          <Link
+            to="/connections"
+            className="px-4 py-2 rounded-lg bg-accent text-accent-contrast text-sm font-medium hover:opacity-90"
+          >
+            Open Connections
+          </Link>
+        </div>
       </section>
 
       {/* ── Section 3 — App download & sideload instructions ─────────────── */}

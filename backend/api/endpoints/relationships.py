@@ -27,8 +27,42 @@ from backend.api.models import (
     RelationshipCreateRequest,
 )
 from backend.knowledge.relationship import UnknownEntityError
+from backend.persistence.repositories.registry import RepositoryRegistry
 
 router = APIRouter(prefix="/api/relationships", tags=["relationships"])
+
+
+def _relationships_service(request: Request):
+    """The durable People & Relationships service (§11, workstream J),
+    lazily built from the durable repository registry and cached on
+    ``app.state``.
+
+    The relationships plane is durable-backed (workstream-F repositories);
+    without ``NERVE_DB_URL`` there is no registry and the routes answer an
+    honest ``503 relationships_unavailable`` — never fabricated data.
+    """
+    cached = getattr(request.app.state, "relationships_service", None)
+    if cached is not None:
+        return cached
+    registry = getattr(request.app.state, "repository_registry", None)
+    if not isinstance(registry, RepositoryRegistry):
+        raise HTTPException(
+            status_code=503,
+            detail="relationships_unavailable: the durable database is not configured",
+        )
+    from backend.communications.relationships_service import RelationshipsService
+
+    from backend.communications import get_communications_service
+
+    svc = RelationshipsService(
+        communications=registry.communications,
+        commitments=registry.commitments,
+        calendar=registry.calendar,
+        session_factory=registry.session_factory,
+        in_memory=get_communications_service(),
+    )
+    request.app.state.relationships_service = svc
+    return svc
 
 
 def _meta(**pagination: int | None) -> ApiResponseMeta:
@@ -101,6 +135,41 @@ async def create_relationship(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return rel.model_dump(mode="json")
+
+
+# -- People & Relationships plane (spec §11 — frozen routes) ------------------
+
+
+@router.get("/unanswered")
+async def list_unanswered(request: Request, person_id: str | None = None):
+    """Factual unanswered-conversation list (spec §11).
+
+    A (person, channel) conversation is surfaced when its newest inbound
+    message is at least the configured number of days old with no outbound
+    reply after it. Message-counting facts only — never a judgment about the
+    person, and the body is never returned (subject + content_ref at most).
+    """
+    svc = _relationships_service(request)
+    entries = await svc.unanswered_all(limit=200)
+    if person_id is not None:
+        entries = [e for e in entries if e.get("person_id") == person_id]
+    return {"data": entries, "meta": _meta(total=len(entries))}
+
+
+@router.get("/social")
+async def list_social_plans(
+    request: Request, person_id: str | None = None, days: int = Query(default=14, ge=1, le=90)
+):
+    """Upcoming social calendar plans (spec §11).
+
+    An event is a plan for the person when the user marked it social
+    (``extra["social"] = true``) or the person's identity handle appears
+    verbatim in ``extra["attendees"]``. No fuzzy description/location
+    matching — the calendar's explicit attendees only.
+    """
+    svc = _relationships_service(request)
+    plans = await svc.social_plans(person_id=person_id, days=days)
+    return {"data": plans, "meta": _meta(total=len(plans))}
 
 
 @router.get("/{relationship_id}")

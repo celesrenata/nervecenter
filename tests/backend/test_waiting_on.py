@@ -90,6 +90,8 @@ def test_waiting_on_defaults():
     assert item.follow_up_count == 0
     assert item.last_follow_up_at is None
     assert item.attention_id is None
+    # No escalation policy unless the relay posts one (§22/§45).
+    assert item.escalation_policy is None
 
 
 def test_source_and_status_enum_values():
@@ -112,11 +114,59 @@ def test_ingest_creates_open_item_and_attention(client):
     assert item["person_display_name"] == "Sam"
     assert item["description"] == "deployment credentials"
     assert item["follow_up_count"] == 0
+    # No escalation policy was posted, so the field is null (not omitted).
+    assert item["escalation_policy"] is None
     # A fresh OPEN request produced exactly one live AttentionItem.
     att = data["new_attention"]
     assert att is not None
     assert att["status"] == "NOW"
     assert item["attention_id"] == att["attention_id"]
+
+
+def test_ingest_stores_escalation_policy_verbatim(client):
+    """The relay's escalation policy is stored as posted and surfaces on the
+    read endpoints (§22/§45 — the UI renders an "Urgent" marker for
+    ``{"priority": "urgent"}``)."""
+    res = client.post("/api/waiting-on/ingest", json={
+        "request_id": "wo-urgent",
+        "person_display_name": "Sam",
+        "description": "deployment credentials",
+        "source": "messages",
+        "escalation_policy": {"priority": "urgent", "window_hours": 24},
+    })
+    assert res.status_code == 201, res.text
+    item = res.json()["item"]
+    assert item["escalation_policy"] == {"priority": "urgent", "window_hours": 24}
+    # It survives the round trip on GET and on the list projection.
+    assert client.get("/api/waiting-on/wo-urgent").json()["escalation_policy"] == {
+        "priority": "urgent", "window_hours": 24
+    }
+    listed = client.get("/api/waiting-on").json()["data"]
+    assert next(i for i in listed if i["request_id"] == "wo-urgent")["escalation_policy"] == {
+        "priority": "urgent", "window_hours": 24
+    }
+
+
+def test_escalation_policy_is_optional_and_typed(client):
+    # An empty object is normalised to null on ingest (``or None``) so the
+    # read contract is a clean null, matching the model default.
+    res = client.post("/api/waiting-on/ingest", json={
+        "request_id": "wo-empty-policy",
+        "person_display_name": "Sam",
+        "description": "deployment credentials",
+        "escalation_policy": {},
+    })
+    assert res.status_code == 201, res.text
+    assert res.json()["item"]["escalation_policy"] is None
+    # A malformed policy (e.g. a bare string) is rejected with 422 at the
+    # boundary — the field is typed ``dict | null``, not ``Any``.
+    bad = client.post("/api/waiting-on/ingest", json={
+        "request_id": "wo-bad-policy",
+        "person_display_name": "Sam",
+        "description": "deployment credentials",
+        "escalation_policy": "urgent",
+    })
+    assert bad.status_code == 422
 
 
 def test_ingest_is_idempotent_by_request_id(client):
@@ -393,6 +443,11 @@ def test_seed_demo_populates_requests(client):
     resolved = client.get("/api/waiting-on/wo-seed-alice-review").json()
     assert resolved["status"] == "resolved"
     assert resolved["resolved_at"] is not None
+    # §19 escalation demo: 3 days unanswered is urgent, the 1-day claim is not
+    # — so the Waiting-On screen shows exactly one "Urgent" marker.
+    by_id = {i["request_id"]: i for i in all_list}
+    assert by_id["wo-seed-sam-creds"]["escalation_policy"] == {"priority": "urgent"}
+    assert by_id["wo-seed-insurance-claim"]["escalation_policy"] is None
 
 
 def test_service_reset_hook():

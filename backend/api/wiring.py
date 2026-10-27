@@ -65,6 +65,16 @@ from backend.persistence.connection import (
     DatabaseConfig,
     create_engine,
     dispose_engine,
+    make_session_factory,
+)
+from backend.persistence.repositories import RepositoryRegistry
+from backend.ingest.supervisor import (
+    install_ingest_supervisor,
+    stop_ingest_supervisor,
+)
+from backend.calendar.sync import (
+    install_calendar_sync,
+    stop_calendar_sync,
 )
 from backend.services.systems import SystemsService
 from backend.tasks.service import TaskService
@@ -266,6 +276,99 @@ async def wire_dependencies(target: FastAPI) -> None:
             services.pop(key, None)
     target.state.services = services
 
+    # Personal-plane repositories (workstream F): exposed to later workstreams
+    # (B/C) as ``target.state.repository_registry``. Built from the same
+    # durable engine when one is configured; when no DB URL is set the
+    # attribute is cleared so endpoints keep their honest "not configured"
+    # behavior — wiring is intentionally optional (see module docstring).
+    # The secrets vault (workstream B) will swap in a real SecretCodec; until
+    # then the identity codec keeps the durable boundary intact.
+    if target.state.db_engine is not None:
+        try:
+            target.state.repository_registry = RepositoryRegistry(
+                make_session_factory(target.state.db_engine)
+            )
+        except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
+            log.warning("api.wiring.repository_registry_failed", error=str(exc))
+            target.state.repository_registry = None
+    else:
+        target.state.repository_registry = None
+
+    # Mail ingest plane (workstream C): one worker per enabled mail
+    # connection, started from durable state (spec §4/§16). The hook is a
+    # no-op unless NERVE_INGEST_ENABLED is set, a durable registry exists,
+    # and an object store is configured — otherwise the plane degrades to
+    # "not configured" and startup is unaffected.
+    try:
+        await install_ingest_supervisor(target)
+    except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
+        log.warning("api.wiring.ingest_supervisor_failed", error=str(exc))
+
+    # Calendar sync plane (workstream E): one poll loop over every enabled
+    # calendar account, started from durable state (spec §8). The hook is a
+    # no-op unless NERVE_CALENDAR_SYNC_ENABLED is set and a durable registry
+    # exists — otherwise the plane degrades to "not configured" and startup is
+    # unaffected. Kept separate from the mail supervisor on purpose: the mail
+    # plane requires an object store; the calendar plane requires only the
+    # durable registry (its credentials live in the same secrets vault).
+    try:
+        await install_calendar_sync(target)
+    except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
+        log.warning("api.wiring.calendar_sync_failed", error=str(exc))
+
+    # Today section providers (wave G): bills registers a Today provider
+    # that surfaces confirmed/escalating bills. Same tolerance pattern as
+    # the ingest/calendar hooks above: no durable registry -> no-op, a
+    # missing module is tolerated, and any failure degrades to a warning
+    # so startup never crashes. Wellness deliberately registers no Today
+    # provider (by design — its data is trend-only, not "today" material).
+    if getattr(target.state, "repository_registry", None) is not None:
+        try:
+            from backend.bills.service import register_bills_today_provider
+
+            register_bills_today_provider()
+        except ImportError:
+            pass  # bills package absent from this build — no-op
+        except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
+            log.warning("api.wiring.bills_today_provider_failed", error=str(exc))
+
+    # Today section providers (wave H): routines registers a Today provider
+    # that surfaces upcoming routine slots (coming_up) and today's
+    # completed check-ins (handled). Its needs_you is [] by design — the
+    # durable attention mirror is the sole source for that section (no
+    # double-counting, same rule as bills). Same tolerance pattern as the
+    # bills block above: no durable registry -> no-op, a missing module is
+    # tolerated, and any failure degrades to a warning so startup never
+    # crashes.
+    if getattr(target.state, "repository_registry", None) is not None:
+        try:
+            from backend.routines.service import register_routines_today_provider
+
+            register_routines_today_provider()
+        except ImportError:
+            pass  # routines package absent from this build — no-op
+        except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
+            log.warning("api.wiring.routines_today_provider_failed", error=str(exc))
+
+    # Wellness sleep seam (spec §10, frozen by workstream H): an async
+    # ``days -> list[{bed_at, wake_at, duration_minutes, source}]`` callable
+    # that the wellness trends endpoint resolves at request time from
+    # ``target.state.wellness_sleep_provider`` (no module-import coupling).
+    # Bound from the same durable registry; without one the degraded factory
+    # (always ``[]``) keeps the seam honest — missing sleep data renders as
+    # "no sleep data" and never proves asleep or awake.
+    try:
+        from backend.routines.service import make_wellness_sleep_provider
+
+        target.state.wellness_sleep_provider = make_wellness_sleep_provider(
+            getattr(target.state, "repository_registry", None)
+        )
+    except ImportError:
+        target.state.wellness_sleep_provider = None
+    except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
+        log.warning("api.wiring.wellness_sleep_seam_failed", error=str(exc))
+        target.state.wellness_sleep_provider = None
+
 
 async def _build_and_connect_nats(target: FastAPI) -> NatsClient | None:
     """Build the NATS client, run a bounded connect attempt, then ensure the
@@ -316,7 +419,22 @@ async def _build_and_connect_nats(target: FastAPI) -> NatsClient | None:
 
 
 async def teardown_dependencies(target: FastAPI) -> None:
-    """Dispose the engine and disconnect NATS; absence of either is a no-op."""
+    """Stop the ingest supervisor, then dispose the engine and disconnect
+    NATS; absence of any of them is a no-op."""
+
+    # The mail ingest workers hold open the durable session factory, so
+    # they are stopped before the engine is disposed (order matters).
+    try:
+        await stop_ingest_supervisor(target)
+    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+        log.warning("api.wiring.ingest_supervisor_stop_failed", error=str(exc))
+
+    # The calendar sync loop holds the same session factory — stop it before
+    # the engine is disposed (order matters, same reason as the mail workers).
+    try:
+        await stop_calendar_sync(target)
+    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+        log.warning("api.wiring.calendar_sync_stop_failed", error=str(exc))
 
     engine = getattr(target.state, "db_engine", None)
     if engine is not None:
@@ -331,6 +449,11 @@ async def teardown_dependencies(target: FastAPI) -> None:
     services = getattr(target.state, "services", None)
     if isinstance(services, dict):
         services.clear()
+
+    # The repository registry (workstream F) held the same session factory;
+    # drop it so a later startup rebuilds fresh repositories from the new
+    # engine.
+    target.state.repository_registry = None
 
     client = getattr(target.state, "nats_client", None)
     if client is not None:

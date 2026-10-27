@@ -46,6 +46,9 @@ const SAM_ITEM = {
   note: null,
   created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
   updated_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+  // §19/§22 escalation policy (mirrors backend seed_demo): 3 days
+  // unanswered → "follow up within 24h, or escalate to a VIP if unresolved".
+  escalation_policy: { priority: 'urgent' },
 }
 
 function iso(daysAgo: number): string {
@@ -120,10 +123,42 @@ test.describe('Waiting On (WO — prompt2 §19/§31)', () => {
       await expect(page.getByText('Waiting on', { exact: true })).toBeVisible()
       // The elapsed-time badge shows how long the request has been waiting.
       await expect(page.getByText('3 days')).toBeVisible()
+      // The §22/§45 escalation indicator: this seeded request is urgent
+      // ("follow up within 24h, or escalate to a VIP if unresolved").
+      const urgentBadge = page.getByTestId('waiting-on-urgent-wo-seed-sam-creds')
+      await expect(urgentBadge).toBeVisible()
+      await expect(urgentBadge).toHaveText('Urgent')
       // The per-item actions are present for an OPEN request.
       await expect(page.getByRole('button', { name: 'Follow up' })).toBeVisible()
       await expect(page.getByRole('button', { name: 'Resolved' })).toBeVisible()
 
+      assertConsoleClean(cap)
+    } finally {
+      detach()
+    }
+  })
+
+  test('no urgent badge when the item has no urgent escalation policy', async ({ page }) => {
+    const cap: ConsoleCapture = { errors: [], pageErrors: [], failedRequests: [] }
+    const detach = attachConsoleCapture(page, cap)
+
+    // Same request, but the relay posted no escalation policy → the card
+    // still renders, just without the "Urgent" marker (§22/§45).
+    await page.route('**/api/waiting-on**', (r) =>
+      fulfillJson(r, [{ ...SAM_ITEM, escalation_policy: null }]),
+    )
+
+    try {
+      await visitAuthenticated(page, '/waiting-on')
+      await expect(page.getByText('Sam')).toBeVisible()
+      const urgentBadge = page.getByTestId('waiting-on-urgent-wo-seed-sam-creds')
+      await expect(urgentBadge).toHaveCount(0)
+      // A policy that is *not* urgent (e.g. "standard") also does not badge.
+      await page.route('**/api/waiting-on**', (r) =>
+        fulfillJson(r, [{ ...SAM_ITEM, escalation_policy: { priority: 'standard' } }]),
+      )
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      await expect(urgentBadge).toHaveCount(0)
       assertConsoleClean(cap)
     } finally {
       detach()

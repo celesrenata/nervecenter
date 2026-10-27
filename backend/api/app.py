@@ -14,6 +14,7 @@ headers, preventing 307 redirects to http:// behind TLS-terminating ingresses.
 from __future__ import annotations
 
 import os
+from contextlib import asynccontextmanager
 
 import structlog
 
@@ -42,9 +43,11 @@ from backend.api.endpoints import (
     attention,
     briefing,
     approvals,
+    bills,
     calendar,
     communications,
     conversations,
+    connections,
     contacts,
     people,
     changes,
@@ -72,11 +75,15 @@ from backend.api.endpoints import (
     models_history,
     overview,
     relationships,
+    relay,
+    routines,
     routes,
     runs,
     search,
     systems,
     tasks,
+    today,
+    wellness,
 )
 from backend.api.health import router as health_router
 from backend.api.observability import router as observability_router
@@ -114,6 +121,7 @@ ALL_ROUTERS = (
     incidents.router,
     models.router,
     compute.router,
+    routines.router,
     routes.router,
     changes.router,
     approvals.router,
@@ -127,7 +135,74 @@ ALL_ROUTERS = (
     systems.router,
     models_history.router,
     metrics.router,
+    connections.router,
+    relay.router,
+    today.router,
+    wellness.router,
+    bills.router,
 )
+
+
+def _install_connection_control_plane(app: FastAPI) -> None:
+    """Bind the connector control plane onto ``app.state``.
+
+    Mirrors where :mod:`backend.api.wiring` installs the repository
+    registry: built from the same durable session factory when a registry is
+    present, and set to ``None`` otherwise so the ``/api/connections`` and
+    ``/api/relay`` routers keep their honest degradation semantics. The
+    Fernet vault (``NERVE_SECRET_KEY``) is installed as the durable
+    ``SecretCodec`` so every secret written through this wave is encrypted
+    at rest; without the key the plane is still available for credential-less
+    config, and secret operations fail with a stable ``vault_unavailable``
+    code instead of storing plaintext.
+    """
+
+    registry = getattr(app.state, "repository_registry", None)
+    if registry is None:
+        app.state.connection_control_plane = None
+        return
+    from backend.connectors.registry import ConnectionControlPlane
+    from backend.connectors.vault import VaultError, load_from_env
+    from backend.persistence.repositories import RepositoryRegistry
+
+    vault = None
+    try:
+        vault = load_from_env()
+    except VaultError as exc:
+        log.warning("api.control_plane_vault_absent", code=exc.code)
+    # Rebuild the registry bound to the same session factory but with the
+    # Fernet codec, so secrets are encrypted at the durable boundary.
+    durable_registry = (
+        RepositoryRegistry(registry.session_factory, secret_codec=vault)
+        if vault is not None
+        else registry
+    )
+    app.state.connection_control_plane = ConnectionControlPlane(
+        durable_registry, vault=vault
+    )
+
+
+def _install_control_plane_wiring(target: FastAPI) -> None:
+    """Wrap the dependency-wiring lifespan to install the control plane.
+
+    Runs after :func:`backend.api.wiring.wire_dependencies` (which installs
+    ``repository_registry`` and starts/stops workstream C's mail-ingest
+    supervisor) and before the first request is served.
+    """
+
+    original = target.router.lifespan_context
+
+    @asynccontextmanager
+    async def _lifespan(app: FastAPI):
+        async with original(app):
+            try:
+                _install_connection_control_plane(app)
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.control_plane_install_failed", error=str(exc))
+                app.state.connection_control_plane = None
+            yield
+
+    target.router.lifespan_context = _lifespan
 
 
 def canonical_aliases() -> APIRouter:
@@ -230,6 +305,7 @@ def create_app() -> FastAPI:
 
     _configure(target)
     install_dependency_wiring(target)
+    _install_control_plane_wiring(target)
 
     # Attention engine (prompt2 P0): an in-process, engine-independent
     # store that is always available, so bind the singleton explicitly.

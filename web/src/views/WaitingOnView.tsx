@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { waitingOnApi, ApiError } from '../api/client'
+import { AlertTriangleIcon } from '../components/icons'
 
 /**
  * WaitingOnView — the Waiting-On plane (prompt2 §19 — Waiting-On Detection /
@@ -41,6 +42,22 @@ export interface WaitingOnItem {
   note: string | null
   created_at?: string | null
   updated_at?: string | null
+  /** Optional escalation policy (P0 AttentionItem contract, §22/§45): e.g.
+   * `{"priority": "urgent"}` → follow up within 24h, or escalate to a VIP
+   * if unresolved. The UI shows a subtle "Urgent" marker for it. */
+  escalation_policy?: Record<string, unknown> | null
+}
+
+/** True when the request carries the "urgent" escalation policy (§22/§45).
+ * The backend posts `{"priority": "urgent"}`; we only key off that one
+ * producer contract so unknown keys never render as urgent. */
+function isUrgent(item: WaitingOnItem): boolean {
+  return (
+    item.status === 'open' &&
+    typeof item.escalation_policy === 'object' &&
+    item.escalation_policy !== null &&
+    (item.escalation_policy as Record<string, unknown>).priority === 'urgent'
+  )
 }
 
 interface FollowUpResult {
@@ -185,6 +202,7 @@ export function WaitingOnView() {
             const days = daysElapsed(item.requested_at)
             const draft = drafts[item.request_id]
             const thisBusy = busy?.requestId === item.request_id ? busy.action : null
+            const urgent = isUrgent(item)
             return (
               <li
                 key={item.request_id}
@@ -200,6 +218,17 @@ export function WaitingOnView() {
                       <span className="text-sm font-semibold uppercase tracking-wide text-muted">
                         {open ? 'Waiting on' : item.status}
                       </span>
+                      {urgent && (
+                        <span
+                          className="inline-flex items-center gap-1 rounded-full bg-red-100 px-2 py-0.5 text-xs font-semibold text-red-700 dark:bg-red-900/40 dark:text-red-300"
+                          aria-label="Urgent escalation policy"
+                          title="Urgent: follow up within 24h, or escalate to a VIP if unresolved"
+                          data-testid={`waiting-on-urgent-${item.request_id}`}
+                        >
+                          <AlertTriangleIcon size={12} />
+                          Urgent
+                        </span>
+                      )}
                       <span
                         className="rounded-full bg-gray-200 px-2 py-0.5 text-xs font-medium text-gray-600 dark:bg-gray-700 dark:text-gray-300"
                         title="Source channel"

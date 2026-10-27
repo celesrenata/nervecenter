@@ -85,6 +85,14 @@ from backend.knowledge.relationship import (
 )
 from backend.tasks.service import TaskService, _schema_to_orm as _task_to_orm
 from schemas.goals import Goal as GoalSchema
+
+# Wave G/H/I/J plane models: import them explicitly so ``Base.metadata`` is a
+# stable, complete universe no matter which test files run in the same session.
+# (H's routines models are imported by no other test, so without this the
+# exact-count guard below would vary with import order.)
+import backend.persistence.models.bills  # noqa: F401
+import backend.persistence.models.routines  # noqa: F401
+import backend.persistence.models.wellness  # noqa: F401
 from schemas.relationships import TemporalWindow
 from schemas.tasks import Task as TaskSchema
 
@@ -120,6 +128,33 @@ TABLES_WITH_ID = frozenset(
         "nc_principals",
         "nc_policies",
         "nc_approvals",
+        # Personal-plane tables, Alembic 006.
+        "people",
+        "person_identities",
+        "communications",
+        "conversations",
+        "commitments",
+        "followups",
+        "attention_items",
+        "snoozes",
+        "notification_log",
+        "preferences",
+        "connections",
+        "secrets",
+        "ingest_cursors",
+        "import_jobs",
+        # Calendar-plane tables, Alembic 007.
+        "calendar_accounts",
+        "calendar_events",
+        # Wellness-plane tables, Alembic 010 (workstream I — private journal).
+        "wellness_entries",
+        # Bills-plane tables, Alembic 008 (workstream G).
+        "bills",
+        "bill_candidates",
+        # Routines-plane tables, Alembic 009 (workstream H — incl. sleep).
+        "routines",
+        "routine_check_ins",
+        "sleep_records",
     }
 )
 

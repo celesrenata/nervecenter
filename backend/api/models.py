@@ -664,6 +664,12 @@ class WaitingOnItem(BaseModel):
     last_follow_up_at: datetime | None = None
     # The one live AttentionItem this OPEN request produces on /now.
     attention_id: str | None = None
+    # Optional escalation policy (mirrors the P0 AttentionItem contract,
+    # §22/§45): how/when this request escalates. ``{"priority": "urgent"}``
+    # means "follow up within 24h, or escalate to a VIP if unresolved".
+    # Producer-supplied (the relay posts it); NerveCenter only stores and
+    # surfaces it, so it defaults to ``None`` when absent.
+    escalation_policy: dict[str, Any] | None = None
 
 
 # ---------------------------------------------------------------------------

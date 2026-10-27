@@ -28,6 +28,12 @@ from pydantic import BaseModel, Field
 
 from backend.api.models import ApiResponseMeta, CalendarEvent, ListResponse
 from backend.calendar.service import CalendarService, get_calendar_service
+from backend.calendar.sync import (
+    SECRET_KIND,
+    SECRET_OWNER_KIND,
+    CalendarSyncRunner,
+    HttpxTransport,
+)
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
 
@@ -215,6 +221,320 @@ async def suggest(request: Request, payload: SuggestRequest) -> dict[str, Any]:
         "suggested_at": _iso(earliest),
         "suggestion": suggestion,
         "conflicts": [c.model_dump(mode="json") for c in window["conflicts"]],
+    }
+
+
+# -- calendar account management (Personal-Ops Recovery §8 — workstream E) ----
+#
+# These routes are *additive*; every route above stays byte-compatible.
+# They are registered before the ``/{event_id}`` catch-all so the literal
+# ``/accounts`` / ``/conflicts`` prefixes win route matching.
+
+#: Provider values accepted for a calendar account (freeze §8).
+_CALENDAR_PROVIDERS = ("google", "caldav", "apple")
+
+
+def _registry(request: Request) -> Any:
+    """The durable repository registry, or ``None`` when not configured."""
+    return getattr(request.app.state, "repository_registry", None)
+
+
+def _runner(request: Request) -> CalendarSyncRunner | None:
+    """Resolve a sync runner over the durable registry; ``None`` when the
+    durable plane is not configured (honest degradation, never a fake run)."""
+    registry = _registry(request)
+    if registry is None:
+        return None
+    runner = getattr(request.app.state, "calendar_sync_runner", None)
+    if isinstance(runner, CalendarSyncRunner):
+        return runner
+    # No supervisor installed (e.g. NERVE_CALENDAR_SYNC_ENABLED off): build a
+    # one-shot runner over the same in-memory service.
+    runner = CalendarSyncRunner(
+        registry,
+        calendar_service=_service(request),
+        transport=getattr(request.app.state, "calendar_transport", None)
+        or HttpxTransport(),
+    )
+    return runner
+
+
+def _degraded_write(request: Request, detail: str) -> dict[str, Any]:
+    """Honest 202 / executed:false degradation (house write contract)."""
+    return {
+        "accepted": True,
+        "executed": False,
+        "request_id": f"req-{uuid4().hex[:12]}",
+        "timestamp": datetime.now(UTC).isoformat(),
+        "detail": detail,
+    }
+
+
+def _account_dict(row: Any) -> dict[str, Any]:
+    """Serialize an account row — credentials are never included (they live
+    only in the secrets vault; the row carries at most a ``secret_ref``)."""
+    sync_state = row.sync_state or {}
+    return {
+        "id": row.id,
+        "provider": row.provider,
+        "label": row.label,
+        "account_ref": row.account_ref,
+        "secret_ref": row.secret_ref,
+        "timezone": row.timezone,
+        "config": row.config or {},
+        "enabled": row.enabled,
+        "operational_status": row.operational_status,
+        "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
+        "last_attempt_at": row.last_attempt_at.isoformat() if row.last_attempt_at else None,
+        "last_error_code": row.last_error_code,
+        "last_error_message": row.last_error_message,
+        "last_sync_at": sync_state.get("last_sync_at"),
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def _row_payload(row: Any) -> dict[str, Any]:
+    """Shape a durable event row into the in-memory ingest payload (the same
+    dual-plane bridge the sync runner uses — keeps both planes in step)."""
+    return {
+        "event_id": f"{row.account_id}:{row.ical_uid}",
+        "title": row.title,
+        "description": row.description,
+        "start": row.start.isoformat() if (row.start and not row.all_day) else None,
+        "end": row.end.isoformat() if (row.end and not row.all_day) else None,
+        "all_day": row.all_day,
+        "location": row.location,
+        "participants": (row.extra or {}).get("attendees") or [],
+        "source": f"calendar-sync:{row.timezone or 'utc'}",
+        "sync_id": row.ical_uid,
+    }
+
+
+def _durable_event_dict(row: Any) -> dict[str, Any]:
+    """A durable event in the in-memory ``CalendarEvent`` shape (so workstream
+    L's Today endpoint and the conflict endpoint read one shape)."""
+    return {
+        "event_id": f"{row.account_id}:{row.ical_uid}",
+        "title": row.title,
+        "description": row.description,
+        "start": row.start.isoformat() if row.start else None,
+        "end": row.end.isoformat() if row.end else None,
+        "all_day": row.all_day,
+        "location": row.location,
+        "participants": (row.extra or {}).get("attendees") or [],
+        "reminder_at": None,
+        "source": f"calendar-sync:{row.timezone or 'utc'}",
+        "sync_id": row.ical_uid,
+        "created_at": row.created_at.isoformat() if row.created_at else None,
+        "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+class AccountCreateRequest(BaseModel):
+    """Create a calendar account. Credentials ride in ``credential`` and are
+    written to the connector secrets vault (workstream B) — never stored on
+    the account row or echoed back."""
+
+    provider: str
+    label: str | None = None
+    account_ref: str | None = None
+    timezone: str = "UTC"
+    config: dict[str, Any] = Field(default_factory=dict)
+    credential: str | None = None
+    enabled: bool = True
+
+
+class AccountUpdateRequest(BaseModel):
+    label: str | None = None
+    account_ref: str | None = None
+    timezone: str | None = None
+    config: dict[str, Any] | None = None
+    credential: str | None = None
+    enabled: bool | None = None
+
+
+@router.get("/accounts", response_model=ListResponse)
+async def list_accounts(request: Request) -> ListResponse:
+    """Connected calendar accounts (200 empty when not configured)."""
+    registry = _registry(request)
+    if registry is None:
+        return ListResponse(data=[], meta=_meta(total=0, per_page=0))
+    rows = await registry.calendar.list_accounts()
+    data = [_account_dict(r) for r in rows]
+    return ListResponse(data=data, meta=_meta(total=len(data), per_page=len(data)))
+
+
+@router.post("/accounts", status_code=201)
+async def create_account(request: Request, body: AccountCreateRequest) -> dict[str, Any]:
+    """Connect a calendar account. Credentials are stored in the vault only."""
+    if body.provider not in _CALENDAR_PROVIDERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"provider must be one of {_CALENDAR_PROVIDERS}",
+        )
+    registry = _registry(request)
+    if registry is None:
+        return _degraded_write(request, "durable storage is not configured")
+
+    account = await registry.calendar.create_account(
+        provider=body.provider,
+        label=body.label,
+        account_ref=body.account_ref,
+        timezone=body.timezone,
+        config=body.config,
+        enabled=body.enabled,
+    )
+    if body.credential is not None:
+        secret = await registry.connections.upsert_secret(
+            kind=SECRET_KIND,
+            owner_kind=SECRET_OWNER_KIND,
+            owner_id=account.id,
+            plaintext=body.credential,
+        )
+        account = await registry.calendar.update_account(
+            account.id, secret_ref=secret.id
+        )
+    return _account_dict(account)
+
+
+@router.get("/accounts/{account_id}")
+async def get_account(request: Request, account_id: str) -> dict[str, Any]:
+    registry = _registry(request)
+    if registry is None:
+        # House read degradation: unknown id → synthetic representation.
+        return {"id": account_id, "resource": "calendar_account"}
+    row = await registry.calendar.get_account(account_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "calendar_account_not_found"},
+        )
+    return _account_dict(row)
+
+
+@router.patch("/accounts/{account_id}")
+async def update_account(
+    request: Request, account_id: str, body: AccountUpdateRequest
+) -> dict[str, Any]:
+    registry = _registry(request)
+    if registry is None:
+        return _degraded_write(request, "durable storage is not configured")
+    row = await registry.calendar.get_account(account_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "calendar_account_not_found"},
+        )
+    row = await registry.calendar.update_account(
+        account_id,
+        label=body.label,
+        account_ref=body.account_ref,
+        timezone=body.timezone,
+        config=body.config,
+        enabled=body.enabled,
+    )
+    if body.credential is not None:
+        secret = await registry.connections.upsert_secret(
+            kind=SECRET_KIND,
+            owner_kind=SECRET_OWNER_KIND,
+            owner_id=account_id,
+            plaintext=body.credential,
+        )
+        row = await registry.calendar.update_account(account_id, secret_ref=secret.id)
+    return _account_dict(row)
+
+
+@router.delete("/accounts/{account_id}", status_code=204)
+async def delete_account(request: Request, account_id: str) -> None:
+    registry = _registry(request)
+    if registry is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "calendar_account_not_found"},
+        )
+    deleted = await registry.calendar.delete_account(account_id)
+    if not deleted:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "calendar_account_not_found"},
+        )
+    return None
+
+
+@router.post("/accounts/{account_id}/sync")
+async def sync_account_endpoint(
+    request: Request, account_id: str
+) -> dict[str, Any]:
+    """Run one sync pass for the account (both planes). 202/executed:false
+    when the durable plane is not configured."""
+    runner = _runner(request)
+    if runner is None:
+        return _degraded_write(request, "durable storage is not configured")
+    summary = await runner.sync_account(account_id)
+    return summary
+
+
+@router.get("/accounts/{account_id}/events", response_model=ListResponse)
+async def account_events(
+    request: Request,
+    account_id: str,
+    from_: str | None = Query(default=None, alias="from"),
+    to: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1),
+) -> ListResponse:
+    """Durable events for one account in [from, to) — the row workstream L's
+    Today endpoint reads (row 7). 200 empty when not configured."""
+    registry = _registry(request)
+    if registry is None:
+        return ListResponse(data=[], meta=_meta(total=0, per_page=0))
+    row = await registry.calendar.get_account(account_id)
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"error_code": "calendar_account_not_found"},
+        )
+    ws = _parse(from_, "from")
+    we = _parse(to, "to")
+    rows = await registry.calendar.list_events(
+        start=ws, end=we, account_id=account_id, limit=limit
+    )
+    data = [_durable_event_dict(r) for r in rows]
+    return ListResponse(data=data, meta=_meta(total=len(data), per_page=limit))
+
+
+@router.get("/conflicts", response_model=dict)
+async def conflicts(
+    request: Request,
+    at: str = Query(..., description="ISO-8601 start of the proposed window"),
+    duration: int = Query(default=60, ge=1, description="window length, minutes"),
+) -> dict[str, Any]:
+    """Conflict lookup over *durable* events, answered with the existing
+    in-memory reasoning (reused, not reimplemented): the durable rows in the
+    window are replayed into the in-memory service (idempotent) and its
+    conflict engine is asked."""
+    start = _parse(at, "at")
+    assert start is not None  # _parse 422s on bad input
+    end = start + timedelta(minutes=duration)
+
+    registry = _registry(request)
+    durable: list[dict[str, Any]] = []
+    if registry is not None:
+        rows = await registry.calendar.list_events(
+            start=start, end=end, include_deleted=False, limit=500
+        )
+        for row in rows:
+            _service(request).ingest(_row_payload(row))  # keep planes in step
+            durable.append(_durable_event_dict(row))
+    svc = _service(request)
+    availability = svc.availability(start, end)
+    return {
+        "at": start.isoformat(),
+        "end": end.isoformat(),
+        "duration_minutes": duration,
+        "available": availability.get("available", not durable),
+        "conflicts": durable,
+        "availability": availability,
     }
 
 

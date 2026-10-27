@@ -143,6 +143,19 @@ export function WaitingOnIcon({ size = 18, ...rest }: IconProps) {
   )
 }
 
+/** Urgent escalation — a warning triangle (the §22/§45 "urgent" policy on a
+ * waiting-on request: follow up within 24h, or escalate to a VIP if
+ * unresolved). Used by the Waiting-On plane's per-card indicator. */
+export function AlertTriangleIcon({ size = 18, ...rest }: IconProps) {
+  return (
+    <svg {...baseProps(size, rest)}>
+      <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z" />
+      <path d="M12 9v4" />
+      <path d="M12 17h.01" />
+    </svg>
+  )
+}
+
 /** Systems — stacked server nodes. */
 export function SystemsIcon({ size = 18, ...rest }: IconProps) {
   return (
@@ -250,6 +263,19 @@ export function AskIcon({ size = 18, ...rest }: IconProps) {
   return (
     <svg {...baseProps(size, rest)}>
       <path d="M21 11.5a8.5 8.5 0 0 1-8.5 8.5 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.5 8.5 0 1 1 16.1-3.8Z" />
+    </svg>
+  )
+}
+
+/** Connections — linked nodes (two rings joined by a link). */
+export function ConnectionsIcon({ size = 18, ...rest }: IconProps) {
+  return (
+    <svg {...baseProps(size, rest)}>
+      <circle cx="7" cy="12" r="4" />
+      <circle cx="17" cy="7" r="3" />
+      <circle cx="17" cy="17" r="3" />
+      <line x1="10.3" y1="10.4" x2="14.4" y2="8.2" />
+      <line x1="10.3" y1="13.6" x2="14.4" y2="15.8" />
     </svg>
   )
 }

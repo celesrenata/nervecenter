@@ -118,6 +118,11 @@ class WaitingOnService:
             source=payload.get("source", "messages"),
             source_thread_id=(payload.get("source_thread_id") or None),
             status=WaitingOnStatus.OPEN,
+            # Escalation policy mirrors the P0 AttentionItem contract (§22/§45):
+            # the relay may post ``{"priority": "urgent"}`` to mean "follow up
+            # within 24h, or escalate to a VIP if unresolved". We store it as
+            # posted and surface it in the API/UI; NerveCenter never sends.
+            escalation_policy=(payload.get("escalation_policy") or None),
         )
         self._items[request_id] = item
 
@@ -296,6 +301,9 @@ class WaitingOnService:
             "requested_at": now - timedelta(days=3),
             "source": "messages",
             "source_thread_id": "thread-sam",
+            # §19 escalation: an unanswered request this old is urgent —
+            # follow up within 24h, or escalate to a VIP if still unresolved.
+            "escalation_policy": {"priority": "urgent"},
         })
         self.ingest({
             "request_id": "wo-seed-insurance-claim",

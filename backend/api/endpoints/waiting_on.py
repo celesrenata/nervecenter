@@ -92,6 +92,11 @@ class IngestWaitingOnRequest(BaseModel):
     requested_at: datetime | None = None
     source: WaitingOnSource = WaitingOnSource.MESSAGES
     source_thread_id: str | None = None
+    # Optional escalation policy (mirrors the P0 AttentionItem contract,
+    # §22/§45): e.g. ``{"priority": "urgent"}`` → "follow up within 24h, or
+    # escalate to a VIP if unresolved". Producer-supplied; the service only
+    # stores and surfaces it (the UI renders an "Urgent" badge for it).
+    escalation_policy: dict[str, Any] | None = None
 
     @field_validator("request_id", "person_display_name", "description")
     @classmethod

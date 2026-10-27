@@ -24,7 +24,9 @@ import {
   VoicemailIcon,
   ContactsIcon,
   WaitingOnIcon,
+  ConnectionsIcon,
   SettingsIcon,
+  ShieldCheckIcon,
   type IconProps,
 } from './icons'
 
@@ -43,7 +45,11 @@ const navItems: NavItem[] = [
   { path: '/email', label: 'Email', Icon: EmailIcon },
   { path: '/voicemail', label: 'Voicemail', Icon: VoicemailIcon },
   { path: '/contacts', label: 'Contacts', Icon: ContactsIcon },
+  { path: '/people', label: 'People', Icon: ContactsIcon },
   { path: '/waiting-on', label: 'Waiting On', Icon: WaitingOnIcon },
+  { path: '/wellness', label: 'Wellness', Icon: ShieldCheckIcon },
+  { path: '/bills', label: 'Bills', Icon: WaitingOnIcon },
+  { path: '/routines', label: 'Routines', Icon: TimelineIcon },
   { path: '/systems', label: 'Systems', Icon: SystemsIcon },
   { path: '/timeline', label: 'Timeline', Icon: TimelineIcon },
   { path: '/goals', label: 'Goals', Icon: GoalsIcon },
@@ -54,6 +60,7 @@ const navItems: NavItem[] = [
   { path: '/decisions', label: 'Decisions', Icon: DecisionsIcon },
   { path: '/ask', label: 'Ask', Icon: AskIcon },
   { path: '/downloads', label: 'Downloads', Icon: DownloadsIcon },
+  { path: '/connections', label: 'Connections', Icon: ConnectionsIcon },
   { path: '/settings', label: 'Settings', Icon: SettingsIcon },
 ]
 
