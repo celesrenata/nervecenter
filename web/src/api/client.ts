@@ -249,6 +249,7 @@ interface MockWaitingOnRecord {
   note: string | null
   created_at: string
   updated_at: string
+  escalation_policy: Record<string, unknown> | null
 }
 const mockWaitingOn: MockWaitingOnRecord[] = [
   {
@@ -267,6 +268,9 @@ const mockWaitingOn: MockWaitingOnRecord[] = [
     note: null,
     created_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
     updated_at: new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(),
+    // Urgent escalation (mirrors backend seed_demo §19): 3 days unanswered
+    // → follow up within 24h, or escalate to a VIP if unresolved.
+    escalation_policy: { priority: 'urgent' },
   },
   {
     request_id: 'wo-seed-insurance-claim',
@@ -284,6 +288,7 @@ const mockWaitingOn: MockWaitingOnRecord[] = [
     note: null,
     created_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
     updated_at: new Date(Date.now() - 1 * 24 * 60 * 60 * 1000).toISOString(),
+    escalation_policy: null,
   },
   {
     request_id: 'wo-seed-alice-review',
@@ -301,6 +306,7 @@ const mockWaitingOn: MockWaitingOnRecord[] = [
     note: 'Alice reviewed the deck',
     created_at: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString(),
     updated_at: new Date(Date.now() - 0.5 * 24 * 60 * 60 * 1000).toISOString(),
+    escalation_policy: null,
   },
 ]
 
@@ -487,8 +493,24 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
  * session invalidation.
  */
 export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
-  const base = API_BASE ?? ''
-  const url = path.startsWith('http') ? path : `${base}${path}`
+  const base = (API_BASE ?? '').replace(/\/+$/, '')
+  // Route normalization (personal-ops-recovery, Area 4 e2e): the canonical
+  // deployment serves the API under `/api` (VITE_API_BASE=/api — the k8s web
+  // nginx upstream AND the e2e vite proxy). The older house clients pass
+  // unprefixed routes (`/attention`, `/calendar`) while the newer workstream
+  // clients pass the full `/api/...` path; without this the latter would
+  // double-prefix to `/api/api/...` and 404. Collapse the overlap so both
+  // styles resolve to the same canonical URL. Absolute URLs pass through.
+  let url: string
+  if (path.startsWith('http')) {
+    url = path
+  } else if (base && (path === base || path.startsWith(`${base}/`))) {
+    url = path // already carries the API base
+  } else if (base && path.startsWith('/')) {
+    url = `${base}${path}`
+  } else {
+    url = path
+  }
   const headers = new Headers(init.headers)
   const token = getAccessToken()
   if (token && !headers.has('Authorization')) {
@@ -1622,6 +1644,9 @@ const mockApi = {
       note: null,
       created_at: now,
       updated_at: now,
+      // Echo the relay's escalation policy, mirroring the backend ingest
+      // (which stores whatever the relay posts; default null).
+      escalation_policy: (payload.escalation_policy as Record<string, unknown> | null) ?? null,
     }
     mockWaitingOn.unshift(item)
     return { data: { item, new_attention: null, duplicate: false }, status: 201 }
