@@ -10,6 +10,8 @@ Contract:
 - ``POST /api/attention/{attention_id}/suppress``  → SUPPRESSED
 - ``POST /api/attention/{attention_id}/acknowledge`` → resolve (handled)
 - ``POST /api/attention/{attention_id}/snooze``    → defer to a later window
+- ``POST /api/attention/sync``                     → durable aggregation + escalation pass (§12)
+- ``POST /api/attention/{attention_id}/dismiss``   → DISMISSED (durable, §6)
 
 The queue lives in the process-wide :func:`backend.attention.get_attention_service`
 singleton (bound onto ``app.state.attention_service`` at startup). Unlike the
@@ -21,7 +23,7 @@ deterministic and explainable (prompt2 §21/§22); there is no opaque ranking.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -65,6 +67,35 @@ def _not_found(attention_id: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"Attention item {attention_id} not found.")
 
 
+def _aggregator(request: Request) -> Any:
+    """Build the durable :class:`AttentionAggregator` per request.
+
+    The import is resolved *inside* the call so the ``backend.attention``
+    package — which re-enters ``backend.api.app`` via ``backend.api.models`` —
+    is not pulled in at module-import time (the established circular-import
+    guard, the same one the aggregator itself uses). Source services are
+    picked up from ``app.state`` by the aggregator; no startup wiring.
+    """
+    from backend.attention.aggregator import AttentionAggregator
+
+    return AttentionAggregator(request.app.state)
+
+
+def _dump_durable(obj: Any) -> dict[str, Any]:
+    """Serialize a durable attention row *or* an in-memory item to a dict."""
+    if obj is None:
+        return {}
+    if isinstance(obj, dict):
+        return obj
+    model_dump: Any = getattr(obj, "model_dump", None)
+    if callable(model_dump):
+        return cast("dict[str, Any]", model_dump(mode="json"))
+    table = getattr(obj, "__table__", None)
+    if table is not None:
+        return {c.name: getattr(obj, c.name) for c in table.columns}
+    return vars(obj)
+
+
 class AttentionCreateRequest(BaseModel):
     """Request body for creating an AttentionItem.
 
@@ -93,7 +124,7 @@ class AttentionSnoozeRequest(BaseModel):
 @router.get("/", response_model=ListResponse)
 async def list_attention(
     request: Request,
-    status: AttentionState | None = Query(default=None),
+    status: Annotated[AttentionState | None, Query()] = None,
     limit: int = Query(default=50, ge=1),
     offset: int = Query(default=0, ge=0),
 ) -> ListResponse:
@@ -117,6 +148,18 @@ async def now_attention(request: Request, limit: int = Query(default=10, ge=1)) 
         data=[_dump(i) for i in items],
         meta=_meta(total=len(svc.now()), per_page=limit),
     )
+
+
+@router.post("/sync")
+async def sync_attention(request: Request) -> dict[str, Any]:
+    """Run the durable aggregation + escalation pass (Personal-Ops §12).
+
+    Upserts one durable item per actionable source (deduplicated by canonical
+    key) and mirrors every candidate into the in-memory queue. Without a
+    durable registry the durable side is skipped (honest counts — everything
+    reported ``skipped``) but the in-memory mirror still runs.
+    """
+    return await _aggregator(request).sync()
 
 
 @router.get("/{attention_id}", response_model=AttentionItem)
@@ -164,3 +207,12 @@ async def snooze_attention(
     request: Request, attention_id: str, payload: AttentionSnoozeRequest
 ) -> AttentionItem:
     return _mutate(request, attention_id, lambda s, i: s.snooze(i, payload.until))
+
+
+@router.post("/{attention_id}/dismiss")
+async def dismiss_attention(request: Request, attention_id: str) -> dict[str, Any]:
+    """Dismiss a durable attention item (spec §6 state: ``dismissed``)."""
+    row = await _aggregator(request).transition(attention_id, "dismiss")
+    if row is None:
+        raise _not_found(attention_id)
+    return _dump_durable(row)

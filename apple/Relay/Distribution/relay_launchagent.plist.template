@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.nervcenter.relay — LaunchAgent template for the Personal Relay CLI.
+
+  Rendered by `nerve-personal-relay install` into:
+    ~/Library/LaunchAgents/com.nervcenter.relay.plist
+  (placeholder tokens {{BINARY_PATH}} / {{LOGS_DIR}} / {{STANDARD_OUT}} /
+  {{STANDARD_ERROR}} / {{PID_FILE}} are substituted at install time).
+
+  §47: user-account scoped, no remote shell. The agent runs
+  `nerve-personal-relay run` under the user's GUI session, so Full Disk
+  Access granted to the terminal (or the binary itself) is inherited —
+  no sudo, no root. Logs land in {{LOGS_DIR}} so `nerve-personal-relay
+  health` can surface them without a separate daemon.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.nervcenter.relay</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>{{BINARY_PATH}}</string>
+		<string>run</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>{{STANDARD_OUT}}</string>
+	<key>StandardErrorPath</key>
+	<string>{{STANDARD_ERROR}}</string>
+	<key>StateDir</key>
+	<string>{{LOGS_DIR}}</string>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ExitTimeOut</key>
+	<integer>15</integer>
+	<key>PIDFilePath</key>
+	<string>{{PID_FILE}}</string>
+</dict>
+</plist>

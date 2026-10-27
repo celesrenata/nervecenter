@@ -21,6 +21,14 @@ import NerveModels
 public struct PersonalStateWire: Codable, Hashable, Sendable {
     /// Number of items currently in the user's attention queue.
     public var attentionCount: Int?
+    /// The full open attention items the phone publishes for the watch
+    /// (spec §27/§69): the rows behind ``attentionCount``, written into
+    /// `cached-state.json` under the `attention` key that
+    /// `WatchAttentionJSON.decodeAttentionFile` reads. `nil` = the phone has
+    /// not fetched the attention source successfully yet — the key is
+    /// omitted from the file and the watch honestly shows "not published"
+    /// instead of a fake CLEAR; `[]` = the queue is genuinely empty.
+    public var attention: [AttentionWireItem]?
     /// The single most important attention item's title.
     public var topAttentionTitle: String?
     /// The top attention item's urgency score (0...1).
@@ -34,6 +42,7 @@ public struct PersonalStateWire: Codable, Hashable, Sendable {
 
     public init(
         attentionCount: Int? = nil,
+        attention: [AttentionWireItem]? = nil,
         topAttentionTitle: String? = nil,
         topAttentionUrgency: Double? = nil,
         topCommitmentTitle: String? = nil,
@@ -41,6 +50,7 @@ public struct PersonalStateWire: Codable, Hashable, Sendable {
         waitingOnCount: Int? = nil
     ) {
         self.attentionCount = attentionCount
+        self.attention = attention
         self.topAttentionTitle = topAttentionTitle
         self.topAttentionUrgency = topAttentionUrgency
         self.topCommitmentTitle = topCommitmentTitle
@@ -54,6 +64,7 @@ public struct PersonalStateWire: Codable, Hashable, Sendable {
     /// empty queue read as "Clear" without a fresh install faking one.
     public var hasAnyField: Bool {
         attentionCount != nil
+            || attention != nil
             || topAttentionTitle != nil
             || topAttentionUrgency != nil
             || topCommitmentTitle != nil

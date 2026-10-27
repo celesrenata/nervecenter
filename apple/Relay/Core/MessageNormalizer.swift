@@ -38,6 +38,8 @@ public struct MessageNormalizer: Sendable {
     public static let minUnixSeconds: TimeInterval = 946_684_800      // 2000-03-01
     public static let maxUnixSeconds: TimeInterval = 4_102_444_800    // 2100-03-01
 
+    public init() {}
+
     public func normalize(_ raw: RawMessage) throws -> NormalizedMessage {
         guard !raw.guid.isEmpty else { throw NormalizationError.emptyGUID }
         guard !raw.peerIdentifier.isEmpty else { throw NormalizationError.emptyPeer }

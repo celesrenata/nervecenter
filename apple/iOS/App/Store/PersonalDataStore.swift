@@ -31,6 +31,15 @@ public final class PersonalDataStore: ObservableObject {
     /// rollup simply omits it (no fabricated rows).
     @Published public private(set) var todaySourceErrors: [String: String] = [:]
 
+    /// The raw attention items behind the Today attention rows, kept for
+    /// App Group publication (spec §27/§69). `PersonalFetchService` stores
+    /// the wire projection here on a successful attention fetch and `nil`
+    /// when the source failed (honest "not published" — the `attention`
+    /// key is then omitted from `cached-state.json`, never stale rows
+    /// dressed up as fresh). `TodayView.derivedPersonalState()` copies it
+    /// into the published `PersonalStateWire`.
+    @Published public private(set) var attentionWireItems: [AttentionWireItem]?
+
     // MARK: - Inbox
 
     @Published public private(set) var inboxRows: [CommunicationRow] = []
@@ -81,6 +90,13 @@ public final class PersonalDataStore: ObservableObject {
         todayRows = rows
         todaySourceErrors = sourceErrors
         todayState = rows.isEmpty && sourceErrors.isEmpty ? .empty : .loaded
+    }
+
+    /// Store the attention wire items the fetch just produced (`nil` when
+    /// the attention source failed — the published wire then omits the
+    /// `attention` key entirely).
+    public func setAttentionItems(_ items: [AttentionWireItem]?) {
+        attentionWireItems = items
     }
 
     public func setInbox(_ rows: [CommunicationRow]) {

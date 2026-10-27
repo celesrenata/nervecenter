@@ -437,6 +437,113 @@ final class NerveAppsTests: XCTestCase {
         let farAway = makeContent(dayOffset: 10).dueLabel(reference: reference)
         XCTAssertNotNil(farAway)
     }
+
+    // MARK: - §27/§69 attention array publish (phone → watch wire)
+
+    /// The phone's `PersonalStateWire` carries the full open attention items,
+    /// not just the count — the array the watch reads out of
+    /// `cached-state.json` under the `attention` key (spec §27/§69).
+    /// Encoding must produce snake_case item keys + an ISO-8601 due date
+    /// (NerveJSON contract), and decoding must round-trip the array exactly.
+    func testPersonalStateWireAttentionArrayRoundTrip() throws {
+        let due = Date(timeIntervalSince1970: 1_700_000_000)
+        let items = [
+            AttentionWireItem(
+                attentionID: "a-1",
+                reason: "Call pharmacy",
+                urgency: 0.8,
+                importance: 0.9,
+                priority: 0.85,
+                due: due,
+                status: "NOW",
+                why: ["deadline"],
+                suggestedAction: "call",
+                entities: ["Pharmacy"]
+            ),
+            AttentionWireItem(
+                attentionID: "a-2",
+                reason: "Renew passport",
+                status: "TODAY"
+            ),
+        ]
+        let wire = PersonalStateWire(
+            attentionCount: 2,
+            attention: items,
+            topAttentionTitle: "Call pharmacy",
+            waitingOnCount: 1
+        )
+        guard let data = NerveJSON.encode(wire) else {
+            throw XCTSkip("encode failed")
+        }
+        let text = String(decoding: data, as: UTF8.self)
+        // The array lives under the `attention` key the watch's
+        // `WatchAttentionJSON.decodeAttentionFile` reads, with snake_case
+        // item fields and an ISO-8601 due date.
+        XCTAssertTrue(text.contains("\"attention\":["), text)
+        XCTAssertTrue(text.contains("\"attention_id\""), text)
+        XCTAssertTrue(text.contains("\"top_attention_title\""), text)
+        XCTAssertTrue(text.contains("\"due\""), text)
+
+        guard let decoded = NerveJSON.decode(PersonalStateWire.self, from: data) else {
+            throw XCTSkip("decode failed")
+        }
+        XCTAssertEqual(decoded.attention, items)
+        XCTAssertEqual(decoded.attentionCount, 2)
+        XCTAssertTrue(decoded.hasAnyField)
+    }
+
+    /// A `nil` attention array must *omit* the key entirely — the watch
+    /// reads that as "not published" (never an empty array, never a
+    /// fabricated zero, §61) — and its absence must not flip
+    /// `hasAnyField` on its own. A present-but-empty array still decodes
+    /// as published-empty.
+    func testPersonalStateWireAttentionAbsentOmitsKey() throws {
+        let wire = PersonalStateWire(waitingOnCount: 3)
+        guard let data = NerveJSON.encode(wire) else {
+            throw XCTSkip("encode failed")
+        }
+        let text = String(decoding: data, as: UTF8.self)
+        XCTAssertFalse(text.contains("attention"), "attention key must be omitted: \(text)")
+        guard let decoded = NerveJSON.decode(PersonalStateWire.self, from: data) else {
+            throw XCTSkip("decode failed")
+        }
+        XCTAssertNil(decoded.attention)
+        XCTAssertNil(decoded.attentionCount)
+        XCTAssertTrue(decoded.hasAnyField, "waitingOnCount alone is a published field")
+
+        let publishedEmpty = PersonalStateWire(attention: [])
+        guard let emptyData = NerveJSON.encode(publishedEmpty) else {
+            throw XCTSkip("encode failed")
+        }
+        guard let emptyDecoded = NerveJSON.decode(PersonalStateWire.self, from: emptyData) else {
+            throw XCTSkip("decode failed")
+        }
+        XCTAssertEqual(emptyDecoded.attention, [])
+        XCTAssertTrue(emptyDecoded.hasAnyField)
+    }
+
+    /// Items the backend already closed (RESOLVED / SUPPRESSED) may be
+    /// published as-is (truthful feed) but must never count toward "needs
+    /// you": a queue of only closed items reads as a genuine "✓ CLEAR",
+    /// distinct from the "–" of a never-published feed (§27/§67/§61).
+    func testAttentionClosedStatesAreNotNeedYou() {
+        let now = Date()
+        let feed = AttentionFeedState(
+            published: true,
+            items: [
+                attentionItem("r", priority: 0.9, status: "RESOLVED"),
+                attentionItem("s", priority: 0.8, status: "SUPPRESSED"),
+            ]
+        )
+        XCTAssertTrue(WatchAttentionEngine.isOpen("NOW"))
+        XCTAssertFalse(WatchAttentionEngine.isOpen("RESOLVED"))
+        XCTAssertFalse(WatchAttentionEngine.isOpen("suppressed"), "status match is case-insensitive")
+
+        XCTAssertEqual(WatchAttentionEngine.liveItems(feed: feed, records: [], asOf: now).count, 0)
+        XCTAssertEqual(WatchAttentionEngine.needYouCount(feed: feed, asOf: now), 0)
+        XCTAssertEqual(WatchAttentionEngine.complicationText(feed: feed, asOf: now), "✓ CLEAR")
+        XCTAssertEqual(WatchAttentionEngine.headerText(feed: feed, asOf: now), "All clear")
+    }
 }
 
 // MARK: - ThemeStore (gaps-apple1 G5)

@@ -9,7 +9,7 @@ Swift Package Manager — **zero external dependencies** (spec §54).
 ```text
 apple/
 ├── Package.swift
-├── build_and_test.sh        # convenience: swift build + swift test
+├── build_and_test.sh        # sign the relay binary, then the guarded test suite
 ├── CONTRACT_NOTES.md        # wire-contract notes per module
 ├── Shared/
 │   └── Sources/
@@ -20,6 +20,11 @@ apple/
 │       ├── NervePersistence/ # LocalCache (actor) + CachedState snapshot
 │       ├── NerveRealtime/   # RealtimeClient (WebSocket/SSE)
 │       └── NerveDesign/     # design tokens
+├── Relay/                   # macOS Personal Relay (spec §46–48) — see Relay/INSTALL.md
+│   ├── CLI/                 # nerve-personal-relay (init-config/status/run/install/
+│   │                        #   uninstall/pair/health/import) + keychain credential store
+│   ├── Core/                # NerveRelayCore: store reader, outbox, engines, config
+│   └── Distribution/        # relay_launchagent.plist.template (+ manifest tooling)
 └── Tests/
     └── NerveSharedTests/
 ```
@@ -34,7 +39,20 @@ apple/
 | `NervePersistence` | `Shared/Sources/NervePersistence` | actor-isolated cache |
 | `NerveRealtime` | `Shared/Sources/NerveRealtime` | event streaming |
 | `NerveDesign` | `Shared/Sources/NerveDesign` | design tokens |
+| `NerveRelayCore` | `Relay/Core` | platform-free relay engine (store/outbox/normalizer/config) |
+| `NervePersonalRelay` | `Relay/CLI` | macOS relay CLI binary + keychain credential store |
 | `NerveSharedTests` | `Tests` | XCTest suite |
+
+## Personal Relay (macOS)
+
+The durable Mac Messages relay — guided setup (build → config → Full Disk
+Access → pair → LaunchAgent → consented import → health) is documented in
+[Relay/INSTALL.md](Relay/INSTALL.md). `build_and_test.sh` signs the release
+binary first (ad-hoc by default, `NERVE_RELAY_SIGN_IDENTITY` to override),
+then runs the guarded Apple test suite. Python contract tests for the
+LaunchAgent template and the pairing flow live in
+[`tests/apple/`](../tests/apple/test_relay_launchagent.py) (run with
+`uv run --with pytest python -m pytest tests/apple/`).
 
 ## Testing
 

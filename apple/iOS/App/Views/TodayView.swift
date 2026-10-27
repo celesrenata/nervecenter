@@ -95,6 +95,11 @@ public struct TodayView: View {
         var populated = false
         if failed[TodayOrigin.attention.rawValue] == nil {
             wire.attentionCount = attention.count
+            // The full feed (not just the count) is what the watch renders —
+            // `PersonalFetchService` stored the wire projection next to the
+            // rows on this fetch; a failed source left it `nil`, so the
+            // published wire omits the `attention` key (honest, §61).
+            wire.attention = store.attentionWireItems
             if let top = attention.first {
                 wire.topAttentionTitle = top.label
                 wire.topAttentionUrgency = top.priority

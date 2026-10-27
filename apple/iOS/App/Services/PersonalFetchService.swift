@@ -123,14 +123,22 @@ public actor PersonalFetchService: Sendable {
         if let e = followups.error { sourceErrors[TodayOrigin.followup.rawValue] = e }
         if let e = waiting.error { sourceErrors[TodayOrigin.waiting.rawValue] = e }
 
+        // Two projections of the same raw feed: the Today rollup rows
+        // (ranked input) and the App Group wire items (the full §27 feed
+        // the watch renders). A failed attention source yields `nil`
+        // for both — the published wire omits the `attention` key.
+        let attentionInputs = attention.items?.map { PersonalWireMapper.attention($0) }
+        let attentionWireItems = attention.items?.map { PersonalWireMapper.wire($0) }
+
         let rows = TodayComposer.compose(
-            attention: attention.items,
+            attention: attentionInputs,
             followups: followups.items,
             waiting: waiting.items
         )
 
         await MainActor.run {
             store.setToday(rows: rows, sourceErrors: sourceErrors)
+            store.setAttentionItems(attentionWireItems)
             if rows.isEmpty && !sourceErrors.isEmpty {
                 store.setTodayError("Could not load any Today source")
             }
@@ -319,15 +327,20 @@ public actor PersonalFetchService: Sendable {
         var error: String?
     }
 
-    private func fetchAttention() async -> SourceResult<AttentionInput> {
+    /// Fetch the raw attention feed (up to 50 items, backend rank order —
+    /// the phone re-publishes exactly what the server returns, no local
+    /// re-ranking) and project it to both the Today rollup input and the
+    /// App Group wire. The source-level failure is reported per source, so
+    /// a failed fetch publishes `nil` (the `attention` key is omitted from
+    /// `cached-state.json`), never a stale or empty-looking array.
+    private func fetchAttention() async -> SourceResult<WireAttentionItem> {
         do {
             let response: WireListResponse<WireAttentionItem> = try await client.send(
                 path: "/attention",
                 method: "GET",
                 query: [URLQueryItem(name: "limit", value: "50")]
             )
-            let items = response.data.map { PersonalWireMapper.attention($0) }
-            return SourceResult(items: items, error: nil)
+            return SourceResult(items: response.data, error: nil)
         } catch {
             return SourceResult(items: nil, error: String(describing: error))
         }
@@ -431,7 +444,13 @@ struct WireWaitingOn: Decodable {
     var attentionID: String?
 }
 
-/// An attention item as returned by `GET /api/attention` (§20).
+/// An attention item as returned by `GET /api/attention` (§20). The raw
+/// rows the phone fetches to (a) compose the Today attention rows and
+/// (b) publish the full feed to the App Group for the watch (spec
+/// §27/§69). Optional numeric fields mirror the backend Pydantic defaults
+/// (`priority`/`urgency`/`importance` are `float = 0.0` on the wire —
+/// `AttentionItem` in `backend/api/models.py`), so decoding never fails on
+/// a missing score.
 struct WireAttentionItem: Decodable {
     var attentionID: String
     var reason: String
@@ -545,6 +564,26 @@ enum PersonalWireMapper {
             due: parseDate(w.due),
             why: w.why,
             sources: w.sources
+        )
+    }
+
+    /// Project a raw feed row into the App Group wire item the watch reads
+    /// from `cached-state.json` (spec §27/§69). Missing scores fall back to
+    /// `0` (the backend's Pydantic defaults), the missing status to `NOW`
+    /// (the backend's `AttentionState.NOW` default), and `due` stays `nil`
+    /// when absent — the wire omits it, which the watch decodes honestly.
+    static func wire(_ w: WireAttentionItem) -> AttentionWireItem {
+        AttentionWireItem(
+            attentionID: w.attentionID,
+            reason: w.reason,
+            urgency: w.urgency ?? 0,
+            importance: w.importance ?? 0,
+            priority: w.priority ?? 0,
+            due: parseDate(w.due),
+            status: w.status ?? "NOW",
+            why: w.why ?? [],
+            suggestedAction: w.suggestedAction,
+            entities: w.entities ?? []
         )
     }
 

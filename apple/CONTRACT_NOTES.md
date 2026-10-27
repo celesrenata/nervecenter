@@ -99,3 +99,31 @@ Protocol for biometric authorization (spec §72).
 Protocol for event streaming:
 - WebSocket support
 - SSE fallback
+
+## NerveApps
+
+### PersonalStateWire → App Group `cached-state.json` (spec §68/§69/§27)
+The phone merges `PersonalStateWire` into the shared App Group
+(`group.nerv.center`) `cached-state.json` via
+`PhoneEnvironment.writePendingPersonalStateIfAny()` (loss-preserving:
+existing top-level keys are kept). Wire keys are snake_case:
+- `attention_count`: Integer (queue size; omitted when the fetch failed)
+- `attention`: Array of attention items — the full open feed the Watch
+  renders (`WatchAttentionJSON.decodeAttentionFile`). Each item:
+  `attention_id`, `reason`, `urgency`, `importance`, `priority` (Float
+  0.0-1.0), `due` (ISO-8601, optional), `status`
+  (`NOW|TODAY|SOON|WAITING_ON|FYI|SUPPRESSED|RESOLVED`), `why` (list),
+  `suggested_action` (optional), `entities` (list). `null` members are
+  omitted; an absent `attention` key means "not published" (the watch
+  shows "–"), while `[]` means "genuinely empty" ("✓ CLEAR").
+- `top_attention_title` / `top_attention_urgency`: top item projection
+- `top_commitment_title` / `top_commitment_due_at`: open follow-up
+- `waiting_on_count`: Integer
+
+### Watch attention wire (`WatchAttentionJSON`, spec §27/§60/§67)
+- `cached-state.json` → `attention` key (above); `watch-actions.json`
+  carries watch → phone action markers (`attention_id`, `action`
+  `snooze|resolve|escalate`, `requested_at`, optional `snooze_minutes` /
+  `note`). The engine (`WatchAttentionEngine`) drops `SUPPRESSED` /
+  `RESOLVED` items from the live count; "n NEED YOU" counts open
+  `NOW`-bucket items only.
