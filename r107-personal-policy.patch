@@ -1,0 +1,1099 @@
+diff --git a/backend/context/__init__.py b/backend/context/__init__.py
+index 4d18473..64c0668 100644
+--- a/backend/context/__init__.py
++++ b/backend/context/__init__.py
+@@ -10,7 +10,14 @@ Modules
+ - ``prioritization`` — ContextPrioritizer for content ranking
+ """
+ 
+-from .compiler import BudgetConfig, CompiledSection, ContextCompiler, ContextSource
++from .compiler import (
++    PARTITION_ENGINEERING,
++    PARTITION_PERSONAL,
++    BudgetConfig,
++    CompiledSection,
++    ContextCompiler,
++    ContextSource,
++)
+ from .prioritization import (
+     ContextPrioritizer,
+     PrioritizationConfig,
+@@ -20,6 +27,8 @@ from .prioritization import (
+ __all__ = [
+     "ContextCompiler",
+     "BudgetConfig",
++    "PARTITION_ENGINEERING",
++    "PARTITION_PERSONAL",
+     "ContextSource",
+     "CompiledSection",
+     "ContextPrioritizer",
+diff --git a/backend/context/compiler.py b/backend/context/compiler.py
+index 8b2caf8..ccaf524 100644
+--- a/backend/context/compiler.py
++++ b/backend/context/compiler.py
+@@ -11,12 +11,19 @@ The context compiler:
+ - Produces bounded ContextPackage for inference
+ """
+ 
+-from typing import Any
++from typing import Annotated, Any, Literal
+ 
+ from pydantic import BaseModel, Field
+ 
+ from schemas.context import ContextPackage, ContextPurpose, ContextSection, ContextSectionKind
+ 
++#: Partition discriminator (R107 / §35). Context sources are tagged with the
++#: plane they belong to; the compiler enforces the personal/engineering
++#: firewall so the two planes do not leak into each other's corpora.
++PARTITION_ENGINEERING = "engineering"
++PARTITION_PERSONAL = "personal"
++
++
+ 
+ class ContextSource(BaseModel):
+     """Source of context for compilation."""
+@@ -35,6 +42,19 @@ class ContextSource(BaseModel):
+         le=1.0,
+         description="Relevance score for prioritization.",
+     )
++    partition: Annotated[
++        Literal["engineering", "personal"],
++        Field(
++            default=PARTITION_ENGINEERING,
++            description=(
++                "Plane this source belongs to (R107 / §35 firewall). "
++                "Engineering compilation excludes ``personal`` sources by "
++                "default; personal compilation excludes ``engineering`` "
++                "sources by default. Cross-plane access requires an explicit "
++                "scoped grant."
++            ),
++        ),
++    ]
+ 
+ 
+ class BudgetConfig(BaseModel):
+@@ -112,6 +132,9 @@ class ContextCompiler(BaseModel):
+         task_id: str | None = None,
+         sources: list[ContextSource] | None = None,
+         budget: BudgetConfig | None = None,
++        *,
++        personal: bool = False,
++        granted_communication_ids: list[str] | None = None,
+     ) -> ContextPackage:
+         """Compile a context package from sources within budget.
+ 
+@@ -121,14 +144,37 @@ class ContextCompiler(BaseModel):
+             task_id: The task this context is for, if any.
+             sources: List of context sources to compile.
+             budget: Token budget configuration.
++            personal: Compile for the *personal* plane. When ``False``
++                (default) the package is assembled for engineering use and
++                the firewall excludes every ``personal`` source (R107 / §35).
++                When ``True`` the package is assembled for personal use and
++                the firewall excludes every ``engineering`` source unless it
++                is explicitly granted via ``granted_communication_ids``.
++            granted_communication_ids: Explicit, scoped grants crossing the
++                partition firewall. An engineering compile may name specific
++                personal communication ids (an explicit relevant
++                relationship, §35); a personal compile may name specific
++                engineering record ids. Only *those* ids from the cross-plane
++                source are included — the rest of the other plane stays
++                out.
+ 
+         Returns:
+-            A ContextPackage with prioritized, bounded content.
++            A ContextPackage with prioritized, bounded content. Excluded
++            source ids (firewall decisions) are recorded in
++            ``package.metadata["firewall_excluded"]`` for audit.
+         """
+         sources = sources or []
+         budget = budget or BudgetConfig(total_tokens=50000)
+ 
+-        sections = self._compile_sections(sources, budget)
++        # R107 / §35 personal/engineering firewall (default: no cross-plane
++        # leakage; cross-plane access requires explicit scoped grants).
++        granted = set(granted_communication_ids or [])
++        included, excluded_ids = self._partition_gate(sources, personal, granted)
++        excluded = [
++            {"source_id": s.id, "partition": s.partition} for s in excluded_ids
++        ]
++
++        sections = self._compile_sections(included, budget)
+         tokens_used = sum(s.tokens for s in sections)
+ 
+         package = ContextPackage(
+@@ -141,9 +187,37 @@ class ContextCompiler(BaseModel):
+             sections=[self._to_context_section(s) for s in sections],
+             context_hash=None,  # Will be computed by consumer
+         )
+-
++        if excluded:
++            package.metadata["firewall_excluded"] = excluded
+         return package
+ 
++    def _partition_gate(
++        self,
++        sources: list[ContextSource],
++        personal: bool,
++        granted: set[str],
++    ) -> tuple[list[ContextSource], list[ContextSource]]:
++        """Apply the personal/engineering partition firewall (R107 / §35).
++
++        Engineering compilation excludes personal sources by default, and
++        personal compilation excludes engineering sources by default. A
++        source crosses the partition only when it is explicitly granted via
++        ``granted_communication_ids`` (a scoped relationship, not a blanket
++        cross-plane read). Returns ``(included, excluded)``.
++        """
++        included: list[ContextSource] = []
++        excluded: list[ContextSource] = []
++        for source in sources:
++            if personal:
++                cross = source.partition == PARTITION_ENGINEERING
++            else:
++                cross = source.partition == PARTITION_PERSONAL
++            if cross and source.id not in granted:
++                excluded.append(source)
++            else:
++                included.append(source)
++        return included, excluded
++
+     def _generate_id(
+         self,
+         purpose: ContextPurpose,
+diff --git a/backend/policy/__init__.py b/backend/policy/__init__.py
+index 690ac50..f29cec7 100644
+--- a/backend/policy/__init__.py
++++ b/backend/policy/__init__.py
+@@ -11,7 +11,20 @@ Modules
+ """
+ 
+ from .guardrails import GuardConfig, InferenceGuardrails, PolicyGuard
++from .pdp import (
++    INFER_ROUTE_ACTION,
++    SENDING_CAPABILITY,
++    InferRouteDecision,
++    PolicyDecisionPoint,
++)
+ from .permissions import PermissionCheck, PermissionEnforcer, PermissionLevel
++from .sensitivity import (
++    ModelTier,
++    RoutingDecision,
++    SensitivityClass,
++    SensitivityClassification,
++    classify_sensitivity,
++)
+ 
+ __all__ = [
+     "GuardConfig",
+@@ -20,4 +33,13 @@ __all__ = [
+     "PermissionCheck",
+     "PermissionEnforcer",
+     "PermissionLevel",
++    "INFER_ROUTE_ACTION",
++    "InferRouteDecision",
++    "PolicyDecisionPoint",
++    "SENDING_CAPABILITY",
++    "ModelTier",
++    "RoutingDecision",
++    "SensitivityClass",
++    "SensitivityClassification",
++    "classify_sensitivity",
+ ]
+diff --git a/backend/policy/pdp.py b/backend/policy/pdp.py
+index 535c75c..1cb434e 100644
+--- a/backend/policy/pdp.py
++++ b/backend/policy/pdp.py
+@@ -97,6 +97,8 @@ from schemas.nc_platform import (
+     validate_nc_uri,
+ )
+ 
++from .sensitivity import ModelTier, SensitivityClass
++
+ #: PDP contract version stamped into decision notes for audit consumers.
+ PDP_CONTRACT_VERSION = "nervcenter-pdp/v1"
+ 
+@@ -166,6 +168,31 @@ class Decision:
+     notes: tuple[str, ...] = ()
+ 
+ 
++# ---------------------------------------------------------------------------
++# INFER_ROUTE decision (R107 / §37–§39)
++# ---------------------------------------------------------------------------
++
++
++@dataclass(frozen=True)
++class InferRouteDecision:
++    """Outcome of an ``INFER_ROUTE`` decision (R107 / §37–§39).
++
++    Carries the routing metadata the inference layer needs: ``model_tier``,
++    ``remote_allowed``, ``policy_id``, and ``reason`` — plus the derived
++    ``sensitivity_class`` for audit. A ``remote_allowed=False`` outcome is
++    unconditionally ``LOCAL_ONLY`` regardless of the policy set: a remote
++    tier is only ever named by an explicit matching ``ALLOW`` policy, and a
++    confidential / ``LOCAL_ONLY`` input can never be routed remote.
++    """
++
++    model_tier: str
++    remote_allowed: bool
++    policy_id: str | None
++    reason: str
++    sensitivity_class: str
++    notes: tuple[str, ...] = ()
++
++
+ @dataclass(frozen=True)
+ class ApprovalBinding:
+     """Result of :func:`verify_approval_binding` (pure, no side effects)."""
+@@ -772,6 +799,194 @@ class PolicyDecisionPoint:
+             )
+         return decision
+ 
++    # -- INFER_ROUTE decision (R107 / §37–§39) --------------------------------
++
++    def infer_route(
++        self,
++        principal,
++        context: Mapping[str, Any] | None = None,
++        *,
++        action: str = "resource.infer:route",
++        resource: NCResource | str | None = None,
++        simulate: bool = False,
++    ) -> InferRouteDecision:
++        """Decide how an inference request may be routed (R107 / §37–§39).
++
++        Reuses the same PDP engine as :meth:`evaluate` (no second policy
++        engine): a remote-allowed result requires an explicit matching
++        ``ALLOW`` policy, an explicit ``DENY`` wins, and default deny holds
++        when nothing matches. The inference request carries data-policy
++        metadata in ``context``:
++
++        - ``sensitivity_class`` / ``privacy`` — the canonical class
++          (``public`` / ``internal`` / ``confidential``);
++        - ``contains_personal_communications`` — bool; if true the input is
++          treated as ``confidential`` (§37: personal content never routes
++          remote);
++        - ``remote_provider_allowed`` — bool; a transport-level gate that
++          must also be true for a remote tier to be named.
++
++        Invariants (fail closed):
++
++        - ``confidential`` / ``LOCAL_ONLY`` input and any input with
++          ``contains_personal_communications`` are never routed remote —
++          ``remote_allowed`` is ``False`` and the tier is local.
++        - A missing or unresolvable sensitivity class fails closed to
++          ``confidential`` (local).
++        - A remote tier is named only when the class is remote-capable
++          (``public`` / ``internal``), no explicit ``DENY`` matches, an
++          ``ALLOW`` policy matches, and ``remote_provider_allowed`` is true.
++        """
++        # 1. principal shape (fail closed -> local-only)
++        if not isinstance(principal, NCPrincipal):
++            return InferRouteDecision(
++                model_tier=ModelTier.SMALL_LOCAL.value,
++                remote_allowed=False,
++                policy_id=None,
++                reason="principal is not an NCPrincipal; fail closed to local-only",
++                sensitivity_class=SensitivityClass.CONFIDENTIAL.value,
++                notes=("malformed_principal",),
++            )
++        if context is not None and not isinstance(context, Mapping):
++            return InferRouteDecision(
++                model_tier=ModelTier.SMALL_LOCAL.value,
++                remote_allowed=False,
++                policy_id=None,
++                reason="context must be a mapping; fail closed to local-only",
++                sensitivity_class=SensitivityClass.CONFIDENTIAL.value,
++                notes=("malformed_context",),
++            )
++        ctx: Mapping[str, Any] = context or {}
++
++        # 2. resolve the canonical sensitivity class (fail closed ->
++        #    confidential). Personal-communication inputs are confidential.
++        if bool(ctx.get("contains_personal_communications", False)):
++            class_ = SensitivityClass.CONFIDENTIAL
++            class_source = "contains_personal_communications"
++        else:
++            raw = ctx.get("sensitivity_class", ctx.get("privacy"))
++            if isinstance(raw, SensitivityClass):
++                class_ = raw
++                class_source = "sensitivity_class"
++            elif isinstance(raw, str):
++                try:
++                    class_ = SensitivityClass(raw)
++                    class_source = "sensitivity_class"
++                except ValueError:
++                    class_ = SensitivityClass.CONFIDENTIAL
++                    class_source = "unresolvable_sensitivity_class"
++            else:
++                class_ = SensitivityClass.CONFIDENTIAL
++                class_source = "missing_sensitivity_class"
++
++        notes = (f"sensitivity_class={class_.value} ({class_source})",)
++
++        # 3. hard floor: confidential / LOCAL_ONLY is never routed remote.
++        if class_ is SensitivityClass.CONFIDENTIAL:
++            return InferRouteDecision(
++                model_tier=ModelTier.SMALL_LOCAL.value,
++                remote_allowed=False,
++                policy_id=None,
++                reason="confidential / LOCAL_ONLY content; remote tier is disallowed",
++                sensitivity_class=class_.value,
++                notes=notes,
++            )
++
++        # 4. remote-capable (public / internal): run the policy engine.
++        if resource is None:
++            resource = f"nc://{principal.namespace}/inference/routing/model/route"
++        uri, namespace = self._extract_resource(resource)
++        if uri is None:
++            return InferRouteDecision(
++                model_tier=ModelTier.MEDIUM_LOCAL.value,
++                remote_allowed=False,
++                policy_id=None,
++                reason="route resource is not a valid nc:// URI; fail closed to local-only",
++                sensitivity_class=class_.value,
++                notes=notes + ("malformed_resource",),
++            )
++        if principal.namespace != namespace:
++            return InferRouteDecision(
++                model_tier=ModelTier.MEDIUM_LOCAL.value,
++                remote_allowed=False,
++                policy_id=None,
++                reason=(
++                    f"namespace mismatch: principal scoped to "
++                    f"{principal.namespace!r}, route resource in {namespace!r}"
++                ),
++                sensitivity_class=class_.value,
++                notes=notes + ("namespace_mismatch",),
++            )
++
++        eval_notes: list[str] = []
++        applicable: list[NCPolicy] = []
++        fail_closed: str | None = None
++        for policy in self._ordered_policies():
++            pnotes, ok, blocked = self._policy_applies(
++                policy, principal, action, uri, ctx, eval_notes
++            )
++            eval_notes.extend(pnotes)
++            if blocked is not None:
++                fail_closed = blocked
++                break
++            if ok:
++                applicable.append(policy)
++        if fail_closed is not None:
++            return InferRouteDecision(
++                model_tier=ModelTier.MEDIUM_LOCAL.value,
++                remote_allowed=False,
++                policy_id=None,
++                reason=f"policy evaluation failed closed ({fail_closed})",
++                sensitivity_class=class_.value,
++                notes=notes + tuple(eval_notes),
++            )
++
++        denies = [p for p in applicable if p.effect == "DENY"]
++        allows = [p for p in applicable if p.effect == "ALLOW"]
++        if denies:
++            top = denies[0]
++            return InferRouteDecision(
++                model_tier=ModelTier.MEDIUM_LOCAL.value,
++                remote_allowed=False,
++                policy_id=top.policy_id,
++                reason=f"explicit deny by policy {top.policy_id}",
++                sensitivity_class=class_.value,
++                notes=notes + tuple(eval_notes),
++            )
++
++        if not allows:
++            return InferRouteDecision(
++                model_tier=ModelTier.MEDIUM_LOCAL.value,
++                remote_allowed=False,
++                policy_id=None,
++                reason="no applicable ALLOW policy (default deny)",
++                sensitivity_class=class_.value,
++                notes=notes + tuple(eval_notes),
++            )
++
++        top = allows[0]
++        if not bool(ctx.get("remote_provider_allowed", False)):
++            return InferRouteDecision(
++                model_tier=ModelTier.MEDIUM_LOCAL.value,
++                remote_allowed=False,
++                policy_id=top.policy_id,
++                reason="remote provider not permitted by transport metadata; stays local",
++                sensitivity_class=class_.value,
++                notes=notes + tuple(eval_notes) + ("remote_provider_allowed=false",),
++            )
++
++        return InferRouteDecision(
++            model_tier=ModelTier.LARGE_REASONING.value,
++            remote_allowed=True,
++            policy_id=top.policy_id,
++            reason=(
++                f"remote allowed by policy {top.policy_id} "
++                f"(priority {top.priority}, version {top.version})"
++            ),
++            sensitivity_class=class_.value,
++            notes=notes + tuple(eval_notes),
++        )
++
+     # -- internals -----------------------------------------------------------
+ 
+     def _ordered_policies(self) -> list[NCPolicy]:
+@@ -896,12 +1111,27 @@ def _as_action_mapping(action: str) -> Mapping[str, Any]:
+     return {"action": action}
+ 
+ 
++#: Distinct, not-yet-wired future capability for the personal plane (R107 /
++#: §40–§41: response assistant / no impersonation). Exposing the name in the
++#: PDP keeps the capability *addressable by policy* without adding a sending
++#: endpoint or MCP tool. The capability is declared but no route is bound to
++#: it yet; a future ``SEND`` action can gate on it via a policy.
++SENDING_CAPABILITY = "personal.sending"
++
++#: Action used by :meth:`PolicyDecisionPoint.infer_route` so routing policies
++#: can match on it explicitly.
++INFER_ROUTE_ACTION = "resource.infer:route"
++
++
+ __all__ = [
+     "APPROVED_STATE",
+     "ApprovalBinding",
+     "Decision",
++    "INFER_ROUTE_ACTION",
++    "InferRouteDecision",
+     "NO_WILDCARD_KINDS",
+     "PDP_CONTRACT_VERSION",
+     "PolicyDecisionPoint",
++    "SENDING_CAPABILITY",
+     "verify_approval_binding",
+ ]
+diff --git a/backend/policy/sensitivity.py b/backend/policy/sensitivity.py
+new file mode 100644
+index 0000000..9a0f92f
+--- /dev/null
++++ b/backend/policy/sensitivity.py
+@@ -0,0 +1,212 @@
++"""Deterministic sensitivity classification and inference-routing policy.
++
++R107 (``specs/personal-reasoning-policy-closure`` — AC-R13 / AC-R14,
++prompt2 §36–§39). This module owns the *sensitivity side* of the personal
++policy foundation:
++
++- :class:`SensitivityClass` — the canonical routing classes
++  (``public`` / ``internal`` / ``confidential``).
++- :class:`ModelTier` — the inference tiers an ``INFER_ROUTE`` decision may
++  select (``small-local`` / ``medium-local`` / ``large-reasoning``).
++- :class:`RoutingDecision` — where content may be processed
++  (``LOCAL_ONLY`` vs ``REMOTE_ALLOWED``).
++- :func:`classify_sensitivity` — the deterministic ingest classifier. It maps
++  raw communication content to the §36 label set (read from
++  ``backend.communications.models.SensitivityLabel`` — the label *vocabulary*
++  is owned by R101; we only read it) and derives the canonical
++  :class:`SensitivityClass`. An explicit override (from the communications
++  API) is honored verbatim.
++
++Confidential content routes ``LOCAL_ONLY`` (§36: raw content defaults to
++``LOCAL_ONLY``). No policy may lift it to a remote tier — that invariant is
++enforced by :meth:`backend.policy.pdp.PolicyDecisionPoint.infer_route`.
++"""
++
++from __future__ import annotations
++
++from dataclasses import dataclass
++from enum import StrEnum
++
++from backend.communications.models import SensitivityLabel
++
++
++class SensitivityClass(StrEnum):
++    """Canonical sensitivity / routing class (§36–§38).
++
++    ``confidential`` is the only class that is unconditionally ``LOCAL_ONLY``.
++    ``public`` and ``internal`` are *remote-capable* but still gated by the
++    PDP default-deny (a remote-allowed result always requires an explicit
++    matching policy).
++    """
++
++    PUBLIC = "public"
++    INTERNAL = "internal"
++    CONFIDENTIAL = "confidential"
++
++
++class ModelTier(StrEnum):
++    """Inference tiers selectable by an ``INFER_ROUTE`` decision (§37–§39).
++
++    ``small-local`` / ``medium-local`` run on-device; ``large-reasoning`` is
++    the remote tier and is only ever selected when ``remote_allowed`` is true.
++    """
++
++    SMALL_LOCAL = "small-local"
++    MEDIUM_LOCAL = "medium-local"
++    LARGE_REASONING = "large-reasoning"
++
++
++class RoutingDecision(StrEnum):
++    """Where content may be processed (§36: raw content defaults
++    ``LOCAL_ONLY``)."""
++
++    LOCAL_ONLY = "LOCAL_ONLY"
++    REMOTE_ALLOWED = "REMOTE_ALLOWED"
++
++
++#: §36 label set → canonical routing class. The label vocabulary is owned by
++#: R101 (``SensitivityLabel``); this mapping is a read-only projection.
++LABEL_TO_CLASS: dict[str, SensitivityClass] = {
++    SensitivityLabel.LOW_SENSITIVITY.value: SensitivityClass.PUBLIC,
++    SensitivityLabel.WORK.value: SensitivityClass.INTERNAL,
++    SensitivityLabel.PROJECT.value: SensitivityClass.INTERNAL,
++    SensitivityLabel.PERSONAL.value: SensitivityClass.CONFIDENTIAL,
++    SensitivityLabel.PRIVATE.value: SensitivityClass.CONFIDENTIAL,
++    SensitivityLabel.FINANCIAL.value: SensitivityClass.CONFIDENTIAL,
++}
++
++#: Deterministic ingest keyword rules, checked in priority order (financial
++#: first, then personal). The first matching rule wins; with no match the
++#: classifier falls back to the ingest-supplied label or the §36 default.
++KEYWORD_RULES: tuple[tuple[SensitivityLabel, tuple[str, ...]], ...] = (
++    (
++        SensitivityLabel.FINANCIAL,
++        (
++            "invoice", "payment", "balance", "bank", "salary", "credit card",
++            "credit-card", "account number", "ssn", "social security",
++            "transfer", "refund", "billing", "payroll", "wire ",
++        ),
++    ),
++    (
++        SensitivityLabel.PERSONAL,
++        (
++            "medication", "prescription", "doctor", "clinic", "therapy",
++            "diagnosis", "hospital", "mental health", "anxiety", "depression",
++            "divorce", "custody",
++        ),
++    ),
++)
++
++#: Representative §36 label per canonical class, used to label an explicit
++#: override (the least-surprising label that maps to the class).
++_REPRESENTATIVE_LABEL: dict[SensitivityClass, SensitivityLabel] = {
++    SensitivityClass.PUBLIC: SensitivityLabel.LOW_SENSITIVITY,
++    SensitivityClass.INTERNAL: SensitivityLabel.WORK,
++    SensitivityClass.CONFIDENTIAL: SensitivityLabel.PERSONAL,
++}
++
++
++@dataclass(frozen=True)
++class SensitivityClassification:
++    """Outcome of :func:`classify_sensitivity`.
++
++    ``label`` is the §36 label (e.g. ``"FINANCIAL"``); ``sensitivity_class``
++    is the derived routing class; ``routing`` is the resulting
++    ``LOCAL_ONLY`` / ``REMOTE_ALLOWED`` disposition; ``overridden`` is true
++    only when an explicit override was applied.
++    """
++
++    label: str
++    sensitivity_class: SensitivityClass
++    routing: RoutingDecision
++    reason: str
++    overridden: bool = False
++
++
++# -- internal helpers --------------------------------------------------------
++
++
++def _as_label_enum(label: SensitivityLabel | str) -> SensitivityLabel:
++    """Coerce a §36 label (enum or its string value) to the enum, or fail."""
++    if isinstance(label, SensitivityLabel):
++        return label
++    if isinstance(label, str):
++        for member in SensitivityLabel:
++            if member.value == label:
++                return member
++    raise ValueError(f"unknown §36 sensitivity label: {label!r}")
++
++
++def _routing_for(class_: SensitivityClass) -> RoutingDecision:
++    return (
++        RoutingDecision.LOCAL_ONLY
++        if class_ is SensitivityClass.CONFIDENTIAL
++        else RoutingDecision.REMOTE_ALLOWED
++    )
++
++
++# -- public classifier -------------------------------------------------------
++
++
++def classify_sensitivity(
++    content: str,
++    label: SensitivityLabel | str | None = None,
++    *,
++    override: SensitivityClass | None = None,
++) -> SensitivityClassification:
++    """Deterministically classify the sensitivity of communication content.
++
++    Precedence (highest first):
++
++    1. **explicit override** — a :class:`SensitivityClass` supplied by the
++       communications API. Honored verbatim; the deterministic keyword rules
++       are bypassed. (AC-R13: "overridable via the communications API".)
++    2. **deterministic keyword rules** — financial keywords → ``FINANCIAL``,
++       personal/health keywords → ``PERSONAL``. (AC-R13: "set at ingest by the
++       deterministic classifier".)
++    3. **ingest-supplied label** — the §36 ``label`` already attached at
++       ingest, if any.
++    4. **§36 default** — ``LOW-SENSITIVITY`` (public) when nothing else.
++
++    Returns a :class:`SensitivityClassification`; ``confidential`` classes
++    always carry the ``LOCAL_ONLY`` routing decision.
++    """
++    if override is not None:
++        if not isinstance(override, SensitivityClass):
++            raise TypeError(
++                f"override must be a SensitivityClass, got {type(override).__name__}"
++            )
++        return SensitivityClassification(
++            label=_REPRESENTATIVE_LABEL[override].value,
++            sensitivity_class=override,
++            routing=_routing_for(override),
++            reason="explicit override of deterministic classification",
++            overridden=True,
++        )
++
++    lowered = (content or "").lower()
++    for target_label, keywords in KEYWORD_RULES:
++        if any(kw in lowered for kw in keywords):
++            return SensitivityClassification(
++                label=target_label.value,
++                sensitivity_class=LABEL_TO_CLASS[target_label.value],
++                routing=_routing_for(LABEL_TO_CLASS[target_label.value]),
++                reason=f"deterministic keyword rule -> {target_label.value}",
++                overridden=False,
++            )
++
++    if label is not None:
++        chosen = _as_label_enum(label)
++        reason = f"ingest label {chosen.value}"
++    else:
++        chosen = SensitivityLabel.LOW_SENSITIVITY
++        reason = "default §36 label (LOW-SENSITIVITY)"
++
++    class_ = LABEL_TO_CLASS[chosen.value]
++    return SensitivityClassification(
++        label=chosen.value,
++        sensitivity_class=class_,
++        routing=_routing_for(class_),
++        reason=reason,
++        overridden=False,
++    )
+diff --git a/schemas/context.py b/schemas/context.py
+index f624445..4b4542b 100644
+--- a/schemas/context.py
++++ b/schemas/context.py
+@@ -115,3 +115,11 @@ class ContextPackage(Record):
+         default=None,
+         description="Digest of the assembled content for reproducibility.",
+     )
++    metadata: dict[str, Any] = Field(
++        default_factory=dict,
++        description=(
++            "Assembly metadata (R107 / §35): e.g. ``firewall_excluded`` lists "
++            "the sources the personal/engineering partition firewall kept out "
++            "of this package, for audit and re-verification."
++        ),
++    )
+diff --git a/tests/backend/test_personal_policy.py b/tests/backend/test_personal_policy.py
+new file mode 100644
+index 0000000..b4fa518
+--- /dev/null
++++ b/tests/backend/test_personal_policy.py
+@@ -0,0 +1,389 @@
++"""R107 — Personal policy foundation (AC-R12 / AC-R13 / AC-R14).
++
++Covers the three R107 capabilities in ``backend/policy`` +
++``backend/context/compiler.py``:
++
++- **AC-R12 (personal/engineering firewall, §35):** engineering
++  compilation excludes personal communications by default; personal
++  compilation excludes engineering by default; an explicit scoped grant
++  admits *only the granted* source.
++- **AC-R13 (sensitivity labels + deterministic classification, §36):**
++  deterministic keyword classification (financial → FINANCIAL, etc.),
++  the §36 label set, ``LOCAL_ONLY`` routing for confidential content,
++  and explicit override.
++- **AC-R14 (INFER_ROUTE decision, §37–§39):** PDP-style routing decision
++  with ``model_tier`` / ``remote_allowed`` / ``policy_id`` / ``reason``.
++  Confidential/``LOCAL_ONLY`` never routes remote; default-deny when no
++  policy matches; explicit-DENY precedence; remote requires an explicit
++  matching ``ALLOW`` policy.
++
++The PDP matrix exercises at least six cases plus the firewall and the
++sending-capability declaration.
++"""
++
++from __future__ import annotations
++
++import pytest
++
++from backend.communications.models import SensitivityLabel
++from backend.context import ContextCompiler, ContextSource
++from backend.policy.pdp import (
++    INFER_ROUTE_ACTION,
++    SENDING_CAPABILITY,
++    InferRouteDecision,
++    PolicyDecisionPoint,
++)
++from backend.policy.sensitivity import (
++    ModelTier,
++    RoutingDecision,
++    SensitivityClass,
++    classify_sensitivity,
++)
++from schemas.nc_platform import NCPolicy, NCPrincipal
++
++# ---------------------------------------------------------------------------
++# Fixtures / helpers
++# ---------------------------------------------------------------------------
++
++_ULID_BODY = "0123456789ABCDEFGHJKMNPTWX"
++assert len(_ULID_BODY) == 26
++
++
++def _id(prefix: str) -> str:
++    return f"{prefix}_{_ULID_BODY}"
++
++
++def _principal(kind: str = "human", namespace: str = "personal") -> NCPrincipal:
++    return NCPrincipal(
++        id=f"row-{kind}",
++        principal_id=_id("prn"),
++        kind=kind,
++        display_name=f"{kind}-principal",
++        namespace=namespace,
++    )
++
++
++def _route_policy(
++    effect: str,
++    principal_match: str = "*",
++    action_match: str = INFER_ROUTE_ACTION,
++    resource_match: str = "*",
++    condition: str | None = None,
++    priority: int = 0,
++    version: int = 1,
++    policy_id: str | None = None,
++) -> NCPolicy:
++    return NCPolicy(
++        id=f"row-{policy_id or 'pol'}",
++        policy_id=policy_id or _id("pol"),
++        effect=effect,
++        principal_match=principal_match,
++        action_match=action_match,
++        resource_match=resource_match,
++        condition=condition,
++        priority=priority,
++        version=version,
++    )
++
++
++def _route(
++    policies: list[NCPolicy],
++    principal: NCPrincipal,
++    context: dict,
++):
++    return PolicyDecisionPoint(policies).infer_route(principal, context)
++
++
++# ---------------------------------------------------------------------------
++# AC-R12 — personal/engineering partition firewall
++# ---------------------------------------------------------------------------
++
++
++class TestFirewall:
++    def test_engineering_excludes_personal_by_default(self) -> None:
++        """AC-R12: a seeded personal message never appears in an
++        engineering compile result (default)."""
++        compiler = ContextCompiler()
++        eng = ContextSource(id="eng-src", kind="entities", partition="engineering")
++        personal = ContextSource(id="per-msg", kind="notes", partition="personal")
++        pkg = compiler.compile(purpose="inference", goal_id="g1", sources=[eng, personal])
++        included_src = {s.metadata.get("source_id") for s in pkg.sections}
++        assert "per-msg" not in included_src, "personal source leaked into engineering package"
++        assert "eng-src" in included_src
++        # firewall audit trail
++        assert any(e["source_id"] == "per-msg" for e in pkg.metadata["firewall_excluded"])
++
++    def test_explicit_grant_admits_only_that_source(self) -> None:
++        """AC-R12: with an explicit link, only the granted communication
++        appears (not the rest of the personal plane)."""
++        compiler = ContextCompiler()
++        eng = ContextSource(id="eng-src", kind="entities", partition="engineering")
++        per_a = ContextSource(id="per-a", kind="notes", partition="personal")
++        per_b = ContextSource(id="per-b", kind="notes", partition="personal")
++        pkg = compiler.compile(
++            purpose="inference", goal_id="g1", sources=[eng, per_a, per_b],
++            granted_communication_ids=["per-a"],
++        )
++        notes_src = {s.metadata.get("source_id") for s in pkg.sections if s.kind == "notes"}
++        assert notes_src == {"per-a"}, f"expected only per-a, got {notes_src}"
++        assert any(e["source_id"] == "per-b" for e in pkg.metadata["firewall_excluded"])
++
++    def test_personal_excludes_engineering_by_default(self) -> None:
++        """AC-R12: personal compilation excludes engineering by default."""
++        compiler = ContextCompiler()
++        eng = ContextSource(id="eng-src", kind="entities", partition="engineering")
++        personal = ContextSource(id="per-msg", kind="notes", partition="personal")
++        pkg = compiler.compile(
++            purpose="inference", goal_id="g1", sources=[eng, personal], personal=True
++        )
++        included_src = {s.metadata.get("source_id") for s in pkg.sections}
++        assert "eng-src" not in included_src, "engineering source leaked into personal package"
++        assert "per-msg" in included_src
++        assert any(e["source_id"] == "eng-src" for e in pkg.metadata["firewall_excluded"])
++
++    def test_engineering_grant_of_engineering_noop(self) -> None:
++        """A grant naming an in-plane (engineering) source is not needed —
++        it is included regardless; the grant only matters cross-plane."""
++        compiler = ContextCompiler()
++        eng = ContextSource(id="eng-src", kind="entities", partition="engineering")
++        pkg = compiler.compile(
++            purpose="inference", goal_id="g1", sources=[eng], granted_communication_ids=["eng-src"]
++        )
++        assert "eng-src" in {s.metadata.get("source_id") for s in pkg.sections}
++        assert "firewall_excluded" not in pkg.metadata
++
++    def test_default_partition_is_engineering(self) -> None:
++        """Back-compat: a source with no partition defaults to engineering,
++        so existing callers' behavior is preserved."""
++        src = ContextSource(id="legacy", kind="entities")
++        assert src.partition == "engineering"
++        compiler = ContextCompiler()
++        pkg = compiler.compile(purpose="inference", goal_id="g1", sources=[src])
++        assert "legacy" in {s.metadata.get("source_id") for s in pkg.sections}
++
++
++# ---------------------------------------------------------------------------
++# AC-R13 — deterministic sensitivity classification + override
++# ---------------------------------------------------------------------------
++
++
++class TestSensitivity:
++    def test_financial_keywords_to_financial(self) -> None:
++        c = classify_sensitivity("here is my invoice and bank balance")
++        assert c.sensitivity_class is SensitivityClass.CONFIDENTIAL
++        assert c.label == SensitivityLabel.FINANCIAL.value
++        assert c.routing is RoutingDecision.LOCAL_ONLY
++
++    def test_health_keywords_to_personal(self) -> None:
++        c = classify_sensitivity("I need a new prescription from my doctor")
++        assert c.sensitivity_class is SensitivityClass.CONFIDENTIAL
++        assert c.label == SensitivityLabel.PERSONAL.value
++        assert c.routing is RoutingDecision.LOCAL_ONLY
++
++    def test_default_is_public_low_sensitivity(self) -> None:
++        c = classify_sensitivity("hi, how are you doing?")
++        assert c.sensitivity_class is SensitivityClass.PUBLIC
++        assert c.routing is RoutingDecision.REMOTE_ALLOWED
++        assert not c.overridden
++
++    def test_ingest_label_honored_when_no_keywords(self) -> None:
++        c = classify_sensitivity("routine status update", label=SensitivityLabel.WORK)
++        assert c.sensitivity_class is SensitivityClass.INTERNAL
++        assert c.label == SensitivityLabel.WORK.value
++
++    def test_explicit_override_honored(self) -> None:
++        """AC-R13: an API override wins even when keywords say otherwise."""
++        c = classify_sensitivity("my credit card invoice", override=SensitivityClass.PUBLIC)
++        assert c.sensitivity_class is SensitivityClass.PUBLIC
++        assert c.overridden is True
++        assert c.routing is RoutingDecision.REMOTE_ALLOWED
++
++    def test_override_to_confidential_is_local_only(self) -> None:
++        c = classify_sensitivity("hi there", override=SensitivityClass.CONFIDENTIAL)
++        assert c.sensitivity_class is SensitivityClass.CONFIDENTIAL
++        assert c.routing is RoutingDecision.LOCAL_ONLY
++
++    def test_unknown_label_raises(self) -> None:
++        with pytest.raises(ValueError):
++            classify_sensitivity("x", label="NOT_A_LABEL")
++
++    def test_label_set_matches_section_36(self) -> None:
++        """AC-R13: the §36 label set is the authoritative vocabulary."""
++        vals = {m.value for m in SensitivityLabel}
++        assert vals == {
++            "PERSONAL", "PRIVATE", "FINANCIAL",
++            "WORK", "PROJECT", "LOW-SENSITIVITY",
++        }
++
++
++# ---------------------------------------------------------------------------
++# AC-R14 — INFER_ROUTE PDP decision matrix
++# ---------------------------------------------------------------------------
++
++
++class TestInferRoute:
++    """The >=6-case PDP routing matrix (AC-R14)."""
++
++    def test_1_confidential_local_only(self) -> None:
++        """Confidential → local only, remote_allowed is False even with an
++        explicit ALLOW policy present (the hard floor wins)."""
++        allow = _route_policy("ALLOW")
++        d = _route([allow], _principal(), {
++            "sensitivity_class": "confidential",
++            "remote_provider_allowed": True,
++        })
++        assert isinstance(d, InferRouteDecision)
++        assert d.remote_allowed is False
++        assert d.model_tier == ModelTier.SMALL_LOCAL.value
++        assert d.policy_id is None
++        assert d.sensitivity_class == SensitivityClass.CONFIDENTIAL.value
++
++    def test_2_internal_no_policy_default_deny(self) -> None:
++        """Internal + no policy → default deny, stays local."""
++        d = _route([], _principal(), {
++            "sensitivity_class": "internal",
++            "remote_provider_allowed": True,
++        })
++        assert d.remote_allowed is False
++        assert d.model_tier == ModelTier.MEDIUM_LOCAL.value
++        assert d.policy_id is None
++        assert "default deny" in d.reason
++
++    def test_3_internal_explicit_allow(self) -> None:
++        """Internal + explicit matching ALLOW + remote permitted → remote."""
++        allow = _route_policy("ALLOW")
++        d = _route([allow], _principal(), {
++            "sensitivity_class": "internal",
++            "remote_provider_allowed": True,
++        })
++        assert d.remote_allowed is True
++        assert d.model_tier == ModelTier.LARGE_REASONING.value
++        assert d.policy_id == allow.policy_id
++
++    def test_4_public_explicit_allow(self) -> None:
++        """Public + explicit matching ALLOW → remote allowed."""
++        allow = _route_policy("ALLOW")
++        d = _route([allow], _principal(), {
++            "sensitivity_class": "public",
++            "remote_provider_allowed": True,
++        })
++        assert d.remote_allowed is True
++        assert d.model_tier == ModelTier.LARGE_REASONING.value
++        assert d.policy_id == allow.policy_id
++
++    def test_5_override_honored(self) -> None:
++        """A classifier override to public + ALLOW → remote (override is
++        honored end-to-end into the routing decision)."""
++        c = classify_sensitivity("my credit card invoice", override=SensitivityClass.PUBLIC)
++        assert c.overridden is True
++        allow = _route_policy("ALLOW")
++        d = _route([allow], _principal(), {
++            "sensitivity_class": c.sensitivity_class.value,
++            "remote_provider_allowed": True,
++        })
++        assert d.remote_allowed is True
++        assert d.sensitivity_class == SensitivityClass.PUBLIC.value
++        assert d.policy_id == allow.policy_id
++
++    def test_6_personal_communications_exclusion(self) -> None:
++        """Partition exclusion at the routing layer: an inference request
++        that ``contains_personal_communications`` is never routed remote
++        even when a wildcard ALLOW + remote permission exist."""
++        allow = _route_policy("ALLOW")
++        d = _route([allow], _principal(), {
++            "contains_personal_communications": True,
++            "remote_provider_allowed": True,
++        })
++        assert d.remote_allowed is False
++        assert d.model_tier == ModelTier.SMALL_LOCAL.value
++        assert d.sensitivity_class == SensitivityClass.CONFIDENTIAL.value
++
++    # -- additional hardening (beyond the required six) ---------------------
++
++    def test_explicit_deny_precedence(self) -> None:
++        """An explicit DENY overrides any ALLOW, regardless of priority."""
++        allow = _route_policy("ALLOW", priority=10)
++        deny = _route_policy("DENY", priority=1)
++        d = _route([allow, deny], _principal(), {
++            "sensitivity_class": "public",
++            "remote_provider_allowed": True,
++        })
++        assert d.remote_allowed is False
++        assert d.policy_id == deny.policy_id
++
++    def test_remote_requires_remote_provider_allowed(self) -> None:
++        """A matching ALLOW is not sufficient if the transport gate is off."""
++        allow = _route_policy("ALLOW")
++        d = _route([allow], _principal(), {
++            "sensitivity_class": "internal",
++            "remote_provider_allowed": False,
++        })
++        assert d.remote_allowed is False
++        assert d.model_tier == ModelTier.MEDIUM_LOCAL.value
++        assert d.policy_id == allow.policy_id
++
++    def test_missing_sensitivity_class_fails_closed(self) -> None:
++        """No classification metadata → fail closed to confidential (local)."""
++        allow = _route_policy("ALLOW")
++        d = _route([allow], _principal(), {"remote_provider_allowed": True})
++        assert d.remote_allowed is False
++        assert d.sensitivity_class == SensitivityClass.CONFIDENTIAL.value
++
++    def test_principal_must_be_nc_principal(self) -> None:
++        """A non-NCPrincipal fails closed to local-only (never raises)."""
++        d = PolicyDecisionPoint([_route_policy("ALLOW")]).infer_route(
++            object(), {"sensitivity_class": "public"}
++        )
++        assert d.remote_allowed is False
++        assert "malformed_principal" in d.notes
++
++    def test_policy_id_none_on_default_deny(self) -> None:
++        """Default deny names no policy (policy_id is None)."""
++        d = _route(
++            [], _principal(), {"sensitivity_class": "public", "remote_provider_allowed": True}
++        )
++        assert d.policy_id is None
++
++    def test_model_tier_vocabulary(self) -> None:
++        """AC-R14: model_tier is always one of the frozen tier literals."""
++        for tier in ModelTier:
++            assert tier.value in {"small-local", "medium-local", "large-reasoning"}
++
++
++# ---------------------------------------------------------------------------
++# R107 task step 5 — distinct future sending capability
++# ---------------------------------------------------------------------------
++
++
++class TestSendingCapability:
++    def test_sending_capability_is_declared_and_distinct(self) -> None:
++        """A distinct future sending capability is exposed in the PDP
++        (addressable by policy) without any sending endpoint/MCP tool."""
++        assert SENDING_CAPABILITY == "personal.sending"
++        # It is a distinct name from the routing action, and stable.
++        assert SENDING_CAPABILITY != INFER_ROUTE_ACTION
++        assert INFER_ROUTE_ACTION == "resource.infer:route"
++
++    def test_sending_capability_addressable_by_policy(self) -> None:
++        """A policy can gate the sending capability explicitly; the
++        capability is declared but no route is bound to it yet, so an
++        ungated request is addressed only by an explicit policy match."""
++        pr = _principal()
++        send_resource = "nc://personal/inference/routing/sending/next"
++        pdp = PolicyDecisionPoint([
++            NCPolicy(
++                id="row-pol", policy_id=_id("pol"), effect="ALLOW",
++                principal_match="kind:human",
++                action_match="personal.send:draft",
++                resource_match="nc://personal/inference/routing/sending/*",
++            ),
++        ])
++        d = pdp.evaluate(
++            principal=pr,
++            action="personal.send:draft",
++            resource=send_resource,
++        )
++        assert d.effect == "ALLOW"
++        # no policy match for a different action → default deny
++        d2 = pdp.evaluate(principal=pr, action="personal.send:other", resource=send_resource)
++        assert d2.effect == "DENY"

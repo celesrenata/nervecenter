@@ -227,3 +227,38 @@ Staging scripts updated on the SSO host (`ssh://celes@192.168.42.254:sources/kub
 `keycloak/render_realm.py` (`CLIENTS` + `nervecenter`) and
 `distribute_client_secrets.py` (target → `nervecenter/nervecenter-oauth`),
 so a future fresh realm import / secret distribution stays coherent.
+
+### Downloads 404s (2026-10-26, after the SSO activation) — RESOLVED & VERIFIED
+
+The SPA Downloads page (`web/src/views/DownloadsView.tsx:48`) fetches
+`/downloads/manifest.json`, which the live `web:0545873` image did not serve
+(404). Root cause: the post-reset rebuild baked `web/dist/downloads/` from a
+tree that only contained `web/public/downloads/manifest.json.example` — the
+real artifacts + `manifest.json` had never been re-staged after the
+2026-10-22 cluster reset wiped the old image that had them baked in.
+
+Fix (image-only; no source commit — `web/dist` is gitignored, and `web/` was
+byte-identical to `0545873`):
+- Copied the already-signed Oct 15-17 export artifacts
+  (`apple/Distribution/build/artifacts/NervePhone.ipa`,
+  `apple/Distribution/build/artifacts/NerveWatch.ipa`) into
+  `web/dist/downloads/` and generated the real `manifest.json` with
+  `apple/Distribution/generate_manifest.py` (hashes match the staged files:
+  phone `1b7a299f...`, watch `c5a21eb1...`). Note: `manifest.json.example`
+  is stale (still lists `NerveWatch.app` / `.watchkitarchive`); the
+  generator's roster reflects the current build shape (watch ships as a
+  self-contained `.ipa` with the widget embedded).
+- Built `web` linux/amd64, pushed `registry.celestium.life/nervecenter/web:74127e0`
+  (digest sha256:3f9712...), then `kubectl set image deploy/web ...:74127e0`.
+
+Verification (in-pod nginx + port-forwarded svc/web, this session):
+- `/downloads/manifest.json` -> 200 application/json (1524 B); artifacts
+  list NervePhone.ipa / NerveWatch.ipa as present:true, both embedded
+  appex entries present:false.
+- `/downloads/NervePhone.ipa` -> 200 application/octet-stream, 882234 B;
+  `/downloads/NerveWatch.ipa` -> 200, 1747387 B (sizes/shas match staging).
+- `/` (SPA index) -> 200; `/downloads/` (autoindex) -> 200; a missing
+  `/downloads/NerveCenterWidgetExtension.appex` -> 404 (no SPA fallback, as
+  intended by the nginx location).
+- `deploy/web` 1/1 available on `74127e0`, 0 restarts; public host still
+  302-redirects to Keycloak (SSO gate intact).
