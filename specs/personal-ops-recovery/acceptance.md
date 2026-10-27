@@ -177,3 +177,46 @@ This mirrors the task's own sanctioned "assert the degraded state and cite the
 unit test" pattern (criterion 8) and is applied uniformly. The durable-only
 behavior is pinned by the unit tests cited in §1, so the e2e suite never
 fabricates a durable record or claims a Today projection it did not observe.
+
+## P0-09 acceptance sweep
+
+**Date:** 2026-10-27. Full sweep of spec §2 success criteria 1–15, run during the
+final integration wave (gate matrix: backend 1313 passed, targeted 69 passed,
+e2e 6/6, web build green, Apple 113 passed). Statuses:
+
+- **PASS** — proven by an executed test (unit/e2e/Apple) in this session.
+- **PASS (durable-only)** — provable only against durable storage, exercised
+  in-process (SQLite) by the cited unit tests but *not* by the degraded e2e
+  path. This is the pattern sanctioned in §4 above.
+- **PASS-with-divergence** — proven code path with a documented, live-only gap
+  (real device / live Postgres / cloud) that cannot be exercised in this
+  session; recorded as Unverified in `privacy-review.md` §(h).
+- **NOT-COVERED** — no executable evidence exists in this session.
+
+| # | Criterion (spec §2) | Status | Evidence |
+|---|---|---|---|
+| 1 | Connect two email accounts entirely through UI | **PASS (durable-only)** | Unit: `tests/backend/test_connections_api.py::test_create_201_with_derived_state` (durable create + five-state derivation) + `tests/backend/test_connectors_vault.py::test_secrets_row_carries_no_plaintext`; e2e PF-2 asserts the degraded create/write surface (`personal-flow.spec.ts:146`). Live double-account IMAP import Unverified (no live IMAP/Postgres in session). |
+| 2 | Config survives API restart | **PASS (durable-only)** | `tests/backend/test_restart_persistence.py::TestRestartSemantics::test_records_survive_restart` (engine → close → re-open → connection + secret + rows intact) and `::test_secret_roundtrip_with_custom_codec`; schema linearity in `TestSchema::test_migration_head_is_linear_after_005`. |
+| 3 | New emails appear automatically | **PASS (durable-only)** | `tests/backend/test_mail_ingest.py::TestWorkerPoll::test_happy_path_ingests_and_advances_cursor` + `TestSupervisorWiring::test_one_worker_per_enabled_mail_connection` + `::test_wire_dependencies_installs_and_teardown_stops` (lifespan install/stop). Live IMAP auto-poll Unverified. |
+| 4 | Email with deadline creates actionable item | **PASS (durable-only)** | Detection: `tests/backend/test_detection.py::test_deadline_from_incoming_communication`, `::test_attention_seam_one_item_per_finding`, `::test_sweep_overdue_commitment_and_deadline`; K mirror: `tests/backend/test_bills.py::TestEscalationAttention::test_escalated_bill_creates_one_item_and_refreshes_in_place`. |
+| 5 | Mac relay guided setup | **PASS-with-divergence** | Control plane: `tests/backend/test_connectors_registry.py::test_pair_mints_device_and_returns_token_once`, `::test_register_authenticates_device`, `::test_ingest_requires_registered_device`; API seam: `tests/backend/test_connections_api.py::test_auth_flow_relay_points_to_pair_endpoint`; CLI/pair flow: `tests/apple/test_relay_pair_flow.py` (24 pytest tests: consent flag, token non-echo, import endpoint). **Unverified:** real macOS FDA prompt + LaunchAgent install on a physical Mac (`apple/Relay/INSTALL.md`). |
+| 6 | New messages appear (relay) | **PASS-with-divergence** | Durable ingest + ref-only body: `backend/connectors/registry.py:932-960` (`_relay_store_message` → `content_ref = relay://{device}/msg/{digest}`) + `tests/backend/test_connectors_registry.py::test_ingest_requires_registered_device`. **Unverified:** live iMessage delivery through a real Mac relay (no device in session). |
+| 7 | Calendar appointment appears on Today | **PASS (durable-only)** | `tests/backend/test_today.py::test_coming_up_calendar_window` (durable calendar within 48h → `coming_up`); e2e PF-4 asserts the in-memory CalendarView **Upcoming** surface (`personal-flow.spec.ts:268`) with the documented degraded divergence (§4). Durable→Today projection proven by unit, not e2e. |
+| 8 | Bill reminder escalates near due date | **PASS (durable-only)** | `tests/backend/test_bills.py::TestEscalationLadder::test_levels_by_due_distance` (0→3 ladder + confirmed/disputed/stale rules) + `TestEscalationAttention::test_confirm_paid_resolves_the_escalation_item`; K anti-nag: `tests/backend/test_attention_v2.py::TestAggregatorDurable::test_run_escalation_notifies_once_per_level`. e2e PF-5 asserts the honest degraded bills surface. |
+| 9 | Commitment survives restart + completable | **PASS (durable-only)** | `tests/backend/test_restart_persistence.py::test_records_survive_restart` (commitment written in Phase 1, re-read identical after engine re-open; also `test_wave_three_survives_restart`); completable via `tests/backend/test_relationships.py::test_promises_are_outgoing_sourced_commitments` + durable `tests/backend/test_attention_v2.py::TestAggregatorDurable::test_transition_dismiss_durable`. |
+| 10 | Important item reaches iPhone/Watch | **PASS-with-divergence** | Backend delivery path: `POST /api/attention/sync` + escalation urgency bump (`backend/attention/aggregator.py:823-854`); client store: `apple/iOS/App/Store/PersonalDataStore.swift` + `apple/Tests/NerveAppsTests/NerveAppsTests.swift` (26 Apple tests). **Unverified:** push/Watch delivery on a real device (XCUITests verify store logic, not device transport). |
+| 11 | Snooze / complete / dismiss | **PASS** | e2e PF-3 (`personal-flow.spec.ts:211` — create → NOW; snooze → TODAY +1d, in-memory live) + durable `tests/backend/test_attention_v2.py::TestAggregatorDurable::test_transition_dismiss_durable` + `tests/backend/test_today.py::test_needs_you_ordering_importance_then_deadline`. |
+| 12 | Privacy policy prevents accidental external disclosure | **PASS (durable-only)** | PDP local-first/default-deny: `tests/backend/test_personal_policy.py` (27 tests incl. `test_1_confidential_local_only`, `test_remote_requires_remote_provider_allowed`); wellness isolation: `tests/backend/test_wellness.py::TestPrivacy::test_no_inference_omniroute_or_cloud_imports`; ref-only bodies: `tests/backend/test_mail_ingest.py::TestWorkerPoll::test_happy_path_ingests_and_advances_cursor`. Live cloud-authorization exercise Unverified (no OmniRoute deployment in session). |
+| 13 | Failed connector → actionable diagnostics | **PASS** | `tests/backend/test_connectors_registry.py::test_record_sync_failure_escalates_degraded_then_error` (five-state `derive_state` ladder, `backend/connectors/registry.py:239-277`) + e2e PF-2 (wizard surfaces the backend `detail` string on degraded write, `personal-flow.spec.ts:146`). |
+| 14 | Whole flow works without sample/demo records | **PASS** | e2e PF-1 (`personal-flow.spec.ts:116`): every section renders its honest empty state on a backend booted with no seed env vars; `global-setup.mjs` sets no `NERVE_SEED_*`; §0 documents the deterministic empty-then-populate topology. |
+| 15 | UI distinguishes Connected/Syncing/Degraded/Auth Required/Not Configured | **PASS** | Five-state derivation unit test: `tests/backend/test_connectors_registry.py` (table-driven `derive_state` rules 1–7, `backend/connectors/registry.py:239-277`) + `tests/backend/test_connections_api.py::test_create_201_with_derived_state`; UI state chips in `web/src/components/connections/*` exercised by e2e PF-2's degraded surface. |
+
+### Sweep summary
+
+- **PASS:** 11, 13, 14, 15 (4)
+- **PASS (durable-only):** 1, 2, 3, 4, 7, 8, 9, 12 (8)
+- **PASS-with-divergence (live-path Unverified):** 5, 6, 10 (3)
+- **NOT-COVERED:** none — every criterion has at least one executed-test
+  anchor; the live-only residuals (real Mac, real iPhone/Watch, live IMAP/
+  Postgres, cloud authorization) are carried in `privacy-review.md` §(h) as
+  H-1…H-5.

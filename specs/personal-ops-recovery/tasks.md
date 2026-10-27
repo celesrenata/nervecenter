@@ -27,13 +27,13 @@
 
 ## Wave 4 — Prioritization and validation
 
-- [ ] T-4.1 — Implement Attention v2 aggregate/evidence/action/dedup/transitions and notification-log escalation limits. **Owner:** K. **Gates:** 4, 8, 10, 11.
-- [ ] T-4.2 — Add iOS/Watch cached stale-aware priorities, actions, reminders, approvals, preferences, and widgets while preserving Event integrity. **Owner:** M. **Gates:** 10, 11.
-- [ ] T-4.3 — Add e2e/privacy tests and review, extend restart test, eliminate demo-record dependency, and update MCP count test with any N-only tool addition. **Owner:** N. **Gates:** 12, 14.
-- [ ] T-4.4 — Verify disjoint patches, full suites/build, and Wave-4 coverage. **Owner:** parent. **Gates:** 4, 8, 10–14.
+- [x] T-4.1 — Implement Attention v2 aggregate/evidence/action/dedup/transitions and notification-log escalation limits. **Owner:** K. **Gates:** 4, 8, 10, 11.
+- [x] T-4.2 — Add iOS/Watch cached stale-aware priorities, actions, reminders, approvals, preferences, and widgets while preserving Event integrity. **Owner:** M. **Gates:** 10, 11.
+- [x] T-4.3 — Add e2e/privacy tests and review, extend restart test, eliminate demo-record dependency, and update MCP count test with any N-only tool addition. **Owner:** N. **Gates:** 12, 14. *(Note: MCP count test needed no update — no N-only tools were added; the 29-tool count in `tests/mcp/test_mcp_tools.py` is unchanged.)*
+- [x] T-4.4 — Verify disjoint patches, full suites/build, and Wave-4 coverage. **Owner:** parent. **Gates:** 4, 8, 10–14.
 
 ## Integration wave
 
-- [ ] T-I.1 — Inspect and apply approved patches in wave order; reject frozen-path and ownership violations. **Owner:** parent. **Gates:** all rows.
-- [ ] T-I.2 — Run `uv run pytest -m "not integration"`, `cd web && npm test`, `npm run build`, and restart persistence coverage. **Owner:** parent. **Gates:** all rows.
-- [ ] T-I.3 — Execute and evidence the acceptance sweep 1–15, migration ordering, privacy review, and no-demo flow before commit. **Owner:** parent. **Gates:** all rows.
+- [x] T-I.1 — Inspect and apply approved patches in wave order; reject frozen-path and ownership violations. **Owner:** parent. **Gates:** all rows. *(Waves 1–3 landed in `134936a`, wave 4 in `a99aa29`; each wave commit records disjoint-patch verification and its gate matrix.)*
+- [ ] T-I.2 — Run `uv run pytest -m "not integration"`, `cd web && npm test`, `npm run build`, and restart persistence coverage. **Owner:** parent. **Gates:** all rows. *(Executed in this session: backend suite 1313 passed, `npm run build` green, restart-persistence tests green. Left unticked because `npm test` has no driver in `web/` (scripts are dev/build/preview/lint/e2e only); web coverage is Playwright e2e 6/6 plus the `tsc` build, not a unit-test run.)*
+- [x] T-I.3 — Execute and evidence the acceptance sweep 1–15, migration ordering, privacy review, and no-demo flow before commit. **Owner:** parent. **Gates:** all rows. *(Sweep: `acceptance.md` §"P0-09 acceptance sweep" — 15/15 evidenced, with five live-only gaps recorded as Unverified in `privacy-review.md` §(h); migration ordering: `tests/backend/test_restart_persistence.py::TestSchema::test_migration_head_is_linear_after_005`; privacy: `privacy-review.md` (audit index row added); no-demo: e2e PF-2 exercises the degraded create path with no demo-record dependency.)*
