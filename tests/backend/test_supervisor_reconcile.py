@@ -417,3 +417,40 @@ class TestReconcileInterval:
         # without a kwarg or env dict, the process env is used
         sup3 = MailIngestSupervisor(registry=harness.registry, object_store=harness.store)
         assert sup3._reconcile_interval_s == 999.0
+
+
+# --------------------------------------------------------------------------
+# unsupported kinds (P1-106: an unservable provider must not look healthy)
+# --------------------------------------------------------------------------
+
+
+class TestUnsupportedKind:
+    async def test_graph_mail_never_gets_a_worker(self, harness) -> None:
+        """A ``graph_mail`` connection (the control-plane OAuth kind for
+        Microsoft) is not a mail-ingest kind: the supervisor must skip it on
+        startup *and* on reconcile, so it never silently polls a mailbox it
+        has no transport for. The durable row stays untouched — the honest
+        "unsupported" degradation, not a hidden worker."""
+        row = await harness.registry.connections.create_connection(
+            kind="graph_mail",
+            label="Outlook (OAuth)",
+            config={"account": "graph@example.com"},
+            auth_status="authenticated",
+            enabled=True,
+        )
+        supervisor = _supervisor(harness)
+        await supervisor.start()
+        # the fixture's imap connection gets its worker — the graph_mail
+        # row must not
+        assert harness.conn.id in supervisor.workers
+        assert row.id not in supervisor.workers
+
+        # a reconcile pass over durable state must not spawn one either
+        await supervisor.reconcile_once()
+        assert row.id not in supervisor.workers
+        await supervisor.stop()
+
+        # and the durable row was left alone — no operational movement
+        after = await harness.registry.connections.get_connection(row.id)
+        assert after.operational_status == "never_synced"
+        assert after.enabled is True

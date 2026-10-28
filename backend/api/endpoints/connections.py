@@ -35,9 +35,10 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
+from backend.api.auth import current_access
 from backend.api.models import ApiResponseMeta, ListResponse
 from backend.connectors.registry import (
     ConnectionControlPlane,
@@ -133,6 +134,7 @@ class AuthFlowRequest(BaseModel):
 @router.get("/", response_model=ListResponse)
 async def list_connections(
     request: Request,
+    claims: dict[str, Any] = Depends(current_access),
     enabled_only: bool = False,
     limit: int | None = None,
     offset: int = 0,
@@ -157,7 +159,11 @@ async def list_connections(
 
 
 @router.get("/{connection_id}")
-async def get_connection(request: Request, connection_id: str) -> dict[str, Any]:
+async def get_connection(
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
     """Fetch one connection (404 when absent)."""
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
@@ -173,7 +179,11 @@ async def get_connection(request: Request, connection_id: str) -> dict[str, Any]
 
 
 @router.post("", status_code=201)
-async def create_connection(request: Request, body: ConnectionCreateRequest) -> dict[str, Any]:
+async def create_connection(
+    request: Request,
+    body: ConnectionCreateRequest,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
     """Create a connection (201)."""
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
@@ -192,7 +202,10 @@ async def create_connection(request: Request, body: ConnectionCreateRequest) -> 
 
 @router.patch("/{connection_id}")
 async def update_connection(
-    request: Request, connection_id: str, body: ConnectionUpdateRequest
+    request: Request,
+    connection_id: str,
+    body: ConnectionUpdateRequest,
+    claims: dict[str, Any] = Depends(current_access),
 ) -> dict[str, Any]:
     """Update label / config / enabled (200)."""
     plane = _plane(request)
@@ -210,7 +223,11 @@ async def update_connection(
 
 
 @router.delete("/{connection_id}", status_code=204)
-async def delete_connection(request: Request, connection_id: str) -> None:
+async def delete_connection(
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
+) -> None:
     """Remove the connection and purge every secret it owned (204)."""
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
@@ -226,7 +243,12 @@ async def delete_connection(request: Request, connection_id: str) -> None:
 
 
 @router.post("/{connection_id}/auth")
-async def start_auth_flow(request: Request, connection_id: str, body: AuthFlowRequest | None = None) -> dict[str, Any]:
+async def start_auth_flow(
+    request: Request,
+    connection_id: str,
+    body: AuthFlowRequest | None = None,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
     """Start the OAuth / pairing flow for a connection.
 
     - ``gmail`` / ``graph_mail`` → ``{authorization_url, state, provider}``.
@@ -267,7 +289,11 @@ async def start_auth_flow(request: Request, connection_id: str, body: AuthFlowRe
 
 
 @router.post("/{connection_id}/verify")
-async def verify_connection(request: Request, connection_id: str) -> dict[str, Any]:
+async def verify_connection(
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
     """Run the provider login probe.
 
     A successful probe sets ``auth_status=authenticated`` but **never**
@@ -283,7 +309,11 @@ async def verify_connection(request: Request, connection_id: str) -> dict[str, A
 
 
 @router.post("/{connection_id}/sync")
-async def sync_connection(request: Request, connection_id: str) -> dict[str, Any]:
+async def sync_connection(
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
     """Trigger an incremental sync (delegates to the registered ingest trigger)."""
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
@@ -295,7 +325,11 @@ async def sync_connection(request: Request, connection_id: str) -> dict[str, Any
 
 
 @router.post("/{connection_id}/import")
-async def import_connection(request: Request, connection_id: str) -> dict[str, Any]:
+async def import_connection(
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
     """Trigger an initial-history import (recorded in ``import_jobs``)."""
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
@@ -307,7 +341,11 @@ async def import_connection(request: Request, connection_id: str) -> dict[str, A
 
 
 @router.post("/{connection_id}/reconnect")
-async def reconnect_connection(request: Request, connection_id: str) -> dict[str, Any]:
+async def reconnect_connection(
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
     """Re-verify the login, then re-sync."""
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
@@ -323,7 +361,9 @@ async def reconnect_connection(request: Request, connection_id: str) -> dict[str
 
 @router.get("/{connection_id}/diagnostics")
 async def diagnostics_connection(
-    request: Request, connection_id: str
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
 ) -> dict[str, Any] | ListResponse:
     """Actionable plain-language fix for the last error code + job state."""
     plane = _plane(request)
@@ -337,7 +377,9 @@ async def diagnostics_connection(
 
 @router.get("/{connection_id}/permissions")
 async def get_permissions(
-    request: Request, connection_id: str
+    request: Request,
+    connection_id: str,
+    claims: dict[str, Any] = Depends(current_access),
 ) -> dict[str, Any] | ListResponse:
     """The effective permission/config surface (editable vs denied keys)."""
     plane = _plane(request)
@@ -354,7 +396,10 @@ async def get_permissions(
 
 @router.patch("/{connection_id}/permissions")
 async def patch_permissions(
-    request: Request, connection_id: str, body: PermissionPatchRequest
+    request: Request,
+    connection_id: str,
+    body: PermissionPatchRequest,
+    claims: dict[str, Any] = Depends(current_access),
 ) -> dict[str, Any]:
     """Apply allow-listed config keys only (secrets are denied)."""
     plane = _plane(request)

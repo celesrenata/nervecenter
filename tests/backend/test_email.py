@@ -343,3 +343,114 @@ def test_service_reset_hook():
     reset_email_service()
     fresh = EmailService()
     assert fresh is not svc
+
+
+# ---------------------------------------------------------------------------
+# Transport-adjacent seam: MailItem -> Email plane
+#
+# The durable mail transports (``backend.connectors.mail.mail_transport``) are
+# the *other* ingest path in this plane; the Email plane receives normalized
+# payloads. These pin the contract the seam relies on: a transport
+# :class:`MailItem` maps to a valid ``ingest`` payload, replaying it is a
+# no-op (the transport's "no dupes on restart" contract), and the stub
+# transport the worker tests use delivers one-shot and merges the cursor.
+# ---------------------------------------------------------------------------
+
+
+def _mail_item(message_id="<t1@corp>", account="user@example.com", subject="Deploy by Friday",
+               body=b"Deploy by Friday\n", date="2026-10-27T09:00:00Z", source="imap"):
+    """A transport :class:`MailItem` shaped exactly as the transports emit it."""
+    from datetime import datetime as _dt
+
+    from backend.connectors.mail.mail_transport import MailItem
+
+    return MailItem(
+        message_id=message_id,
+        account=account,
+        subject=subject,
+        content_bytes=body,
+        timestamp=_dt.fromisoformat(date.replace("Z", "+00:00")),
+        headers={
+            "From": "boss@corp.com",
+            "To": account,
+            "Subject": subject,
+            "Date": date,
+            "Message-ID": message_id,
+        },
+        source=source,
+    )
+
+
+def _email_payload(item):
+    """The normalized payload the ingest worker would post for a MailItem."""
+    return {
+        "message_id": item.message_id,
+        "direction": "RECEIVED",
+        "from_address": item.headers.get("From", ""),
+        "to_address": item.headers.get("To", ""),
+        "subject": item.subject,
+        "body": item.content_bytes.decode("utf-8", "replace"),
+        "timestamp": item.timestamp.isoformat(),
+        "source": item.source,
+    }
+
+
+def test_mail_item_maps_to_email_plane_ingest():
+    svc = EmailService()
+    item = _mail_item()
+    result = svc.ingest(_email_payload(item))
+    assert result["duplicate"] is False
+    msg = result["message"]
+    thread = result["thread"]
+    assert msg.message_id == item.message_id
+    assert msg.subject == item.subject
+    assert msg.body == item.content_bytes.decode()
+    assert msg.thread_id == thread.thread_id
+    # The transport's dedup key (account + message-id) maps 1:1 to the plane's
+    # message_id, so a transport-fetched mail lands as exactly one message.
+    assert result["new_attention"] is not None
+
+
+def test_mail_item_replay_is_a_duplicate_in_email_plane():
+    # The transport guarantees "no dupes on restart"; the Email plane reflects
+    # that contract — re-ingesting the same message_id is a no-op.
+    svc = EmailService()
+    item = _mail_item()
+    first = svc.ingest(_email_payload(item))
+    assert first["duplicate"] is False
+    second = svc.ingest(_email_payload(item))
+    assert second["duplicate"] is True
+    assert second["message"].thread_id == first["message"].thread_id
+    assert len(svc.list_threads()) == 1
+
+
+def test_stub_transport_one_shot_delivery_and_cursor_merge():
+    import asyncio
+
+    from backend.api.models import MailConnector
+    from backend.connectors.mail.mail_transport import StubMailTransport
+
+    connector = MailConnector(
+        connector_id="c-1",
+        account="Work",
+        mailbox="user@example.com",
+        host="imap.example.com",
+        port=993,
+    )
+    item = _mail_item()
+    transport = StubMailTransport(items=[item], next_cursor={"uid": 101, "uidvalidity": 7})
+    items, cursor = asyncio.run(
+        transport.run(connector, {"uid": 100}, credentials={"password": "super-secret"})
+    )
+    assert len(items) == 1
+    assert items[0].message_id == item.message_id
+    # One-shot: the cursor already advanced, so a second poll yields nothing.
+    items2, _ = asyncio.run(
+        transport.run(connector, {"uid": 101}, credentials={"password": "super-secret"})
+    )
+    assert items2 == []
+    # The returned cursor merges the next_cursor into the input position.
+    assert cursor.get("uid") == 101
+    assert cursor.get("uidvalidity") == 7
+    # The plaintext secret never appears in the stub's observable state.
+    assert all("super-secret" not in str(v) for call in transport.calls for v in call.values())

@@ -446,12 +446,16 @@ class _FakeImap:
         self._uids = uids
         self._raw = raw
         self.logged_in = None
+        self.untagged_responses: dict[str, list[bytes]] = {}
 
     def login(self, user, password):
         self.logged_in = (user, password)
         return self._login
 
     def select(self, mailbox):
+        # B3: report the folder's UIDVALIDITY from the SELECT untagged response
+        # so the transport can capture it into the durable cursor.
+        self.untagged_responses = {"UIDVALIDITY": [b"7"]}
         return "OK", [b"2"]
 
     def uid(self, op, *args):
@@ -493,9 +497,15 @@ class TestImapTransport:
             _connector(), {"uid": 100, "seen": seen}, credentials={"username": _ACCOUNT, "password": _SECRET}
         )
         assert len(items) == 2
-        assert cursor == {"uid": 102}
-        # the seen list is NOT leaked into the returned cursor
-        assert "seen" not in cursor
+        # B1/B3/B5: the durable cursor is per (connection, folder) — the
+        # explicit INBOX folder, the captured UIDVALIDITY, and the folded
+        # seen-list (dedup of the re-emitted uid is the seen-list's job).
+        assert cursor == {
+            "uid": 102,
+            "uidvalidity": 7,
+            "folder": "INBOX",
+            "seen": ["a", f"{_ACCOUNT}:<uid-101@corp>"],
+        }
         assert seen == ["a"]  # input not mutated
 
     async def test_auth_failure_raises_transport_auth_error(self, monkeypatch) -> None:
@@ -535,9 +545,18 @@ class _FakeResp:
 
 
 class _FakeGmailClient:
-    def __init__(self, *, history: Any, history_status: int = 200) -> None:
+    """httpx.AsyncClient-shaped fake for the corrected Gmail wire contract.
+
+    ``history.start`` returns a valid baseline ``historyId``; ``history.get``
+    serves the configured entries (never a bare startHistoryId on the first
+    sync); per-message fetches serve a base64url plain-text payload."""
+
+    def __init__(
+        self, *, history: Any, history_status: int = 200, start_id: int = 70
+    ) -> None:
         self._history = history
         self._history_status = history_status
+        self._start_id = start_id
         self.tok_seen: list[str] = []
 
     async def __aenter__(self):
@@ -549,16 +568,20 @@ class _FakeGmailClient:
     async def get(self, url, *, headers=None, params=None):
         auth = (headers or {}).get("Authorization", "")
         self.tok_seen.append(auth)
-        if "/history" in url:
+        if url.endswith("/history.start"):
+            return _FakeResp(self._history_status, {"historyId": self._start_id})
+        if url.endswith("/users/me/history"):
             return _FakeResp(self._history_status, self._history)
+        # per-message fetch
         return _FakeResp(200, {
             "payload": {
+                "mimeType": "text/plain; charset=utf-8",
                 "headers": [
                     {"name": "From", "value": "boss@corp.com"},
                     {"name": "Subject", "value": "Hi"},
                     {"name": "Date", "value": "Mon, 27 Oct 2026 09:00:00 +0000"},
                 ],
-                "bodyData": {"data": "Hi there"},
+                "bodyData": {"data": "SGkgdGhlcmU="},  # "Hi there"
             }
         })
 
@@ -580,6 +603,9 @@ class TestGmailTransport:
                 self._observed.append(auth)
                 return await super().get(url, headers=headers, params=params)
 
+        # First sync: history.start gives the valid baseline (70), then
+        # history.get polls from it; the cursor advances to the last
+        # processed entry and the per-message fetch decodes the base64url body.
         monkeypatch.setattr(mt.httpx, "AsyncClient", lambda **kw: _Recorder(history=history))
         client = GmailClient()
         items, cursor = await client.run(
@@ -587,7 +613,8 @@ class TestGmailTransport:
         )
         assert len(items) == 1
         assert items[0].message_id == "gmail:m1"
-        assert cursor == {"history_id": 77, "account": ""}
+        assert items[0].content_bytes == b"Hi there"
+        assert cursor == {"history_id": 77, "account": "", "seen": [":gmail:m1"]}
         # the transient access_token is sent as a bearer but never returned in the cursor
         assert observed and all(auth == "Bearer tok-abc" for auth in observed)
         assert "tok-abc" not in str(cursor)

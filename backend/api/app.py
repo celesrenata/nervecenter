@@ -234,12 +234,35 @@ def canonical_aliases() -> APIRouter:
     return alias
 
 
+def _cors_origins() -> list[str]:
+    """Resolve the explicit CORS origin allow-list from ``NC_CORS_ORIGINS``.
+
+    The value is a comma-separated list of concrete origins (e.g.
+    ``https://app.example.com,https://panel.example.com``). An unset or empty
+    value yields ``[]`` — the API then serves no cross-origin requests at all.
+
+    A wildcard (``*``) can never appear: origins are only ever taken verbatim
+    from the explicit allow-list, so a wildcard can not be configured even by
+    accident, and the wildcard + credentials combination is structurally
+    impossible (see the middleware wiring in :func:`_configure`).
+    """
+    raw = os.environ.get("NC_CORS_ORIGINS", "")
+    origins = [part.strip() for part in raw.split(",") if part.strip()]
+    return [o for o in origins if o != "*"]
+
+
 def _configure(target: FastAPI) -> None:
     """Attach CORS middleware, every router, and the version endpoint."""
+    # Credentials are only ever enabled together with an explicit, non-empty
+    # origin list. The wildcard origin (``*``) is never used, so the
+    # "allow any origin AND allow credentials" combination — which browsers
+    # must reject and which leaks credentials to arbitrary origins — can not
+    # occur.
+    origins = _cors_origins()
     target.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
+        allow_origins=origins,
+        allow_credentials=bool(origins),
         allow_methods=["*"],
         allow_headers=["*"],
     )

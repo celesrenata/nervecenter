@@ -36,7 +36,11 @@ import structlog
 from ..persistence.models.personal import ConnectionRow
 from ..persistence.repositories import RepositoryRegistry
 from .mail.imap_client import ImapClient, ImapProbeResult
-from .mail.oauth import OauthProviderName, build_authorization_url
+from .mail.oauth import (
+    OauthProviderName,
+    build_authorization_url,
+    make_pkce_pair,
+)
 from .vault import VaultError, load_from_env
 
 log = structlog.get_logger(__name__)
@@ -102,6 +106,7 @@ DENIED_CONFIG_KEYS = (
     "refresh_token",
     "secret_ref",
     "oauth_state",
+    "oauth_code_verifier",
 )
 
 #: Stable error code → plain-language recovery action (frozen diagnostics map).
@@ -738,7 +743,13 @@ class ConnectionControlPlane:
     # -- OAuth flow (gmail / graph_mail) -------------------------------------------
 
     async def start_oauth(self, connection_id: str) -> dict[str, Any]:
-        """Begin a provider sign-in: return ``{authorization_url, state, provider}``."""
+        """Begin a provider sign-in: return ``{authorization_url, state, provider, code_verifier}``.
+
+        The per-flow ``state`` and PKCE ``code_verifier`` are persisted in the
+        connection's non-secret ``config`` so :meth:`complete_oauth` can bind
+        the callback to this exact flow (CSRF guard, P1-106). Both are denied
+        config keys — never echoed back from the public projection.
+        """
         row = await self._require_row(connection_id)
         provider_name = OAUTH_PROVIDER_BY_KIND.get(row.kind)
         if provider_name is None:
@@ -749,22 +760,48 @@ class ConnectionControlPlane:
         client_id = str(config.get("client_id", ""))
         redirect_uri = str(config.get("oauth_redirect_uri", ""))
         state = _secrets.token_urlsafe(24)
-        # Persist the per-flow state (config, non-secret) for later verification.
+        verifier, challenge = make_pkce_pair()
+        # Persist the per-flow state + PKCE verifier (config, non-secret) for
+        # later verification; the challenge goes in the authorize URL.
         merged = dict(config)
         merged["oauth_state"] = state
+        merged["oauth_code_verifier"] = verifier
         await self._registry.connections.update_connection(connection_id, config=merged)
         url = build_authorization_url(
-            provider_name, client_id=client_id, redirect_uri=redirect_uri, state=state
+            provider_name,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=challenge,
         )
-        return {"authorization_url": url, "state": state, "provider": provider_name}
+        return {
+            "authorization_url": url,
+            "state": state,
+            "code_verifier": verifier,
+            "provider": provider_name,
+        }
 
     async def complete_oauth(self, connection_id: str, code: str, state: str) -> dict[str, Any]:
-        """Exchange the code (injectable exchanger) and store the token via the vault."""
+        """Verify the callback state, exchange the code, store the token.
+
+        The callback ``state`` is compared in constant time against the
+        per-flow state persisted by :meth:`start_oauth`; a mismatch is a CSRF
+        attempt and is rejected with ``oauth_incomplete`` *before* any token
+        exchange happens. A consumed state is removed on success, so the same
+        code+state pair can only ever be exchanged once.
+        """
         row = await self._require_row(connection_id)
         provider_name = OAUTH_PROVIDER_BY_KIND.get(row.kind)
         if provider_name is None:
             raise ConnectionControlPlaneError(
                 ERR_OAUTH_INCOMPLETE, f"kind {row.kind!r} does not use OAuth"
+            )
+        expected_state = str((row.config or {}).get("oauth_state") or "")
+        # An empty persisted state means no flow was started (or it was
+        # already consumed) — reject without touching the exchanger.
+        if not expected_state or not _token_equals(expected_state, state):
+            raise ConnectionControlPlaneError(
+                ERR_OAUTH_INCOMPLETE, "callback state does not match the started flow"
             )
         if self._token_exchanger is None:
             raise ConnectionControlPlaneError(
@@ -773,6 +810,11 @@ class ConnectionControlPlane:
         token = await self._token_exchanger.exchange(provider_name, code, state)
         if not token:
             raise ConnectionControlPlaneError(ERR_OAUTH_INCOMPLETE, "token exchange returned empty")
+        # Consume the one-shot state so a replayed callback cannot re-exchange.
+        config = dict(row.config or {})
+        config.pop("oauth_state", None)
+        config.pop("oauth_code_verifier", None)
+        await self._registry.connections.update_connection(connection_id, config=config)
         await self.store_secret(connection_id=connection_id, kind=ACCESS_TOKEN, plaintext=token)
         await self._registry.connections.update_connection(
             connection_id, auth_status="authenticated", last_attempt_at=_now()
@@ -884,6 +926,26 @@ class ConnectionControlPlane:
         )
         updated = await self._registry.connections.get_connection(conn.id)
         return {**_public(updated), "ok": True, "detail": "relay device registered"}
+
+    async def relay_verify_token(self, *, device_id: str, token: str) -> bool:
+        """Constant-time check that ``token`` is the device's registered relay token.
+
+        Returns ``False`` (never raises, never distinguishes the reason) for an
+        empty token, an unknown device, or a token that does not match the
+        stored :data:`RELAY_TOKEN` credential — so the caller can map every
+        failure mode to a single generic 401 without leaking which check failed.
+        """
+        if not token:
+            return False
+        row = await self._find_relay_connection(device_id)
+        if row is None:
+            return False
+        stored = await self._registry.connections.get_secret(
+            kind=RELAY_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        if stored is None:
+            return False
+        return _token_equals(token, stored)
 
     async def _find_relay_connection(self, device_id: str) -> ConnectionRow | None:
         rows = await self._registry.connections.list_connections()
