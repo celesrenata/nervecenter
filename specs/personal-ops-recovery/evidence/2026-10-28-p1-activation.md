@@ -128,8 +128,9 @@ PKG-INFO was handled via `git apply --exclude` per the task instead).
     in the tree; install/pairing not run on hardware).
   - iPhone/Watch widget delivery requires an iOS device + Watch (the
     `apple/Widgets` bundle builds in CI tests only).
-- **Production activated** — NOT activated. The branch is committed locally;
-  no push, no image build, no k8s rollout.
+- **Production activated** — DONE 2026-10-28. See
+  `## Production deploy 2026-10-28` below (api+web live at `91634b3`;
+  mcp pin preserved; SSO-gated ingress verified).
 
 ## Remaining blockers (do not mark verified)
 
@@ -139,3 +140,69 @@ PKG-INFO was handled via `git apply --exclude` per the task instead).
 - Staging deploy of this branch (needs a staging target + image build).
 - No alembic migration was added (per task constraint); the durable
   `commitments` table is expected from E's migration 010 / the existing schema.
+
+## Production deploy 2026-10-28
+
+Authorized production activation of this branch (api+web only; mcp pin
+preserved; no other branches touched).
+
+- **Branch push:** `feat/p1-personal-ops-production-activation`. The remote
+  branch had diverged with 3 docs-only commits (`5100950` spec, `806fd15`
+  plan, `bfff0a1` tasks — zero file overlap with local), resolved via a
+  clean merge (`b19465f`); pushed fast-forward,
+  `origin = b19465f`. Deployed implementation tree: `91634b3` (images built
+  from a detached worktree pinned at `91634b3`).
+- **Pre-deploy state:** all pods Running/Ready. Tags
+  `api=fb774d2`, `web=fb774d2`, `mcp=0545873`. Migration Job
+  `nervecenter-migrate` was `1/1 Complete`.
+- **Config keys added to `nervecenter-env` (names only; values never
+  printed):** `NERVE_SECRET_KEY` (fresh 44-char urlsafe-base64 Fernet key,
+  generated locally) and `NERVE_INGEST_ENABLED="1"`. Both were absent
+  before; presence confirmed via key list only.
+- **Images built + pushed** (docker buildx, linux/amd64):
+  - `registry.celestium.life/nervecenter/api:91634b3` —
+    digest `sha256:44d43210…`
+  - `registry.celestium.life/nervecenter/web:91634b3` —
+    digest `sha256:c4ced1b7…`
+- **Migration Job:** `nervecenter-migrate` re-applied with the api image
+  retagged to `91634b3`; `1/1 Complete` (7 s, idempotent). Pod log:
+  `nervcenter.migrate: upgraded to head`; live `alembic_version` verified
+  as `009_routines`.
+- **Rollout:** `kubectl set image` (api, web only — mcp object not
+  touched). `deployment "api" successfully rolled out`, `deployment "web"
+  successfully rolled out` (new pods `1/1 Running`).
+- **Health (`/api/health`, in-cluster, redacted):** `status=ok`.
+  `checks.db.ok=true` (PostgreSQL 16.15, `pgvector_available=true`),
+  `checks.nats.status=ok` (JetStream available). New sections present:
+  `ingest = {"status":"not configured","workers":0,"summary":[]}` and
+  `connections = {"status":"ok","count":0,"connections":[]}` — empty
+  connections is correct (no accounts registered yet).
+- **Boot log (new api pod):** db engine created, `nats.connected`,
+  `nats.stream_exists stream=NERVECENTER_EVENTS`; no
+  `api.wiring.vault_absent` warning, i.e. the registry bound the Fernet
+  `SecretCodec` (not the identity fallback) now that
+  `NERVE_SECRET_KEY` is set.
+  `mail_ingest.supervisor_skipped reason=object_store_not_configured` —
+  expected: the supervisor starts only when enabled AND a durable
+  registry exists AND an object store is configured
+  (`backend/ingest/supervisor.py:360`), so the plane degrades cleanly.
+- **External checks:** `https://nervecenter.celestium.life/` and
+  `/api/health` 302 → Keycloak (SSO gate active, as designed);
+  `https://nervecenter.celestium.life/mcp/health` open, 200. TLS cert
+  `nervecenter-celestium-tls` READY (issuer
+  `celestium-le-production`). Web pod logs: nginx config ok, 200s only,
+  no errors.
+- **mcp pin:** verified unchanged —
+  `registry.celestium.life/nervecenter/mcp:0545873` before and after.
+
+### Follow-ups (not part of this deploy)
+
+- Object-store configuration for the ingest plane (the supervisor is
+  currently gated off by `object_store_not_configured`; until then the
+  plane reports `ingest.status=not configured`).
+- Real mail account credentials in the connection registry: live ingest
+  requires an account, and `connections` stays empty until then.
+- `/downloads/` in the web image: no `web/dist/downloads` artifacts were
+  staged for this build, so the self-host download route 404s (expected
+  per `deployments/harbor/deploy.sh`; stage artifacts and rebuild to
+  enable).
