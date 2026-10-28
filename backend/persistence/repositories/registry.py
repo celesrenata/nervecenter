@@ -53,6 +53,18 @@ class RepositoryRegistry:
         return self._session_factory
 
     @property
+    def secret_codec(self) -> Any:
+        """The :class:`~.connections_repo.SecretCodec` this registry is bound
+        to (``None`` when the registry degrades to the identity codec).
+
+        Exposed so the control plane, the mail worker, and the calendar sync
+        can verify they are all operating over the *same* codec — the core
+        of the workstream F contract that one registry is the only durable
+        secret boundary.
+        """
+        return self._secret_codec
+
+    @property
     def connections(self) -> ConnectionsRepository:
         return ConnectionsRepository(
             self._session_factory, secret_codec=self._secret_codec

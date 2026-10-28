@@ -247,6 +247,62 @@ def _state_to_status(state: str) -> str:
     return _STATE_TO_STATUS.get(state, "NOW")
 
 
+def row_to_wire(row: Any) -> dict[str, Any]:
+    """Map a durable :class:`AttentionItemRow` onto the in-memory wire shape.
+
+    The durable row stores an int ``importance`` (1..10), a string
+    ``urgency`` and a ``state`` string; the wire contract
+    (``backend.api.models.AttentionItem``) uses floats in [0, 1], ``due`` and
+    the ``AttentionState`` enum vocabulary. This mapper is the single seam so
+    durable-only responses (transition/snooze/dismiss) return the *same* wire
+    shape as the in-memory queue instead of a raw ORM column dump.
+
+    ``priority`` is derived with the same explainable formula as
+    :meth:`backend.attention.service.AttentionService._score` (base +
+    deadline proximity + direct-request bonus, clamped to [0, 1]).
+    """
+    importance_f = min(_attr(row, "importance", 5) / 10.0, 1.0)
+    urgency_f = _URGENCY_FLOAT.get(_attr(row, "urgency", "normal"), 0.5)
+    # Wire ``due`` mirrors the in-memory contract: a snoozed item's due is its
+    # ``snoozed_until`` (when it returns to the queue); otherwise the deadline.
+    snoozed_until = _ensure_utc(_attr(row, "snoozed_until"))
+    due = snoozed_until or _ensure_utc(_attr(row, "deadline_at"))
+    suggested_action = _attr(row, "recommended_action")
+
+    # -- priority, mirroring AttentionService._score -------------------------
+    priority = 0.5 * importance_f + 0.5 * urgency_f
+    if due is not None:
+        hours = (due - datetime.now(UTC)).total_seconds() / 3600.0
+        if hours <= 0:
+            priority += 0.25
+        elif hours <= 12:
+            priority += 0.20
+        elif hours <= 48:
+            priority += 0.12
+        else:
+            priority += 0.04
+    if suggested_action:
+        priority += 0.10
+    priority = max(0.0, min(1.0, priority))
+
+    refs = list(_attr(row, "source_refs", []) or [])
+    return {
+        "attention_id": str(_attr(row, "id", "")),
+        "reason": _attr(row, "title", ""),
+        "priority": round(priority, 4),
+        "urgency": urgency_f,
+        "importance": importance_f,
+        "due": due,
+        "entities": [_source_id(r) for r in refs],
+        "sources": refs,
+        "suggested_action": suggested_action,
+        "status": _state_to_status(_attr(row, "state", "active")),
+        "why": [],
+        "created_at": _attr(row, "created_at"),
+        "updated_at": _attr(row, "updated_at"),
+    }
+
+
 def _source_id(ref: str) -> str:
     """The source id carried by a ``kind:id`` reference (the part after ``:``)."""
     return str(ref).split(":", 1)[-1]

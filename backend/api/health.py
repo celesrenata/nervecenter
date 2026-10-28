@@ -15,6 +15,8 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from backend.connectors.redact import redact_message
+
 router = APIRouter(tags=["health"])
 
 
@@ -31,7 +33,7 @@ async def _database_check(request: Request) -> dict[str, Any]:
         result["status"] = "ok" if report.ok else "unreachable"
         return result
     except Exception as exc:  # noqa: BLE001 - health must degrade gracefully
-        return {"status": "unreachable", "message": str(exc)}
+        return {"status": "unreachable", "message": redact_message(exc)}
 
 
 async def _nats_check(request: Request) -> dict[str, Any]:
@@ -46,7 +48,7 @@ async def _nats_check(request: Request) -> dict[str, Any]:
             "status": "ok" if report.get("connected") else "unreachable",
         }
     except Exception as exc:  # noqa: BLE001 - health must degrade gracefully
-        return {"status": "unreachable", "message": str(exc)}
+        return {"status": "unreachable", "message": redact_message(exc)}
 
 
 # -- ingest + connections (additive; the checks above are unchanged) --------
@@ -72,7 +74,7 @@ async def _connections_check(registry: Any) -> dict[str, Any]:
     try:
         rows = await registry.connections.list_connections()
     except Exception as exc:  # noqa: BLE001 - health must degrade gracefully
-        return {"status": "unreachable", "message": str(exc), "count": 0,
+        return {"status": "unreachable", "message": redact_message(exc), "count": 0,
                 "connections": []}
     entries: list[dict[str, Any]] = []
     for row in rows:
@@ -86,7 +88,7 @@ async def _connections_check(registry: Any) -> dict[str, Any]:
                 "last_success_at": _ts(getattr(row, "last_success_at", None)),
                 "last_attempt_at": _ts(getattr(row, "last_attempt_at", None)),
                 "last_error_code": getattr(row, "last_error_code", None),
-                "last_error_message": (str(message)[:256] if message is not None else None),
+                "last_error_message": (redact_message(message) if message is not None else None),
             }
         )
     return {"status": "ok", "count": len(entries), "connections": entries}
@@ -111,7 +113,7 @@ async def _ingest_check(request: Request) -> dict[str, Any]:
         workers = dict(getattr(supervisor, "workers", None) or {})
         summary = list(supervisor.liveness())
     except Exception as exc:  # noqa: BLE001 - health must degrade gracefully
-        return {"status": "error", "message": str(exc), "workers": 0, "summary": []}
+        return {"status": "error", "message": redact_message(exc), "workers": 0, "summary": []}
     running = sum(1 for w in workers.values() if getattr(w, "is_running", False))
     return {
         "status": "installed",

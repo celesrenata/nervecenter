@@ -190,9 +190,9 @@ class TestDurableTransitions:
             res = client.post(f"/api/attention/{durable_id}/resolve")
             assert res.status_code == 200
             body = res.json()
-            # durable row-shaped wire contract (the dismiss pattern)
-            assert body["state"] == "resolved"
-            assert body["resolved_at"] is not None
+            # aligned wire contract: durable rows map onto the in-memory shape
+            assert body["status"] == "RESOLVED"
+            assert "state" not in body and "resolved_at" not in body
 
             row = await registry.attention.get_attention_item(durable_id)
             assert row.state == "resolved"
@@ -219,8 +219,7 @@ class TestDurableTransitions:
 
             res = client.post(f"/api/attention/{durable_id}/acknowledge")
             assert res.status_code == 200
-            assert res.json()["state"] == "resolved"
-            assert res.json()["resolved_at"] is not None
+            assert res.json()["status"] == "RESOLVED"
 
             row = await registry.attention.get_attention_item(durable_id)
             assert row.state == "resolved"
@@ -245,7 +244,7 @@ class TestDurableTransitions:
 
             res = client.post(f"/api/attention/{durable_id}/suppress")
             assert res.status_code == 200
-            assert res.json()["state"] == "dismissed"
+            assert res.json()["status"] == "SUPPRESSED"
 
             # the frozen §6 state set has no "suppressed" member: an explicit
             # user mute is the same durable state as a dismiss.
@@ -276,8 +275,9 @@ class TestDurableTransitions:
             )
             assert res.status_code == 200
             body = res.json()
-            assert body["state"] == "snoozed"
-            assert body["snoozed_until"] is not None
+            # aligned wire contract: snoozed → TODAY with a non-empty due
+            assert body["status"] == "TODAY"
+            assert isinstance(body["due"], str) and body["due"]
 
             row = await registry.attention.get_attention_item(durable_id)
             assert row.state == "snoozed"

@@ -43,6 +43,7 @@ from backend.calendar.providers import (
     build_provider,
 )
 from backend.calendar.service import CalendarService
+from backend.connectors.redact import redact_message
 
 log = structlog.get_logger(__name__)
 
@@ -177,7 +178,7 @@ class CalendarSyncRunner:
                 owner_id=account.id,
             )
         except Exception as exc:  # noqa: BLE001 — vault failure is a sync error
-            log.warning("calendar.sync.secret_unreadable", error=str(exc))
+            log.warning("calendar.sync.secret_unreadable", error=redact_message(exc))
             return None
 
     # -- per-account pass ----------------------------------------------------
@@ -272,7 +273,8 @@ class CalendarSyncRunner:
             }
         except Exception as exc:  # noqa: BLE001 — a flaky account must not kill the loop
             code = getattr(exc, "code", None) or "sync_failed"
-            message = getattr(exc, "message", None) or str(exc)
+            raw_message = getattr(exc, "message", None) or str(exc)
+            message = redact_message(raw_message, limit=500)
             log.warning("calendar.sync.account_failed",
                         account_id=account_id, error_code=code, error=message)
             await repo.mark_attempt(
@@ -280,7 +282,7 @@ class CalendarSyncRunner:
                 operational_status="error",
                 last_attempt_at=now,
                 last_error_code=code,
-                last_error_message=message[:500],
+                last_error_message=message,
             )
             return {
                 "synced": False,
@@ -318,7 +320,7 @@ class CalendarSyncRunner:
             )
             durable_written = True
         except Exception as exc:  # noqa: BLE001 — keep the in-memory plane live
-            log.error("calendar.sync.durable_write_failed", error=str(exc))
+            log.error("calendar.sync.durable_write_failed", error=redact_message(exc))
 
         if ev.deleted:
             # Explicit deletion marker: remove the in-memory copy so
@@ -420,7 +422,7 @@ class CalendarSyncSupervisor:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 — the loop must survive
-                log.error("calendar.sync.loop_failed", error=str(exc))
+                log.error("calendar.sync.loop_failed", error=redact_message(exc))
             await asyncio.sleep(self.interval_s)
 
 

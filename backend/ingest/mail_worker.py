@@ -43,7 +43,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
 import structlog
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -179,59 +178,21 @@ def _secret_kind_for(conn: Any) -> str:
 
 # -- transport-error redaction (GAP 2: §4 — never log/emit credentials) --------
 
-#: URL userinfo with embedded credentials: ``scheme://user:pass@host``. The
-#: password (between the first ``:`` and the ``@``) is stripped; the user
-#: half is kept — it is the account name, not a secret. The optional scheme
-#: is preserved verbatim.
-_URL_CRED_RE = re.compile(
-    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)?"
-    r"(?P<user>[^:/@\s]+):(?P<password>[^@/\s\"']+)@"
-)
-#: Token-shaped substrings: JWTs (``eyJ…``), Google ``ya29.`` tokens, AWS
-#: ``AKIA`` access keys, Slack ``xox*`` bot/user tokens, and any long
-#: base64url blob (Fernet payloads, long bearer/access tokens). An optional
-#: labelled prefix (``access_token=`` …) is consumed with the value so an
-#: error body does not echo the credential.
-_TOKEN_RE = re.compile(
-    r"(?i)(?:bearer\s+|"
-    r"(?:access_token|refresh_token|client_secret|client_id|"
-    r"device_token|session_token|api[_ ]?key|secret[_ ]?key|password|token)"
-    r"\s*[:=]\s*)?"
-    r"(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}|"
-    r"ya29\.[A-Za-z0-9_-]{10,}|"
-    r"AKIA[0-9A-Z]{16}|"
-    r"xox[baprs]-[A-Za-z0-9\-]{10,}|"
-    r"[A-Za-z0-9_-]{40,})"
-)
 
-
-def _strip_url_userinfo(message: str) -> str:
-    """Remove the password from any ``scheme://user:pass@host`` URL."""
-    return _URL_CRED_RE.sub(
-        lambda m: (m.group("scheme") or "") + m.group("user") + "@",
-        message,
-    )
-
-
-def _mask_token_shapes(message: str) -> str:
-    """Mask token-shaped substrings (JWT / ya29 / AKIA / xox* / long blobs)."""
-    return _TOKEN_RE.sub("REDACTED", message)
-
-
-def redact_transport_error(message: str, *, limit: int = 256) -> str:
+def redact_transport_error(message: Any, *, limit: int = 256) -> str:
     """Stable, redacted form of a transport exception for durable storage.
 
-    The stored text carries the exception's *shape* with every
+    Delegates to the shared :func:`backend.connectors.redact.redact_message`
+    so the mail worker, health, calendar, and supervisor planes all use one
+    redactor. The returned text carries the message's *shape* with every
     credential-bearing fragment removed: URL ``user:pass@`` userinfo is
     stripped to ``user@`` and token-shaped substrings are replaced by
     ``REDACTED`` markers. The result is truncated to ``limit`` characters
     so the ``last_error_message`` column stays bounded.
     """
-    if message is None:  # defensive — callers pass ``str(exc)``
-        return ""
-    text = _strip_url_userinfo(str(message))
-    text = _mask_token_shapes(text)
-    return text[:limit]
+    from backend.connectors.redact import redact_message
+
+    return redact_message(message, limit=limit)
 
 
 def _content_key(connection_id: str, mail_id: str) -> str:

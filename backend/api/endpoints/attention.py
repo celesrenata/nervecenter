@@ -82,7 +82,13 @@ def _aggregator(request: Request) -> Any:
 
 
 def _dump_durable(obj: Any) -> dict[str, Any]:
-    """Serialize a durable attention row *or* an in-memory item to a dict."""
+    """Serialize a durable attention row *or* an in-memory item to a dict.
+
+    Durable :class:`AttentionItemRow` objects are mapped onto the in-memory
+    wire shape (``attention_id``/``reason``/float ``urgency``/``status`` …) via
+    :func:`backend.attention.aggregator.row_to_wire`, so a durable-only
+    transition response matches the list/now endpoints byte-for-byte.
+    """
     if obj is None:
         return {}
     if isinstance(obj, dict):
@@ -92,6 +98,10 @@ def _dump_durable(obj: Any) -> dict[str, Any]:
         return cast("dict[str, Any]", model_dump(mode="json"))
     table = getattr(obj, "__table__", None)
     if table is not None:
+        if getattr(table, "name", None) == "attention_items":
+            from backend.attention.aggregator import row_to_wire
+
+            return row_to_wire(obj)
         return {c.name: getattr(obj, c.name) for c in table.columns}
     return vars(obj)
 

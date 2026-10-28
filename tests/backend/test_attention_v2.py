@@ -39,6 +39,7 @@ from backend.attention.aggregator import (
     _canonical_key,
     _parse_duration,
     escalation_level_for,
+    row_to_wire,
 )
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.base import Base
@@ -144,6 +145,84 @@ class TestPureHelpers:
         assert _parse_duration(120) == timedelta(seconds=120)
         assert _parse_duration("bogus") is None
         assert _parse_duration(None) is None
+
+
+def _fake_row(**overrides) -> types.SimpleNamespace:
+    """A stand-in for a durable :class:`AttentionItemRow`.
+
+    ``row_to_wire`` only reads attributes, so a namespace suffices — but the
+    endpoint's ``_dump_durable`` routes on ``__table__.name == "attention_items"``,
+    so we attach a minimal table stub for that path too.
+    """
+    base = dict(
+        id="11111111-2222-3333-4444-555555555555",
+        title="Reply to Dana",
+        body="follow up on the Q4 numbers",
+        importance=8,
+        urgency="high",
+        deadline_at=None,
+        source_refs=["mail:msg-1", "person:dana"],
+        recommended_action="Reply to Dana's email",
+        escalation_policy={},
+        state="active",
+        snoozed_until=None,
+        resolved_at=None,
+        resolution_condition=None,
+        created_at=datetime(2026, 10, 28, 9, 0, tzinfo=UTC),
+        updated_at=datetime(2026, 10, 28, 9, 30, tzinfo=UTC),
+    )
+    base.update(overrides)
+    row = types.SimpleNamespace(**base)
+    row.__table__ = types.SimpleNamespace(name="attention_items")
+    return row
+
+
+class TestRowToWire:
+    """The durable row → wire-shape mapper (GAP: durable dump alignment)."""
+
+    def test_maps_to_wire_shape(self) -> None:
+        row = _fake_row()
+        wire = row_to_wire(row)
+        # Wire keys, not raw ORM column names.
+        assert set(wire) == {
+            "attention_id", "reason", "priority", "urgency", "importance",
+            "due", "entities", "sources", "suggested_action", "status",
+            "why", "created_at", "updated_at",
+        }
+        assert "id" not in wire and "title" not in wire and "state" not in wire
+
+    def test_floats_and_status_vocabulary(self) -> None:
+        # importance 8 → 0.8, urgency "high" → 0.75 floats in [0, 1].
+        row = _fake_row()
+        wire = row_to_wire(row)
+        assert wire["importance"] == 0.8
+        assert wire["urgency"] == 0.75
+        assert wire["attention_id"] == row.id
+        assert wire["reason"] == row.title
+        assert wire["suggested_action"] == row.recommended_action
+        # base 0.5*0.8 + 0.5*0.75 = 0.775 + suggested_action bonus 0.10
+        assert wire["priority"] == round(0.775 + 0.10, 4)
+        assert 0.0 <= wire["priority"] <= 1.0
+        assert wire["status"] == "NOW"
+        assert wire["sources"] == ["mail:msg-1", "person:dana"]
+        assert wire["entities"] == ["msg-1", "dana"]
+
+    def test_state_vocabulary(self) -> None:
+        assert row_to_wire(_fake_row(state="snoozed"))["status"] == "TODAY"
+        assert row_to_wire(_fake_row(state="resolved"))["status"] == "RESOLVED"
+        assert row_to_wire(_fake_row(state="dismissed"))["status"] == "SUPPRESSED"
+
+    def test_priority_clamped_and_deadline_bonus(self) -> None:
+        # overdue deadline → +0.25 on top of a high base, clamped to 1.0.
+        row = _fake_row(
+            importance=10,
+            urgency="critical",
+            deadline_at=datetime.now(UTC) - timedelta(hours=1),
+        )
+        assert row_to_wire(row)["priority"] == 1.0
+        # no deadline, no suggested action → base only.
+        row = _fake_row(importance=4, urgency="low", recommended_action=None)
+        assert row_to_wire(row)["priority"] == round(0.2 + 0.15, 4)
 
 
 class TestEscalationLevel:
@@ -331,7 +410,8 @@ class TestDurableEndpoints:
 
             r = client.post(f"/api/attention/{item_id}/dismiss")
             assert r.status_code == 200
-            assert r.json()["state"] == "dismissed"
+            # aligned wire contract: durable rows map onto the in-memory shape
+            assert r.json()["status"] == "SUPPRESSED"
 
             fresh = await registry.attention.get_attention_item(item_id)
             assert fresh.state == "dismissed"

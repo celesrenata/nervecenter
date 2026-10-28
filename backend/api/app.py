@@ -146,15 +146,18 @@ ALL_ROUTERS = (
 def _install_connection_control_plane(app: FastAPI) -> None:
     """Bind the connector control plane onto ``app.state``.
 
-    Mirrors where :mod:`backend.api.wiring` installs the repository
-    registry: built from the same durable session factory when a registry is
-    present, and set to ``None`` otherwise so the ``/api/connections`` and
-    ``/api/relay`` routers keep their honest degradation semantics. The
-    Fernet vault (``NERVE_SECRET_KEY``) is installed as the durable
-    ``SecretCodec`` so every secret written through this wave is encrypted
-    at rest; without the key the plane is still available for credential-less
-    config, and secret operations fail with a stable ``vault_unavailable``
-    code instead of storing plaintext.
+    Reuses the *single* durable registry that :mod:`backend.api.wiring`
+    already built — which is itself bound to the Fernet ``SecretCodec`` when
+    ``NERVE_SECRET_KEY`` is set — so this plane, the mail worker, and the
+    calendar sync all share one codec-bound registry. It is set to ``None``
+    when no registry is present, so the ``/api/connections`` and
+    ``/api/relay`` routers keep their honest degradation semantics.
+
+    The loaded vault (``app.state.secret_vault``, set by the wiring) is the
+    plane's secret gate: when the key is absent it is ``None`` and the plane
+    stays available for credential-less config, with secret operations
+    failing a stable ``vault_unavailable`` code instead of storing
+    plaintext. No second registry is rebuilt here.
     """
 
     registry = getattr(app.state, "repository_registry", None)
@@ -162,23 +165,10 @@ def _install_connection_control_plane(app: FastAPI) -> None:
         app.state.connection_control_plane = None
         return
     from backend.connectors.registry import ConnectionControlPlane
-    from backend.connectors.vault import VaultError, load_from_env
-    from backend.persistence.repositories import RepositoryRegistry
 
-    vault = None
-    try:
-        vault = load_from_env()
-    except VaultError as exc:
-        log.warning("api.control_plane_vault_absent", code=exc.code)
-    # Rebuild the registry bound to the same session factory but with the
-    # Fernet codec, so secrets are encrypted at the durable boundary.
-    durable_registry = (
-        RepositoryRegistry(registry.session_factory, secret_codec=vault)
-        if vault is not None
-        else registry
-    )
+    vault = getattr(app.state, "secret_vault", None)
     app.state.connection_control_plane = ConnectionControlPlane(
-        durable_registry, vault=vault
+        registry, vault=vault
     )
 
 

@@ -34,6 +34,7 @@ import structlog
 from typing import Any
 
 from backend.connectors.mail.mail_transport import ImapPollClient, GmailClient
+from backend.connectors.redact import redact_message
 from backend.ingest.mail_worker import (
     CURSOR_KINDS,
     MailIngestWorker,
@@ -173,7 +174,7 @@ class MailIngestSupervisor:
         try:
             connections = await self._registry.connections.list_connections()
         except Exception as exc:  # noqa: BLE001 - transient DB failure
-            log.warning("mail_ingest.reconcile_skipped", error=str(exc))
+            log.warning("mail_ingest.reconcile_skipped", error=redact_message(exc))
             return
 
         enabled: dict[str, Any] = {}
@@ -236,7 +237,7 @@ class MailIngestSupervisor:
                 try:
                     await self.reconcile_once()
                 except Exception as exc:  # noqa: BLE001 - keep the loop alive
-                    log.warning("mail_ingest.reconcile_failed", error=str(exc))
+                    log.warning("mail_ingest.reconcile_failed", error=redact_message(exc))
         except asyncio.CancelledError:
             raise
 
@@ -271,7 +272,7 @@ class MailIngestSupervisor:
         try:
             connections = await self._registry.connections.list_connections(enabled_only=True)
         except Exception as exc:  # noqa: BLE001 - startup must never raise
-            log.warning("mail_ingest.build_failed", error=str(exc))
+            log.warning("mail_ingest.build_failed", error=redact_message(exc))
             return
         for conn in connections:
             if str(getattr(conn, "kind", "") or "").lower() not in _KIND_TO_CURSOR:
@@ -314,7 +315,7 @@ class MailIngestSupervisor:
                     "last_success_at": _ts(getattr(conn, "last_success_at", None)),
                     "last_attempt_at": _ts(getattr(conn, "last_attempt_at", None)),
                     "last_error_code": getattr(conn, "last_error_code", None),
-                    "last_error_message": (str(message)[:256] if message is not None else None),
+                    "last_error_message": (redact_message(message) if message is not None else None),
                 }
             )
         return out
