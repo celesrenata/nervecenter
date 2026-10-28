@@ -90,3 +90,49 @@ list/now returned the in-memory `AttentionItem` wire shape.
   (`transport` Any|None, `relayed_events` kwarg) unrelated to this change.
 - Live IMAP/calendar round-trips are Unverified (no live credentials in CI);
   the ciphertext-at-rest proof is via the SQLite scratch DB in the new tests.
+
+## Final verification (independent re-run, 2026-10-28)
+
+Independently re-ran the full verification gate on
+`feat/p1-personal-ops-production-activation` @ `8fb286e`. No regression was
+found; the earlier "1293" figure was a **narrower scope**, not a count drop.
+Exact commands + results:
+
+- Backend gate (repo root): `uv run pytest -m "not integration"`
+  → **1385 passed, 3 warnings in 41.77s**.
+  `uv run pytest -m "not integration" --collect-only -q` → 1385 collected.
+- Web build: `cd web && npm run build` → green (tsc + vite, 86 modules).
+- Web e2e: `cd web && npm run e2e` (Playwright, chromium-only, harness's own
+  degraded backend via `global-setup.mjs`, no `NERVE_DB_*`) → **69 passed**.
+- Restart persistence spot check (real process restart, durable Postgres):
+  PASSED. Brought up `pgvector/pgvector:pg16` in Docker, ran
+  `python -m backend.persistence.migrate upgrade`, seeded one person +
+  commitment (due +2h) + durable attention item via `RepositoryRegistry`,
+  booted `uvicorn backend.api.app:app` with `NERVE_INGEST_ENABLED=1`,
+  `GET /api/today` `needs_you` listed both items; killed the process and
+  booted a fresh instance → both items still listed. (Container removed
+  after; nothing system-wide installed.)
+
+### Count reconciliation: 1375 vs 1293 vs 1385
+
+- `1375` (reported at `2f1f472`) and `1385` (at `8fb286e`) are the SAME
+  scope: the full backend gate `pytest -m "not integration"`
+  (pytest `testpaths = ["tests"]`, `pyproject.toml:92`). The +10 delta is
+  exactly the two test modules added by `8fb286e`:
+  `test_secret_codec_wiring.py` (+6) and `TestRowToWire` in
+  `test_attention_v2.py` (+4). 1375 + 10 = 1385. ✓
+- `1293` was reported by the `8fb286e` worker from the narrower command
+  `pytest tests/backend` — backend directory only, excluding `tests/mcp`,
+  `sdk`, and the other top-level `tests/` modules. Verified:
+  `uv run pytest -m "not integration" tests/backend --collect-only -q`
+  → **1293 collected**. 1385 − 1293 = 92 = the remaining `tests/`
+  modules (tests/mcp, tests/apple, tests/backend/{events,policy,registry},
+  tests/cli and the SDK tests), verified per-directory by
+  `--collect-only` (1385 under `tests/`, of which 1293 are under
+  `tests/backend/`).
+- Conclusion: **no regression and no test loss**. The 82-test "gap" was a
+  scope mismatch (full gate vs `tests/backend`-only), not a real discrepancy.
+  The durable wire-shape change (`row_to_wire`) is covered by `TestRowToWire`
+  and the e2e suite (69 passed), so its re-run is green.
+
+No fixes were required; the gate is green at `8fb286e`.
