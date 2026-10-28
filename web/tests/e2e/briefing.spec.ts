@@ -213,7 +213,7 @@ test.describe('Briefing (BF — prompt2 §30)', () => {
     page.route('**/api/briefing**', (r) => fulfillBriefing(r, makeBriefing({ empty: true })))
     try {
       await visitAuthenticated(page, '/')
-      await expect(page.locator('main h1')).toHaveText('Overview')
+      await expect(page.locator('main h1')).toHaveText('Today')
       await page.getByRole('link', { name: 'Briefing' }).click()
       expect(page.url()).toContain('/briefing')
       await expect(page.locator('main h1')).toHaveText('Briefing')

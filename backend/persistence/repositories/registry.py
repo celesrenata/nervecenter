@@ -15,11 +15,14 @@ from __future__ import annotations
 from typing import Any
 
 from .attention_repo import AttentionRepository
+from .bills_repo import BillsRepository
 from .calendar_repo import CalendarRepository
 from .communications_repo import CommunicationsRepository
 from .commitments_repo import CommitmentsRepository
 from .connections_repo import ConnectionsRepository, SecretCodec
 from .import_repo import ImportRepository
+from .routines_repo import RoutinesRepository
+from .wellness_repo import WellnessRepository
 
 
 class RepositoryRegistry:
@@ -75,6 +78,21 @@ class RepositoryRegistry:
     def calendar(self) -> CalendarRepository:
         """Durable calendar accounts + events (workstream E)."""
         return CalendarRepository(self._session_factory)
+
+    @property
+    def bills(self) -> BillsRepository:
+        """Durable bills + bill candidates (workstream G)."""
+        return BillsRepository(self._session_factory)
+
+    @property
+    def routines(self) -> RoutinesRepository:
+        """Durable routines + check-ins + sleep records (workstream H)."""
+        return RoutinesRepository(self._session_factory)
+
+    @property
+    def wellness(self) -> WellnessRepository:
+        """Durable wellness entries + preferences (workstream I)."""
+        return WellnessRepository(self._session_factory)
 
 
 __all__ = ["RepositoryRegistry"]

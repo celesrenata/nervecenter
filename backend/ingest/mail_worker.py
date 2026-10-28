@@ -28,7 +28,10 @@ Per poll, in order:
    → ``auth_status="auth_expired"`` and
    :class:`~backend.connectors.mail.mail_transport.TransportConnectError`
    → ``operational_status="error"`` + ``last_error_code``, then reconnect
-   with bounded exponential backoff.
+   with bounded exponential backoff. Stored/logged failure text is always
+   passed through :func:`redact_transport_error` first (stable code +
+   redacted message — URL-embedded ``user:pass@`` and token-shaped
+   substrings never reach the database or logs).
 
 A first-ever poll (no stored cursor) is the *initial history import*: the
 worker records it in an ``import_jobs`` row whose id is kept in the
@@ -40,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 import structlog
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -61,6 +65,7 @@ from backend.connectors.mail.mail_transport import (
     TransportAuthError,
     TransportConnectError,
 )
+from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
 from backend.ingest.seen import (
     cursor_with_seen,
     is_seen,
@@ -79,6 +84,10 @@ CONNECTION_KINDS = ("gmail", "imap", "outlook")
 
 #: ``ingest_cursors.kind`` per source type.
 CURSOR_KINDS = {"gmail": "gmail_history", "imap": "imap_seq"}
+
+#: OAuth provider per connection kind (mirrors the control plane's
+#: ``OAUTH_PROVIDER_BY_KIND``; only the kinds the ingest worker serves).
+MAIL_OAUTH_PROVIDERS = {"gmail": "google", "outlook": "microsoft"}
 
 #: Backoff bounds (seconds): delay = min(base * 2**failures, max).
 DEFAULT_BACKOFF_BASE_S = 2.0
@@ -168,6 +177,63 @@ def _secret_kind_for(conn: Any) -> str:
     return "app_password"
 
 
+# -- transport-error redaction (GAP 2: §4 — never log/emit credentials) --------
+
+#: URL userinfo with embedded credentials: ``scheme://user:pass@host``. The
+#: password (between the first ``:`` and the ``@``) is stripped; the user
+#: half is kept — it is the account name, not a secret. The optional scheme
+#: is preserved verbatim.
+_URL_CRED_RE = re.compile(
+    r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)?"
+    r"(?P<user>[^:/@\s]+):(?P<password>[^@/\s\"']+)@"
+)
+#: Token-shaped substrings: JWTs (``eyJ…``), Google ``ya29.`` tokens, AWS
+#: ``AKIA`` access keys, Slack ``xox*`` bot/user tokens, and any long
+#: base64url blob (Fernet payloads, long bearer/access tokens). An optional
+#: labelled prefix (``access_token=`` …) is consumed with the value so an
+#: error body does not echo the credential.
+_TOKEN_RE = re.compile(
+    r"(?i)(?:bearer\s+|"
+    r"(?:access_token|refresh_token|client_secret|client_id|"
+    r"device_token|session_token|api[_ ]?key|secret[_ ]?key|password|token)"
+    r"\s*[:=]\s*)?"
+    r"(eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]{6,}|"
+    r"ya29\.[A-Za-z0-9_-]{10,}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"xox[baprs]-[A-Za-z0-9\-]{10,}|"
+    r"[A-Za-z0-9_-]{40,})"
+)
+
+
+def _strip_url_userinfo(message: str) -> str:
+    """Remove the password from any ``scheme://user:pass@host`` URL."""
+    return _URL_CRED_RE.sub(
+        lambda m: (m.group("scheme") or "") + m.group("user") + "@",
+        message,
+    )
+
+
+def _mask_token_shapes(message: str) -> str:
+    """Mask token-shaped substrings (JWT / ya29 / AKIA / xox* / long blobs)."""
+    return _TOKEN_RE.sub("REDACTED", message)
+
+
+def redact_transport_error(message: str, *, limit: int = 256) -> str:
+    """Stable, redacted form of a transport exception for durable storage.
+
+    The stored text carries the exception's *shape* with every
+    credential-bearing fragment removed: URL ``user:pass@`` userinfo is
+    stripped to ``user@`` and token-shaped substrings are replaced by
+    ``REDACTED`` markers. The result is truncated to ``limit`` characters
+    so the ``last_error_message`` column stays bounded.
+    """
+    if message is None:  # defensive — callers pass ``str(exc)``
+        return ""
+    text = _strip_url_userinfo(str(message))
+    text = _mask_token_shapes(text)
+    return text[:limit]
+
+
 def _content_key(connection_id: str, mail_id: str) -> str:
     """Stable, secret-free object-store key for one fetched message."""
     digest = hashlib.sha256(f"{connection_id}:{mail_id}".encode("utf-8")).hexdigest()[:24]
@@ -204,6 +270,7 @@ class MailIngestWorker:
         backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
         backoff_max_s: float = DEFAULT_BACKOFF_MAX_S,
         sleep_func: Any = asyncio.sleep,
+        oauth_refresher: Any | None = None,
     ) -> None:
         self.connection_id = connection_id
         self.cursor_kind = cursor_kind
@@ -216,6 +283,11 @@ class MailIngestWorker:
         self._backoff_base_s = float(backoff_base_s)
         self._backoff_max_s = float(backoff_max_s)
         self._sleep_func = sleep_func
+        #: Optional durable :class:`~backend.connectors.mail.oauth_refresh.
+        #: MailOAuthRefresher` — when set, an OAuth transport failure
+        #: (``auth_method == "oauth2"``) triggers one refresh attempt before
+        #: the auth-expired mapping. Supervisor-wired; tests inject a stub.
+        self._oauth_refresher = oauth_refresher
         self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task[None] | None = None
         self._failure_count = 0
@@ -304,38 +376,72 @@ class MailIngestWorker:
         cursor: dict[str, Any] = dict(cursor_row.cursor_value or {}) if cursor_row is not None else {}
 
         try:
-            credentials = await self._resolve_credentials(conn)
-            connector = self._connector_for(conn)
-            items, next_cursor = await self._transport.run(
-                connector, cursor, credentials=credentials
-            )
+            items, next_cursor = await self._run_transport_once(conn, cursor)
         except TransportAuthError as exc:
-            await self._connections.update_connection(
-                self.connection_id,
-                auth_status="auth_expired",
-                operational_status="error",
-                last_error_code="auth_expired",
-                last_error_message=str(exc)[:256],
-            )
-            log.warning("mail_ingest.auth_expired", **base, error_code="auth_expired")
-            return dict(base, status="auth_expired")
+            # GAP 1: on an OAuth connection, one durable refresh attempt —
+            # the rotated ``refresh_token`` is written back to the vault
+            # before retrying with the fresh access token.
+            retry_ok = False
+            if await self._attempt_token_refresh(conn):
+                try:
+                    items, next_cursor = await self._run_transport_once(conn, cursor)
+                    retry_ok = True
+                except Exception:  # noqa: BLE001 - fresh token also failed
+                    retry_ok = False
+            if retry_ok:
+                log.info(
+                    "mail_ingest.auth_refreshed",
+                    **base,
+                )
+                # The fresh token was accepted: continue the normal
+                # processing path (batch ingest + cursor + healthy mapping).
+            else:
+                detail = redact_transport_error(str(exc))
+                await self._connections.update_connection(
+                    self.connection_id,
+                    auth_status="auth_expired",
+                    operational_status="error",
+                    last_error_code="auth_expired",
+                    last_error_message=detail,
+                )
+                log.warning(
+                    "mail_ingest.auth_expired",
+                    **base,
+                    error_code="auth_expired",
+                    error=detail,
+                )
+                return dict(base, status="auth_expired")
         except TransportConnectError as exc:
+            detail = redact_transport_error(str(exc))
             await self._connections.update_connection(
                 self.connection_id,
                 operational_status="error",
                 last_error_code="connect_failed",
-                last_error_message=str(exc)[:256],
+                last_error_message=detail,
             )
-            log.warning("mail_ingest.connect_failed", **base, error_code="connect_failed")
+            log.warning(
+                "mail_ingest.connect_failed",
+                **base,
+                error_code="connect_failed",
+                error=detail,
+            )
             return dict(base, status="error")
         except Exception as exc:  # noqa: BLE001 - one bad poll must not kill the loop
+            detail = redact_transport_error(f"{type(exc).__name__}: {exc}")
             await self._connections.update_connection(
                 self.connection_id,
                 operational_status="error",
                 last_error_code="ingest_failed",
-                last_error_message=f"{type(exc).__name__}: {exc}"[:256],
+                last_error_message=detail,
             )
-            log.exception("mail_ingest.unexpected", **base, error_code="ingest_failed")
+            # No ``log.exception``: the exception text is credential-bearing
+            # (GAP 2) — only its redacted form may reach the logs.
+            log.error(
+                "mail_ingest.unexpected",
+                **base,
+                error_code="ingest_failed",
+                error=detail,
+            )
             return dict(base, status="error")
 
         if not isinstance(next_cursor, dict):
@@ -426,6 +532,53 @@ class MailIngestWorker:
         return ingested, duplicates, seen
 
     # -- helpers -----------------------------------------------------------
+
+    async def _run_transport_once(self, conn: Any, cursor: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+        """Resolve the transient credential and run one transport pass.
+
+        Re-resolving on every call means a post-refresh retry automatically
+        picks up the fresh vault-backed access token (never a cached one).
+        """
+        credentials = await self._resolve_credentials(conn)
+        connector = self._connector_for(conn)
+        return await self._transport.run(connector, cursor, credentials=credentials)
+
+    async def _attempt_token_refresh(self, conn: Any) -> bool:
+        """One durable OAuth refresh after a credential rejection (GAP 1).
+
+        Applies only to OAuth connections (the worker resolves their
+        credential under the ``access_token`` secret kind). The app keys
+        (``client_id`` / ``client_secret``) are non-secret config — the
+        calendar-plane convention; their absence simply disables refresh
+        and falls through to the ``auth_expired`` mapping. The rotated
+        ``refresh_token`` and the fresh ``access_token`` are written back
+        through the vault-backed ``upsert_secret`` path *before* this
+        returns, so a restarted worker resumes with the current tokens.
+        Returns ``True`` only when a fresh access token was produced.
+        """
+        if _secret_kind_for(conn) != "access_token":
+            return False
+        provider_name = MAIL_OAUTH_PROVIDERS.get(str(getattr(conn, "kind", "")).lower())
+        if provider_name is None:
+            return False
+        config = getattr(conn, "config", None) or {}
+        client_id = str(config.get("client_id") or "").strip()
+        client_secret = str(config.get("client_secret") or "").strip()
+        if not client_id or not client_secret:
+            return False
+        refresher = self._oauth_refresher or MailOAuthRefresher(
+            connections=self._connections
+        )
+        try:
+            await refresher.refresh(
+                connection_id=self.connection_id,
+                provider=provider_name,
+                client_id=client_id,
+                client_secret=client_secret,
+            )
+        except Exception:  # noqa: BLE001 - a failed refresh is not fatal to the loop
+            return False
+        return True
 
     async def _resolve_credentials(self, conn: Any) -> dict[str, str]:
         """Decrypt the connection's durable secret into transient credential

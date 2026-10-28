@@ -146,7 +146,7 @@ test.describe('Overview (OV)', () => {
     await page.route('**/api/incidents', (r) => fulfillList(r, []))
 
     try {
-      await visitAuthenticated(page, '/')
+      await visitAuthenticated(page, '/overview')
 
       // The four live stat tiles remain.
       for (const label of ['Active Goals', 'Active Agents', 'Pending Tasks', 'Active Incidents']) {
@@ -181,7 +181,7 @@ test.describe('Overview (OV)', () => {
     await page.route('**/api/incidents', (r) => fulfillList(r, []))
 
     try {
-      await visitAuthenticated(page, '/')
+      await visitAuthenticated(page, '/overview')
 
       const alert = page.getByRole('alert')
       await expect(alert).toBeVisible()

@@ -288,6 +288,23 @@ async def wire_dependencies(target: FastAPI) -> None:
             target.state.repository_registry = RepositoryRegistry(
                 make_session_factory(target.state.db_engine)
             )
+            # Extend-only durability seam: bind the durable commitment sink
+            # onto the live CommunicationPipeline so detected commitments are
+            # mirrored to Postgres. ``set_commitment_store`` is a no-op when no
+            # pipeline has been composed yet (first call to ``get_pipeline()``
+            # happens lazily on first ingest); re-applying is safe.
+            try:
+                from backend.communications.detection.wiring import (
+                    set_commitment_store,
+                )
+
+                set_commitment_store(
+                    target.state.repository_registry.commitments
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "api.wiring.commitment_store_failed", error=str(exc)
+                )
         except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
             log.warning("api.wiring.repository_registry_failed", error=str(exc))
             target.state.repository_registry = None

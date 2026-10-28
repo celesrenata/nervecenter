@@ -84,7 +84,8 @@ async function visitAuthenticated(page: import('@playwright/test').Page, path: s
 }
 
 const VIEWS: Array<{ path: string; heading: string }> = [
-  { path: '/', heading: 'Overview' },
+  { path: '/', heading: 'Today' },
+  { path: '/overview', heading: 'Overview' },
   { path: '/now', heading: 'Now' },
   { path: '/briefing', heading: 'Briefing' },
   { path: '/calendar', heading: 'Calendar' },

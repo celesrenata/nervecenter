@@ -31,9 +31,10 @@ Design (frozen by spec §12):
   ``notification_log`` enforces **one notification per (item, level)**, so the
   same level can never double-notify (the anti-nag guarantee); a *new* level
   after a real clock change may notify once.
-- :meth:`transition` performs the frozen ``snooze`` / ``resolve`` / ``dismiss``
-  actions durably (via the repo) and mirrors them in memory. Unknown id →
-  ``None``. When the registry is ``None`` it degrades to in-memory only.
+- :meth:`transition` performs the user actions (``snooze`` / ``resolve`` /
+  ``acknowledge`` / ``suppress`` / ``dismiss``) durably (via the repo) and
+  mirrors them in memory. Unknown id → ``None``. When the registry is
+  ``None`` it degrades to in-memory only.
 
 This module is read-only with respect to every other package (bills,
 routines, persistence): it *imports* their public services and repositories
@@ -889,17 +890,31 @@ class AttentionAggregator:
         *,
         until: Any = None,
     ) -> Any:
-        """Perform ``snooze`` / ``resolve`` / ``dismiss`` durably + in memory.
+        """Perform a user action durably + in memory.
 
-        Unknown id → ``None``. With no registry, degrade to in-memory only
-        (matching the existing endpoint behavior)."""
+        Actions: ``snooze`` / ``resolve`` / ``acknowledge`` (resolve alias) /
+        ``suppress`` / ``dismiss``. Unknown id → ``None``.
+
+        - No registry → in-memory only (matching the historical endpoint
+          behavior exactly; the e2e degraded-mode wire contract).
+        - Registry present → write through the durable repository and mirror
+          the state into the in-memory queue. When the id has no durable row
+          but exists in memory (an endpoint-created item), it degrades to an
+          in-memory-only transition for that id — no phantom durable row is
+          fabricated.
+        """
         service = _get_service()
+        now_utc = _ensure_utc(datetime.now(UTC)) or datetime.now(UTC)
 
-        if self._repo is None:
+        def _in_memory_only() -> Any:
             if action == "snooze":
                 return service.snooze(item_id, _ensure_utc(until))
             if action == "resolve":
                 return service.resolve(item_id)
+            if action == "acknowledge":
+                return service.acknowledge(item_id)
+            if action == "suppress":
+                return service.suppress(item_id)
             if action == "dismiss":
                 target = service.get(item_id)
                 if target is None:
@@ -907,33 +922,52 @@ class AttentionAggregator:
                 return service.suppress(target.attention_id)
             return None
 
-        now_utc = _ensure_utc(datetime.now(UTC)) or datetime.now(UTC)
-        if action == "snooze":
-            until_utc = _ensure_utc(until) or (now_utc + timedelta(days=1))
-            row = await self._repo.snooze(item_id, until=until_utc)
-            if row is None:
-                return None
-            await self._mirror_state(item_id, row.state)
-            return row
-        if action == "resolve":
-            row = await self._repo.set_state(item_id, "resolved")
-            if row is None:
-                return None
-            await self._mirror_state(item_id, row.state)
-            return row
-        if action == "dismiss":
-            row = await self._repo.set_state(item_id, "dismissed")
-            if row is None:
-                return None
-            await self._mirror_state(item_id, row.state)
-            return row
-        return None
+        if self._repo is None:
+            return _in_memory_only()
 
-    async def _mirror_state(self, item_id: str, state: str) -> None:
+        until_utc = _ensure_utc(until)
+        state: str | None = None
+        try:
+            if action == "snooze":
+                snooze_row = await self._repo.snooze(
+                    item_id, until=until_utc or (now_utc + timedelta(days=1))
+                )
+                if snooze_row is None:
+                    return _in_memory_only()
+                # ``snooze`` returns the SnoozeRow event; the durable state is
+                # on the item row, so re-fetch it for the wire response.
+                row = await self._repo.get_attention_item(item_id)
+                state = "snoozed"
+            elif action in ("resolve", "acknowledge"):
+                row = await self._repo.set_state(item_id, "resolved")
+                state = "resolved"
+            elif action in ("suppress", "dismiss"):
+                row = await self._repo.set_state(item_id, "dismissed")
+                state = "dismissed"
+            else:
+                row = None
+                state = None
+        except Exception:  # noqa: BLE001 — a repo failure degrades, never 500s
+            row = None
+            state = None
+
+        if row is None:
+            # No durable row for this id (e.g. an endpoint-created item):
+            # fall back to the in-memory transition for that id. Unknown ids
+            # return ``None`` (→ 404) without an exception.
+            return _in_memory_only()
+
+        if state is not None:
+            await self._mirror_state(item_id, state, due=until_utc)
+        return row
+
+    async def _mirror_state(self, item_id: str, state: str, *, due: Any = None) -> None:
         """Mirror a durable state change into the in-memory queue.
 
         The durable row id is not the in-memory id; match by the item's
         ``source_refs`` so the in-memory mirror stays consistent with durable.
+        ``due`` (snooze only) sets the mirrored item's ``due`` to the snooze
+        window so the in-memory and durable states agree.
         """
         service = _get_service()
         ref: str | None = None
@@ -951,6 +985,10 @@ class AttentionAggregator:
         # re-enters the app import chain and must not load at module import.
         from backend.api.models import AttentionState
 
+        if state == "snoozed" and due is not None:
+            until = _ensure_utc(due)
+            if until is not None:
+                target.due = until
         service.update_status(
             target.attention_id, AttentionState(_state_to_status(state)), action="state"
         )

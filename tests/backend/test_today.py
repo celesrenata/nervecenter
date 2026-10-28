@@ -36,6 +36,7 @@ from backend.persistence.models.personal import (
     AttentionItemRow,
     CalendarAccountRow,
     CalendarEventRow,
+    CommitmentRow,
     PreferenceRow,
 )
 from backend.persistence.repositories import RepositoryRegistry
@@ -45,6 +46,7 @@ TODAY_TABLES = [
     PreferenceRow.__table__,
     CalendarAccountRow.__table__,
     CalendarEventRow.__table__,
+    CommitmentRow.__table__,
 ]
 
 NOW = datetime(2026, 10, 27, 12, 0, 0, tzinfo=UTC)  # reference clock (tests)
@@ -73,6 +75,9 @@ async def _make_wired_app(tmp_path: Path) -> tuple[FastAPI, RepositoryRegistry]:
 
     app.include_router(today.router)
     app.state.repository_registry = registry
+    # Pin the endpoint clock so window-based assertions stay deterministic
+    # regardless of the wall clock at run time (see get_today test seam).
+    app.state._test_now = NOW
     app.state._test_engine = engine  # disposed by the fixture finalizer
     return app, registry
 
