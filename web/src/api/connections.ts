@@ -149,6 +149,14 @@ export interface RelayPairResult {
   connection_id: string
 }
 
+/** `POST /api/relay/import-request` — consented initial history import. */
+export interface RelayImportRequestResult {
+  ok: true
+  import_job_id: string
+  state: string
+  consent: true
+}
+
 /** Honest 202 write degradation when durable storage is absent. */
 export interface DegradedWrite {
   accepted: true
@@ -264,6 +272,28 @@ export const realConnectionsApi = {
       | RelayPairResult
       | DegradedWrite
   },
+
+  /**
+   * `POST /api/relay/import-request` — consented initial history import.
+   *
+   * The relay route authenticates with the **device pairing token** (not the
+   * session access token), so the token is passed explicitly and sent as
+   * `Authorization: Bearer <token>` — which overrides the session token the
+   * shared `apiFetch` would otherwise attach.
+   */
+  relayImportRequest: async (
+    deviceId: string,
+    token: string,
+    consent: boolean,
+  ): Promise<RelayImportRequestResult | DegradedWrite> => {
+    const res = await apiFetch('/api/relay/import-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ device_id: deviceId, consent }),
+    })
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as RelayImportRequestResult | DegradedWrite
+  },
 }
 
 // ─── Mock mode: honest empty list + executed:false writes (Area 4) ──────────
@@ -297,6 +327,8 @@ const mockConnectionsApi = {
   },
   updatePermissions: async (): Promise<PermissionPatchResult> => degradedWrite(NO_STORAGE),
   relayPair: async (): Promise<RelayPairResult | DegradedWrite> => degradedWrite(NO_STORAGE),
+  relayImportRequest: async (): Promise<RelayImportRequestResult | DegradedWrite> =>
+    degradedWrite(NO_STORAGE),
 }
 
 function degradedWrite(detail: string): DegradedWrite {
@@ -332,4 +364,5 @@ export const connections = {
   getPermissions: connectionsApi.getPermissions,
   updatePermissions: connectionsApi.updatePermissions,
   relayPair: connectionsApi.relayPair,
+  relayImportRequest: connectionsApi.relayImportRequest,
 }

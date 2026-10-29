@@ -546,6 +546,54 @@ class SecretRow(Base):
     )
 
 
+class RelaySeenMessageRow(Base):
+    """A relay message that was durably ingested (spec §6 / workstream H).
+
+    Table ``relay_seen_messages`` columns
+    -------------------------------------
+    - ``connection_id`` (FK ``connections.id``) — the owning relay device
+      connection.
+    - ``device_id`` (text) — the relay device id (stable, e.g.
+      ``relay-<hex>``).
+    - ``message_id`` (text) — the relay-reported message id.
+    - ``content_ref`` (text, nullable) — the durable content reference where
+      the message body is stored (object-store / in-memory); ``None`` for
+      pre-object-store rows.
+    - ``ingested_at`` (timestamptz) — when the message was durably ingested.
+
+    Uniqueness by ``(connection_id, device_id, message_id)``: re-posting the
+    same ``(device_id, message_id)`` is a no-op (idempotent ingest, spec §6).
+    """
+
+    __tablename__ = "relay_seen_messages"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+    schema_version: Mapped[str] = mapped_column(String(16), default="v0")
+
+    connection_id: Mapped[str] = mapped_column(
+        String, ForeignKey("connections.id", ondelete="CASCADE"), nullable=False
+    )
+    device_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    message_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    content_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
+    ingested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_relay_seen_messages_device_msg",
+            "connection_id",
+            "device_id",
+            "message_id",
+            unique=True,
+        ),
+        Index("ix_relay_seen_messages_connection_id", "connection_id"),
+    )
+
+
 class IngestCursorRow(Base):
     """A durable per-connection, per-kind ingestion cursor.
 

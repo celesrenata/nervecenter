@@ -1006,7 +1006,13 @@ class ConnectionControlPlane:
     async def relay_ingest_batch(
         self, *, device_id: str, messages: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        """POST /api/relay/messages — durable batch ingest with (device_id, message_id) dedup."""
+        """POST /api/relay/messages — durable batch ingest with (device_id, message_id) dedup.
+
+        Dedup runs in two tiers: the bounded in-process ``relay_seq`` cursor is a
+        fast path (messages seen this process are skipped without a DB read), and
+        the durable ``relay_seen_messages`` table is the **authoritative** gate —
+        a message is never re-imported even after a restart cleared the cursor.
+        """
         conn = await self._find_relay_connection(device_id)
         if conn is None:
             raise ConnectionControlPlaneError(
@@ -1026,7 +1032,13 @@ class ConnectionControlPlane:
             if not message_id:
                 continue
             dedup_key = f"{device_id}:{message_id}"
+            # Fast path: seen within this process (cursor) — no DB read needed.
             if dedup_key in seen:
+                skipped += 1
+                continue
+            # Authoritative gate: the durable seen-table survives restarts.
+            if await self._registry.relay_seen.is_seen(conn.id, device_id, message_id):
+                seen.append(dedup_key)
                 skipped += 1
                 continue
             stored += 1
@@ -1071,6 +1083,11 @@ class ConnectionControlPlane:
         )
         await self._registry.communications.upsert_conversation(
             person_id=person.id, channel=channel, last_message_at=received_at
+        )
+        # Authoritative durable dedup row — survives restarts (the bounded cursor
+        # is only a fast path). Recorded after the communication write succeeds.
+        await self._registry.relay_seen.mark_seen(
+            conn.id, device_id, message_id, content_ref=content_ref
         )
 
     async def _resolve_person(self, conn: ConnectionRow, channel: str, peer: str, peer_name: Any):
@@ -1118,6 +1135,10 @@ class ConnectionControlPlane:
                     "last_seen_at": _utc_iso(config.get("last_seen_at")),
                     "last_message_at": _utc_iso(config.get("last_message_at")),
                     "pending_backlog": int(config.get("pending_backlog", 0) or 0),
+                    # Durable import backlog: pending/running import jobs (e.g.
+                    # the consented history import) — survives restarts, unlike
+                    # the device's in-flight ``pending_backlog`` counter.
+                    "import_backlog": await self._registry.imports.count_import_jobs(row.id),
                 }
             )
         return out

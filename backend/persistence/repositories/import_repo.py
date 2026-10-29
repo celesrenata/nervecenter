@@ -99,6 +99,18 @@ class ImportRepository:
         async with self._sessions() as session:
             return await session.get(ImportJobRow, job_id)
 
+    async def count_import_jobs(
+        self, connection_id: str, *, states: tuple[str, ...] = ("pending", "running")
+    ) -> int:
+        """How many import jobs for ``connection_id`` are in one of ``states``."""
+        async with self._sessions() as session:
+            stmt = select(ImportJobRow.id).where(
+                ImportJobRow.connection_id == connection_id,
+                ImportJobRow.state.in_(states),
+            )
+            result = await session.execute(stmt)
+            return len(result.all())
+
     async def update_import_job_progress(
         self,
         job_id: str,

@@ -58,6 +58,7 @@ from backend.persistence.models.personal import (
     IngestCursorRow,
     PersonIdentityRow,
     PersonRow,
+    RelaySeenMessageRow,
     SecretRow,
 )
 from backend.persistence.repositories import RepositoryRegistry
@@ -71,6 +72,7 @@ PERSONAL_TABLES = [
     ConversationRow.__table__,
     ImportJobRow.__table__,
     IngestCursorRow.__table__,
+    RelaySeenMessageRow.__table__,
 ]
 
 IMAP_CONFIG = {"host": "imap.example.org", "port": 993, "account": "me@example.org"}

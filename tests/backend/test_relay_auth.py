@@ -149,6 +149,7 @@ class FakeImports:
         self._cursors: dict[tuple[str, str], dict[str, Any]] = {}
         self._jobs: list[Any] = []
         self._seq = 0
+        self._job_by_conn: dict[str, list[Any]] = {}
 
     async def get_cursor(self, connection_id: str, kind: str):
         value = self._cursors.get((connection_id, kind))
@@ -171,7 +172,17 @@ class FakeImports:
             finished_at=None,
         )
         self._jobs.append(job)
+        self._job_by_conn.setdefault(connection_id, []).append(job)
         return job
+
+    async def count_import_jobs(
+        self, connection_id: str, *, states: tuple[str, ...] = ("pending", "running")
+    ) -> int:
+        return sum(
+            1
+            for job in self._job_by_conn.get(connection_id, [])
+            if job.state in states
+        )
 
     async def get_import_job(self, job_id: str):
         for job in self._jobs:
@@ -185,6 +196,36 @@ class FakeImports:
         for job in self._jobs:
             if job.id == job_id:
                 job.progress = dict(progress)
+
+
+class FakeSeen:
+    """In-memory stand-in for the durable ``relay_seen`` repository (workstream H)."""
+
+    def __init__(self) -> None:
+        # (connection_id, device_id) -> set of message_ids
+        self._seen: dict[tuple[str, str], set[str]] = {}
+
+    async def is_seen(self, connection_id: str, device_id: str, message_id: str) -> bool:
+        return message_id in self._seen.get((connection_id, device_id), set())
+
+    async def mark_seen(
+        self,
+        connection_id: str,
+        device_id: str,
+        message_id: str,
+        content_ref: str | None = None,
+    ):
+        key = (connection_id, device_id)
+        self._seen.setdefault(key, set()).add(message_id)
+        return SimpleNamespace(
+            connection_id=connection_id,
+            device_id=device_id,
+            message_id=message_id,
+            content_ref=content_ref,
+        )
+
+    async def count_seen(self, connection_id: str, device_id: str) -> int:
+        return len(self._seen.get((connection_id, device_id), set()))
 
 
 class FakeCommunications:
@@ -300,6 +341,7 @@ class FakeRegistry:
         self.connections = FakeConnections()
         self.imports = FakeImports()
         self.communications = FakeCommunications()
+        self.relay_seen = FakeSeen()
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -508,6 +550,40 @@ class TestRelayIngestAuth:
         assert resp.json().get("ok") is True
         assert resp.json().get("stored") == 1
 
+    def test_seen_table_dedup_survives_cursor_reset(self, relay_env):
+        """The ``relay_seen_messages`` row is authoritative: a re-sent
+        ``message_id`` is skipped even after the in-process cursor is wiped
+        (i.e. after a process restart), and no duplicate communication is
+        created. (Personal-Ops Recovery §6 — workstream H.)"""
+        app, plane = relay_env
+        device_id, token, conn_id = _device(plane, name="Device A")
+
+        async def ingest():
+            first = await plane.relay_ingest_batch(
+                device_id=device_id,
+                messages=[
+                    {"message_id": "m-1", "body": "hi", "peer_identifier": "+1", "peer_name": "Sam"}
+                ],
+            )
+            # The durable seen row was written once.
+            assert await plane._registry.relay_seen.count_seen(conn_id, device_id) == 1
+            # Simulate a restart: wipe the bounded in-process cursor.
+            plane._registry.imports._cursors.pop((conn_id, "relay_seq"), None)
+            second = await plane.relay_ingest_batch(
+                device_id=device_id,
+                messages=[
+                    {"message_id": "m-1", "body": "hi", "peer_identifier": "+1", "peer_name": "Sam"}
+                ],
+            )
+            return first, second
+
+        first, second = asyncio.run(ingest())
+        assert first == {"ok": True, "stored": 1, "skipped": 0}
+        assert second == {"ok": True, "stored": 0, "skipped": 1}
+        # No duplicate communication; still exactly one seen row.
+        assert len(plane._registry.communications._communications) == 1
+        assert asyncio.run(plane._registry.relay_seen.count_seen(conn_id, device_id)) == 1
+
     def test_error_body_does_not_leak_which_check_failed(self, relay_env):
         """Missing header and wrong token must produce the same generic 401."""
         app, plane = relay_env
@@ -593,6 +669,26 @@ class TestRelayImportAuth:
             )
         assert resp.status_code == 422
         assert resp.json()["detail"]["error_code"] == "consent_required"
+
+    def test_relay_health_reports_durable_import_backlog(self, relay_env):
+        """``import_backlog`` counts pending/running import jobs (durable),
+        while the device's in-flight ``pending_backlog`` counter stays 0."""
+        app, plane = relay_env
+        device_id, token, _ = _device(plane, name="Device A")
+        health = asyncio.run(plane.relay_health())
+        row = next(h for h in health if h["device_id"] == device_id)
+        assert row["import_backlog"] == 0
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/relay/import-request",
+                json={"device_id": device_id, "consent": True},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        health = asyncio.run(plane.relay_health())
+        row = next(h for h in health if h["device_id"] == device_id)
+        assert row["import_backlog"] == 1
+        assert row["pending_backlog"] == 0
 
 
 # ──────────────────────────────────────────────────────────────────────────────

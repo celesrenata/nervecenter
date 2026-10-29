@@ -51,6 +51,7 @@ from backend.persistence.models.personal import (
     PersonIdentityRow,
     PersonRow,
     PreferenceRow,
+    RelaySeenMessageRow,
     SecretRow,
     SnoozeRow,
 )
@@ -319,6 +320,42 @@ class TestRestartSemantics:
         assert job2 is not None
         assert (job2.id, job2.connection_id, job2.kind,
                 job2.state, job2.total) == snapshot["job"]
+
+        await engine2.dispose()
+
+    async def test_relay_seen_survives_restart(self, tmp_path: Path):
+        """The ``relay_seen_messages`` dedup row is durable: after dispose →
+        re-open, ``is_seen`` still reports the message as ingested, so a
+        re-posted ``(device_id, message_id)`` stays a no-op. (workstream H.)"""
+        db_path = tmp_path / "relay_seen.db"
+        engine = await _make_engine(db_path, extra_tables=[RelaySeenMessageRow.__table__])
+        registry = _build_registry(engine)
+
+        conn = await registry.connections.create_connection(
+            kind="relay_device",
+            label="Apple Messages relay",
+            config={"device_name": "Relay"},
+            auth_status="authenticated",
+            operational_status="never_synced",
+            enabled=True,
+        )
+        device_id = "relay-abc123"
+        await registry.relay_seen.mark_seen(
+            conn.id, device_id, "imsg-42", content_ref="relay://relay-abc123/msg/d"
+        )
+        assert await registry.relay_seen.is_seen(conn.id, device_id, "imsg-42") is True
+        assert await registry.relay_seen.count_seen(conn.id, device_id) == 1
+
+        # Simulated restart: dispose and re-open a fresh engine + registry.
+        await engine.dispose()
+        engine2 = await _make_engine(db_path)
+        registry2 = _build_registry(engine2)
+
+        assert await registry2.relay_seen.is_seen(conn.id, device_id, "imsg-42") is True
+        assert await registry2.relay_seen.count_seen(conn.id, device_id) == 1
+        # Idempotent re-mark does not create a second row.
+        await registry2.relay_seen.mark_seen(conn.id, device_id, "imsg-42")
+        assert await registry2.relay_seen.count_seen(conn.id, device_id) == 1
 
         await engine2.dispose()
 

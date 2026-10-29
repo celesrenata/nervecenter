@@ -143,6 +143,7 @@ TABLES_WITH_ID = frozenset(
         "secrets",
         "ingest_cursors",
         "import_jobs",
+        "relay_seen_messages",
         # Calendar-plane tables, Alembic 007.
         "calendar_accounts",
         "calendar_events",
