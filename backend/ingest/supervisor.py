@@ -405,6 +405,15 @@ class MailIngestSupervisor:
 #: State key where the wiring stores the live supervisor.
 SUPERVISOR_STATE_KEY = "ingest_supervisor"
 
+#: State key where the wiring stores the reason the ingest plane is *not*
+#: installed (``None`` once it is).  Surfaces on ``/api/health`` so a gated
+#: plane is self-explaining instead of silently absent (spec P1-A).
+INGEST_GATE_STATE_KEY = "ingest_gate_reason"
+
+#: Human-readable reason used when the gate reason could not be computed
+#: (defensive default only; each branch sets a precise reason).
+_DEFAULT_GATE_REASON = "ingest plane not installed"
+
 
 def _object_store_from_env() -> Any | None:
     """Resolve the object store from the environment; ``None`` when not
@@ -415,6 +424,32 @@ def _object_store_from_env() -> Any | None:
         return create_object_store_from_env()
     except Exception:  # noqa: BLE001 - absence means "not configured"
         return None
+
+
+def _object_store_gate_reason() -> str:
+    """Precise, redacted reason for an unconfigured/incomplete object store.
+
+    Uses the non-raising :func:`~backend.storage.object_store_status` probe so
+    the message names exactly which ``NERVECENTER_OBJECT_STORE_*`` variables
+    are missing — actionable for an operator, and never echoes a value.
+    """
+    from backend.storage.config import object_store_status
+
+    try:
+        status = object_store_status()
+    except Exception:  # noqa: BLE001 - health must never fail on a probe
+        return _DEFAULT_GATE_REASON
+    if status.get("status") == "not_configured":
+        return "object store not configured (NERVECENTER_OBJECT_STORE_URL is unset)"
+    if status.get("unsupported_scheme"):
+        return (
+            f"object store scheme unsupported ({status.get('scheme')}); "
+            "expected s3://, http://, or https://"
+        )
+    missing = status.get("missing") or ()
+    if missing:
+        return "object store incomplete: missing " + ", ".join(missing)
+    return _DEFAULT_GATE_REASON
 
 
 async def install_ingest_supervisor(target: Any) -> MailIngestSupervisor | None:
@@ -430,14 +465,21 @@ async def install_ingest_supervisor(target: Any) -> MailIngestSupervisor | None:
     environment (the deploy contract, §16).
     """
     if not ingest_enabled():
+        setattr(target.state, INGEST_GATE_STATE_KEY,
+                "NERVE_INGEST_ENABLED is not set (ingest plane disabled)")
         return None
     registry = getattr(target.state, "repository_registry", None)
     if not isinstance(registry, RepositoryRegistry):
         log.info("mail_ingest.supervisor_skipped", reason="no_durable_registry")
+        setattr(target.state, INGEST_GATE_STATE_KEY,
+                "durable registry not installed (no durable store available)")
         return None
     object_store = _object_store_from_env()
     if object_store is None:
-        log.info("mail_ingest.supervisor_skipped", reason="object_store_not_configured")
+        reason = _object_store_gate_reason()
+        log.info("mail_ingest.supervisor_skipped",
+                 reason="object_store_not_configured", detail=reason)
+        setattr(target.state, INGEST_GATE_STATE_KEY, reason)
         return None
     supervisor = MailIngestSupervisor(registry=registry, object_store=object_store)
     try:
@@ -446,6 +488,9 @@ async def install_ingest_supervisor(target: Any) -> MailIngestSupervisor | None:
         await supervisor.stop()
         raise
     setattr(target.state, SUPERVISOR_STATE_KEY, supervisor)
+    # Plane installed: clear any stale gate reason so /api/health reports it
+    # as active rather than gated.
+    setattr(target.state, INGEST_GATE_STATE_KEY, None)
     return supervisor
 
 

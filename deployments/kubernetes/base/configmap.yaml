@@ -20,3 +20,8 @@ data:
   API_UPSTREAM: "api.nervecenter.svc"
   # mcp server proxies §45 tool calls to the §46 API service in-cluster.
   NERVE_MCP_API: "http://api:8000"
+  # NOTE: the object store (§14) is NOT configured here. Its NERVECENTER_*
+  # variables (NERVECENTER_OBJECT_STORE_URL / _BUCKET / _ACCESS_KEY /
+  # _SECRET_KEY / _REGION / _SECURE) belong in the out-of-band
+  # `nervecenter-env` Secret — see secrets.yaml.example. Until provisioned,
+  # the store degrades honestly to "not configured" (surface on /api/health).

@@ -163,12 +163,23 @@ class TestHealthDegradation:
         assert body["version"] == "0.1.0"
         assert body["checks"]["db"]["status"] == "unreachable"
         assert body["checks"]["nats"]["status"] == "unreachable"
-        # new sections degrade honestly
-        assert body["ingest"] == {"status": "not configured", "workers": 0,
-                                  "summary": []}
-        assert body["connections"] == {
-            "status": "not configured", "count": 0, "connections": []
-        }
+        # new sections degrade honestly (additive keys present; per-key
+        # asserts so the env-dependent object_store section doesn't couple
+        # to the test environment).
+        ingest = body["ingest"]
+        assert ingest["status"] == "not configured"
+        assert ingest["workers"] == 0
+        assert ingest["summary"] == []
+        assert "reason" in ingest  # J3: gate reason is surfaced
+        connections = body["connections"]
+        assert connections["status"] == "not configured"
+        assert connections["count"] == 0
+        assert connections["connections"] == []
+        assert "personal_attention_operational" in connections  # J3
+        # J3: object-store readiness section is present (redacted).
+        assert "object_store" in body
+        assert body["object_store"]["status"] in (
+            "not_configured", "incomplete", "configured", "memory", "unknown")
 
     async def test_connections_degrade_without_registry(self, harness) -> None:
         """Supervisor running but the registry attribute missing is not a
