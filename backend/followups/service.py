@@ -36,10 +36,14 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
+
+log = logging.getLogger(__name__)
 
 from backend.api.models import AttentionState
 from backend.attention.service import AttentionService, get_attention_service
@@ -103,13 +107,13 @@ def _followup_payload(fu: FollowUp, *, now: datetime, days_overdue: int) -> dict
     urgency = min(0.9, 0.6 + 0.05 * days_overdue)
     entities = [fu.person_id] if fu.person_id else []
     return {
-        "reason": f"Follow up: {fu.reason}",
+        "reason": f"Follow through: {fu.reason}",
         "urgency": urgency,
         "importance": 0.8,
         "due": fu.due_at,
         "entities": entities,
         "sources": ["followups"],
-        "suggested_action": f"Follow up: {fu.reason}",
+        "suggested_action": f"Follow through: {fu.reason}",
         "why": [factor, f"target: {fu.target_kind}/{fu.target_id}"],
     }
 
@@ -148,14 +152,191 @@ def _wire_payload(fu: FollowUp) -> dict[str, Any]:
     }
 
 
-class FollowUpService:
-    """In-memory follow-up tracking, due evaluation, and attention promotion
-    (R104 — AC-R07, §57)."""
+def _followup_urgency_level(urgency: Any) -> str:
+    """Map the in-memory float ``urgency`` (0..1) to a durable urgency level
+    (``low``/``normal``/``high``/``critical`` — the frozen §6 set)."""
+    try:
+        u = float(urgency)
+    except (TypeError, ValueError):
+        return "normal"
+    if u >= 0.8:
+        return "critical"
+    if u >= 0.6:
+        return "high"
+    if u >= 0.3:
+        return "normal"
+    return "low"
 
-    def __init__(self, attention: AttentionService | None = None) -> None:
+
+def _followup_importance(importance: Any) -> int:
+    """Map the in-memory float ``importance`` (0..1) to the durable 1..10 scale."""
+    try:
+        v = float(importance)
+    except (TypeError, ValueError):
+        return 5
+    return max(1, min(10, round(v * 10)))
+
+
+def _log_durable_task_exception(task: "asyncio.Task[None]") -> None:
+    """Log (never raise) a background durability failure — mirroring the
+    pipeline's commitment-task handler. Durability is best-effort."""
+    try:
+        exc = task.exception()
+    except BaseException as exc:  # cancelled
+        log.warning("durable follow-up persistence cancelled: %s", exc)
+        return
+    if exc is not None:
+        log.warning("durable follow-up persistence failed: %s", exc, exc_info=exc)
+
+class FollowUpService:
+    """Follow-up tracking, due evaluation, and attention promotion
+    (R104 — AC-R07, §57).
+
+    In-memory by default (house style ``attention`` / ``waiting_on`` /
+    ``drafts``). When a ``RepositoryRegistry`` is injected the service also
+    mirrors each follow-up (and, once a due follow-up is promoted, its single
+    live AttentionItem) into the durable personal plane — the
+    :class:`~backend.persistence.models.personal.FollowupRow` and
+    :class:`~backend.persistence.models.personal.AttentionItemRow` tables —
+    so a follow-up survives a process restart. The durable write is scheduled
+    in the background (``ingest`` stays synchronous) and is **idempotent**:
+    the row id is derived deterministically from the follow-up's ``created_from``
+    provenance token, so a same-process replay or a replay through a fresh
+    process never creates a duplicate row. With no registry the service
+    performs zero I/O and behaves exactly as before.
+    """
+
+    def __init__(
+        self,
+        attention: AttentionService | None = None,
+        *,
+        registry: Any | None = None,
+    ) -> None:
         self._attention = attention or get_attention_service()
         self._items: dict[str, FollowUp] = {}
         self._events: list[Event] = []
+        #: The durable personal-plane registry (or ``None`` → pure, zero I/O).
+        self._registry = registry
+        #: Pending durable follow-up/attention writes (flushed by
+        #: :meth:`wait_for_followups`).
+        self._durable_tasks: list[Any] = []
+
+    # -- durable mirror (extend-only) ----------------------------------------
+    @property
+    def registry(self) -> Any | None:
+        """The injected durable registry, or ``None`` (pure in-memory mode)."""
+        return self._registry
+
+    def _schedule_durable(self, coro: Any) -> None:
+        """Schedule a durable mirror write off the synchronous ingest path.
+
+        Mirrors ``CommunicationPipeline._persist_commitments``: when a loop is
+        running the coroutine is scheduled as a background task; otherwise (a
+        synchronous caller) it is settled inline via ``asyncio.run`` so
+        durability still lands. A failure is logged, never raised.
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            try:
+                asyncio.run(coro)
+            except Exception as exc:  # noqa: BLE001 - durability is best-effort
+                log.warning("followup durability failed: %s", exc)
+            return
+        task = loop.create_task(coro)
+        task.add_done_callback(_log_durable_task_exception)
+        self._durable_tasks.append(task)
+
+    async def wait_for_followups(self) -> None:
+        """Await all pending durable follow-up/attention writes.
+
+        ``ingest`` stays synchronous, so durable writes are scheduled in the
+        background. Callers (and tests) that need the durable plane settled
+        await this. A write that already ran inline has no pending task.
+        """
+        if not self._durable_tasks:
+            return
+        tasks, self._durable_tasks = self._durable_tasks, []
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    @staticmethod
+    def _created_from(fu: FollowUp) -> str:
+        """The follow-up's deterministic provenance token (the idempotency key)."""
+        return fu.created_from or f"{fu.target_kind}:{fu.target_id}"
+
+    @staticmethod
+    def _stable_row_id(prefix: str, token: str) -> str:
+        """A stable row id derived from ``token`` — survives a restart because
+        the in-memory follow-up id (``fu-<uuid>``) is process-local."""
+        import hashlib
+
+        digest = hashlib.sha256(token.encode("utf-8")).hexdigest()[:12]
+        return f"{prefix}-{digest}"
+
+    async def _mirror_followup(self, fu: FollowUp) -> None:
+        """Persist the durable ``FollowupRow`` for a created follow-up.
+
+        Idempotent: the row id is derived from the ``created_from`` token, and
+        an existing row is reused (not duplicated) on replay.
+        """
+        registry = self._registry
+        if registry is None:
+            return
+        token = self._created_from(fu)
+        row_id = self._stable_row_id("fu", token)
+        if await registry.commitments.get_followup(row_id) is not None:
+            return
+        await registry.commitments.create_followup(
+            id=row_id,
+            text=(fu.reason or "")[:2048],
+            person_id=fu.person_id,
+            due_at=fu.due_at,
+            state="open",
+            linked_refs=[
+                {"kind": "followup", "created_from": token},
+            ],
+        )
+
+    async def _mirror_attention(self, fu: FollowUp, item: Any) -> None:
+        """Persist the durable ``AttentionItemRow`` for a promoted follow-up.
+
+        Idempotent: the row id is derived from the ``created_from`` token, so a
+        replay (same or fresh process) never stacks a second attention item.
+        """
+        registry = self._registry
+        if registry is None or item is None:
+            return
+        token = self._created_from(fu)
+        item_id = self._stable_row_id("att-fu", token)
+        if await registry.attention.get_attention_item(item_id) is not None:
+            return
+        urgency = _followup_urgency_level(getattr(item, "urgency", None))
+        importance = _followup_importance(getattr(item, "importance", None))
+        await registry.attention.create_attention_item(
+            id=item_id,
+            title=f"Follow through: {fu.reason}"[:512],
+            importance=importance,
+            urgency=urgency,
+            body=(fu.reason or "")[:4096],
+            deadline_at=fu.due_at,
+            source_refs=[f"followup:{token}", f"attention:{item.attention_id}"],
+            recommended_action=getattr(item, "suggested_action", None),
+            escalation_policy={"source": "followups"},
+            state="active",
+        )
+
+    async def _mirror_state(self, fu: FollowUp, *, followup_state: str,
+                            attention_state: str | None) -> None:
+        """Propagate a follow-up lifecycle transition to the durable rows."""
+        registry = self._registry
+        if registry is None:
+            return
+        token = self._created_from(fu)
+        row_id = self._stable_row_id("fu", token)
+        await registry.commitments.set_followup_state(row_id, followup_state)
+        if attention_state is not None:
+            att_id = self._stable_row_id("att-fu", token)
+            await registry.attention.set_state(att_id, attention_state)
 
     # -- events --------------------------------------------------------------
     def events(self, event_type: str | None = None) -> list[Event]:
@@ -213,6 +394,9 @@ class FollowUpService:
                   detail=f"created from {fu.created_from}")
         fu.updated_at = now
         self._items[fu.id] = fu
+        # Durable mirror (extend-only): persist the FollowupRow. Scheduled off
+        # the synchronous create path; a no-op when no registry is injected.
+        self._schedule_durable(self._mirror_followup(fu))
         event = self._emit("followup.created", fu, now=now)
         return {"followup": fu, "event": event}
 
@@ -371,6 +555,12 @@ class FollowUpService:
         fu.updated_at = now
         fu.record("completed", at=now, detail=note or "completed")
         self._emit("followup.completed", fu, now=now, note=note)
+        # Durable mirror (extend-only): the durable row follows the
+        # terminal transition (done + resolved attention).
+        self._schedule_durable(
+            self._mirror_state(fu, followup_state="done",
+                               attention_state="resolved")
+        )
         if fu.attention_id:
             self._attention.update_status(
                 fu.attention_id,
@@ -393,6 +583,12 @@ class FollowUpService:
         fu.updated_at = now
         fu.record("forgotten", at=now, detail=note or "forgotten")
         self._emit("followup.forgotten", fu, now=now, note=note)
+        # Durable mirror (extend-only): the durable row follows the
+        # terminal transition (dropped + dismissed attention).
+        self._schedule_durable(
+            self._mirror_state(fu, followup_state="dropped",
+                               attention_state="dismissed")
+        )
         if fu.attention_id:
             self._attention.update_status(
                 fu.attention_id,
@@ -426,6 +622,10 @@ class FollowUpService:
             created = self._attention.create(payload)
             fu.attention_id = created.attention_id
             refreshed = created
+            # Durable mirror (extend-only): persist the promoted item's
+            # AttentionItemRow. Scheduled off the synchronous path; no-op when
+            # no registry is injected. Idempotent by the provenance token.
+            self._schedule_durable(self._mirror_attention(fu, refreshed))
         return refreshed
 
     def evaluate_due(self, *, now: datetime | None = None) -> list[dict[str, Any]]:

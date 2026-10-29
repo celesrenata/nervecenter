@@ -244,9 +244,9 @@ def test_evaluate_due_promotes_to_attention_with_source_and_reference(svc):
     assert results[0]["days_overdue"] == 2
     item = results[0]["attention"]
     assert item.sources == ["followups"]
-    assert item.reason == "Follow up: Follow up with Sam — deployment credentials"
+    assert item.reason == "Follow through: Follow up with Sam — deployment credentials"
     assert fu.attention_id == item.attention_id
-    assert item.suggested_action == "Follow up: Follow up with Sam — deployment credentials"
+    assert item.suggested_action == "Follow through: Follow up with Sam — deployment credentials"
     # The due-item reason text is explainable: the overdue factor is in `why`.
     assert any("2 days overdue" in w for w in item.why)
     assert any("target: waiting_on/wo-1" in w for w in item.why)
