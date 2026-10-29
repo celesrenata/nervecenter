@@ -42,6 +42,7 @@ from backend.connectors.registry import (
     APP_PASSWORD,
     ACCESS_TOKEN,
     CURSOR_RELAY,
+    REFRESH_TOKEN,
     RELAY_TOKEN,
     ConnectionControlPlane,
     ConnectionControlPlaneError,
@@ -121,13 +122,21 @@ def _url_query(query: str) -> dict[str, str]:
 
 
 class FakeExchanger:
-    """A :class:`TokenExchanger` returning a fixed token."""
+    """A :class:`TokenExchanger` returning a fixed token.
 
-    def __init__(self, token: str = "oauth-access-token"):
+    Accepts either a bare string (legacy access-token shape) or a dict
+    grant mapping (``{"access_token": …, "refresh_token": …}``) to mirror
+    the production relay's code-exchange result."""
+
+    def __init__(
+        self, token: str | dict[str, str] = "oauth-access-token"
+    ) -> None:
         self.calls: list[tuple[str, str, str]] = []
         self._token = token
 
-    async def exchange(self, provider: str, code: str, state: str) -> str:
+    async def exchange(
+        self, provider: str, code: str, state: str
+    ) -> str | dict[str, str]:
         self.calls.append((provider, code, state))
         return self._token
 
@@ -589,6 +598,66 @@ class TestOauth:
         assert secret_row.payload["alg"] == "fernet"
         assert "ms-token" not in str(secret_row.payload)
         assert vault.decrypt_secret(secret_row.payload) == "ms-token"
+
+    async def test_complete_oauth_grant_stores_both_durable_kinds(self, env):
+        """A grant-mapping exchanger persists both the durable access token
+        and the durable refresh token; a legacy string exchanger persists
+        only the access token (refresh token is absent)."""
+        plane, registry, vault, _ = env
+        row = await plane.create_connection(kind="gmail")
+        exchanger = FakeExchanger(
+            {"access_token": "g-at-1", "refresh_token": "g-rt-1"}
+        )
+        plane.set_token_exchanger(exchanger)
+        flow = await plane.start_oauth(row.id)
+        result = await plane.complete_oauth(row.id, code="c1", state=flow["state"])
+        assert result["ok"] is True
+        assert result["auth_status"] == "authenticated"
+        # Both durable kinds are persisted.
+        access = await registry.connections.get_secret(
+            kind=ACCESS_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert access == "g-at-1"
+        refresh = await registry.connections.get_secret(
+            kind=REFRESH_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert refresh == "g-rt-1"
+        # The durable rows carry the fernet ciphertext, not the raw tokens.
+        async with registry.session_factory() as session:
+            secret_rows = (
+                await session.execute(
+                    select(SecretRow).where(
+                        SecretRow.owner_id == row.id,
+                        SecretRow.kind.in_([ACCESS_TOKEN, REFRESH_TOKEN]),
+                    )
+                )
+            ).scalars().all()
+            assert len(secret_rows) == 2
+            for sr in secret_rows:
+                assert sr.payload["alg"] == "fernet"
+                assert "g-at-1" not in str(sr.payload)
+                assert "g-rt-1" not in str(sr.payload)
+
+    async def test_complete_oauth_legacy_string_exchanger_stores_access_only(
+        self, env
+    ):
+        """A legacy string exchanger persists only the access token; no
+        refresh token is stored (access-only onboarding)."""
+        plane, registry, vault, _ = env
+        row = await plane.create_connection(kind="graph_mail")
+        exchanger = FakeExchanger("ms-legacy-token")
+        plane.set_token_exchanger(exchanger)
+        flow = await plane.start_oauth(row.id)
+        result = await plane.complete_oauth(row.id, code="c1", state=flow["state"])
+        assert result["ok"] is True
+        access = await registry.connections.get_secret(
+            kind=ACCESS_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert access == "ms-legacy-token"
+        refresh = await registry.connections.get_secret(
+            kind=REFRESH_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert refresh is None
 
     async def test_complete_oauth_without_exchanger(self, env):
         plane, *_ = env

@@ -207,9 +207,20 @@ class IngestTrigger(Protocol):
 
 @runtime_checkable
 class TokenExchanger(Protocol):
-    """Injectable OAuth code→token exchanger (no network in tests)."""
+    """Injectable OAuth code→token exchanger (no network in tests).
 
-    async def exchange(self, provider: OauthProviderName, code: str, state: str) -> str: ...
+    Returns either the bare access token (``str`` — legacy) or the full
+    provider token-grant mapping (``{"access_token": …, "refresh_token": …}``)
+    when the exchanger completes the code exchange itself (the relay,
+    prompt2 §47). :meth:`ConnectionControlPlane.complete_oauth` persists the
+    durable ``access_token`` in both shapes — and, when the grant carries a
+    ``refresh_token``, that durable kind as well, which the mail worker's
+    GAP-1 refresh (``MailOAuthRefresher``) reads back from the vault.
+    """
+
+    async def exchange(
+        self, provider: OauthProviderName, code: str, state: str
+    ) -> str | dict[str, str]: ...
 
 
 class ConnectionControlPlaneError(Exception):
@@ -347,6 +358,26 @@ def _redact(message: str | None) -> str | None:
 def _token_equals(a: str, b: str) -> bool:
     """Constant-time token comparison."""
     return _secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _token_grant_parts(token: Any) -> tuple[str, str]:
+   """Normalise a :class:`TokenExchanger` result to ``(access, refresh)``.
+
+   A legacy exchanger returns the bare access token (``str``); an exchanger
+   that completes the code exchange itself may return the provider's full
+   grant mapping. Both shapes are accepted so the frozen ``FakeExchanger``
+   contract keeps working; a grant without a refresh token simply yields an
+   empty refresh part (access-only onboarding). Token values never appear in
+   logs or raised messages — failures carry stable codes only.
+   """
+   if isinstance(token, str):
+       return token.strip(), ""
+   if isinstance(token, dict):
+       return (
+           str(token.get("access_token") or "").strip(),
+           str(token.get("refresh_token") or "").strip(),
+       )
+   return "", ""
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -815,7 +846,24 @@ class ConnectionControlPlane:
         config.pop("oauth_state", None)
         config.pop("oauth_code_verifier", None)
         await self._registry.connections.update_connection(connection_id, config=config)
-        await self.store_secret(connection_id=connection_id, kind=ACCESS_TOKEN, plaintext=token)
+        # Persist the durable token kinds. The legacy string exchanger stores
+        # only an access token; a grant mapping also carries a refresh token,
+        # which the mail worker's GAP-1 refresh reads back from the vault.
+        # Both are written under their durable kinds (vault-encrypted), so a
+        # restarted worker resumes with the current tokens — the refresh token
+        # is never lost on rotation.
+        access, refresh = _token_grant_parts(token)
+        if not access:
+            raise ConnectionControlPlaneError(
+                ERR_OAUTH_INCOMPLETE, "token exchange returned no access token"
+            )
+        await self.store_secret(
+            connection_id=connection_id, kind=ACCESS_TOKEN, plaintext=access
+        )
+        if refresh:
+            await self.store_secret(
+                connection_id=connection_id, kind=REFRESH_TOKEN, plaintext=refresh
+            )
         await self._registry.connections.update_connection(
             connection_id, auth_status="authenticated", last_attempt_at=_now()
         )

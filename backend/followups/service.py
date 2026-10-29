@@ -227,6 +227,17 @@ class FollowUpService:
         """The injected durable registry, or ``None`` (pure in-memory mode)."""
         return self._registry
 
+    def set_registry(self, registry: Any | None) -> None:
+        """Bind (or unbind) the durable personal-plane registry (extend-only).
+
+        The process-wide singleton is composed with no registry (pure); the
+        app startup wiring binds it once the durable engine is known. A late
+        bind takes effect on the next mirror write — the in-memory behavior
+        is unchanged either way (mirrors stay best-effort background).
+        Idempotent.
+        """
+        self._registry = registry
+
     def _schedule_durable(self, coro: Any) -> None:
         """Schedule a durable mirror write off the synchronous ingest path.
 
@@ -254,10 +265,44 @@ class FollowUpService:
         background. Callers (and tests) that need the durable plane settled
         await this. A write that already ran inline has no pending task.
         """
+        await self.drain_durable()
+
+    async def drain_durable(self) -> Exception | None:
+        """Await the pending durable mirror writes; return the first failure.
+
+        The mirror is best-effort — nothing raises from the synchronous
+        path — so the outcome is only available by asking: the mail worker's
+        commit-gate (via the pipeline's ``flush_durable``) and tests use
+        this. ``None`` means everything committed (or nothing was pending).
+        A write that already ran inline has no pending task.
+        """
         if not self._durable_tasks:
-            return
+            return None
         tasks, self._durable_tasks = self._durable_tasks, []
-        await asyncio.gather(*tasks, return_exceptions=True)
+        first: Exception | None = None
+        for result in await asyncio.gather(*tasks, return_exceptions=True):
+            if isinstance(result, Exception) and first is None:
+                first = result
+        return first
+
+    @staticmethod
+    async def _guard_durable(registry: Any, write: Any) -> None:
+        """Run one durable mirror write serialized on the registry's lock.
+
+        The commitment / follow-up / attention mirrors are separate
+        background coroutines that can share a single-connection engine
+        (the SQLite ``StaticPool`` durable harness): letting their
+        ``session.commit()`` calls interleave makes SQLite refuse the
+        commit (``cannot commit transaction``). The registry's
+        ``durable_lock`` keeps each write atomic; a double without the
+        attribute runs unwrapped.
+        """
+        lock = getattr(registry, "durable_lock", None)
+        if lock is None:
+            await write()
+        else:
+            async with lock:
+                await write()
 
     @staticmethod
     def _created_from(fu: FollowUp) -> str:
@@ -277,53 +322,68 @@ class FollowUpService:
         """Persist the durable ``FollowupRow`` for a created follow-up.
 
         Idempotent: the row id is derived from the ``created_from`` token, and
-        an existing row is reused (not duplicated) on replay.
+        an existing row is reused (not duplicated) on replay. The durable
+        ``text`` is templated (P0-I) — the raw reason (which quotes the
+        detected fragment) stays on the live in-memory follow-up.
         """
         registry = self._registry
         if registry is None:
             return
         token = self._created_from(fu)
         row_id = self._stable_row_id("fu", token)
-        if await registry.commitments.get_followup(row_id) is not None:
-            return
-        await registry.commitments.create_followup(
-            id=row_id,
-            text=(fu.reason or "")[:2048],
-            person_id=fu.person_id,
-            due_at=fu.due_at,
-            state="open",
-            linked_refs=[
-                {"kind": "followup", "created_from": token},
-            ],
-        )
+
+        async def _write() -> None:
+            if await registry.commitments.get_followup(row_id) is not None:
+                return
+            await registry.commitments.create_followup(
+                id=row_id,
+                text=f"Follow-up ({token})"[:2048],
+                person_id=fu.person_id,
+                due_at=fu.due_at,
+                state="open",
+                linked_refs=[
+                    {"kind": "followup", "created_from": token},
+                ],
+            )
+
+        await self._guard_durable(registry, _write)
 
     async def _mirror_attention(self, fu: FollowUp, item: Any) -> None:
         """Persist the durable ``AttentionItemRow`` for a promoted follow-up.
 
         Idempotent: the row id is derived from the ``created_from`` token, so a
         replay (same or fresh process) never stacks a second attention item.
+        Title / body / recommended_action are templated (P0-I) — the raw
+        follow-up reason never reaches the durable plane.
         """
         registry = self._registry
         if registry is None or item is None:
             return
         token = self._created_from(fu)
         item_id = self._stable_row_id("att-fu", token)
-        if await registry.attention.get_attention_item(item_id) is not None:
-            return
-        urgency = _followup_urgency_level(getattr(item, "urgency", None))
-        importance = _followup_importance(getattr(item, "importance", None))
-        await registry.attention.create_attention_item(
-            id=item_id,
-            title=f"Follow through: {fu.reason}"[:512],
-            importance=importance,
-            urgency=urgency,
-            body=(fu.reason or "")[:4096],
-            deadline_at=fu.due_at,
-            source_refs=[f"followup:{token}", f"attention:{item.attention_id}"],
-            recommended_action=getattr(item, "suggested_action", None),
-            escalation_policy={"source": "followups"},
-            state="active",
-        )
+
+        async def _write() -> None:
+            if await registry.attention.get_attention_item(item_id) is not None:
+                return
+            urgency = _followup_urgency_level(getattr(item, "urgency", None))
+            importance = _followup_importance(getattr(item, "importance", None))
+            body = f"Follow-up for {token}."
+            if fu.due_at is not None:
+                body += f" Due {fu.due_at.isoformat()}."
+            await registry.attention.create_attention_item(
+                id=item_id,
+                title=f"Follow-up: {fu.target_kind} ({token})"[:512],
+                importance=importance,
+                urgency=urgency,
+                body=body[:4096],
+                deadline_at=fu.due_at,
+                source_refs=[f"followup:{token}", f"attention:{item.attention_id}"],
+                recommended_action="Review this follow-up",
+                escalation_policy={"source": "followups"},
+                state="active",
+            )
+
+        await self._guard_durable(registry, _write)
 
     async def _mirror_state(self, fu: FollowUp, *, followup_state: str,
                             attention_state: str | None) -> None:
@@ -333,10 +393,14 @@ class FollowUpService:
             return
         token = self._created_from(fu)
         row_id = self._stable_row_id("fu", token)
-        await registry.commitments.set_followup_state(row_id, followup_state)
-        if attention_state is not None:
-            att_id = self._stable_row_id("att-fu", token)
-            await registry.attention.set_state(att_id, attention_state)
+        att_id = self._stable_row_id("att-fu", token)
+
+        async def _write() -> None:
+            await registry.commitments.set_followup_state(row_id, followup_state)
+            if attention_state is not None:
+                await registry.attention.set_state(att_id, attention_state)
+
+        await self._guard_durable(registry, _write)
 
     # -- events --------------------------------------------------------------
     def events(self, event_type: str | None = None) -> list[Event]:

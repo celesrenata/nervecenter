@@ -327,9 +327,19 @@ async def wire_dependencies(target: FastAPI) -> None:
                 from backend.communications.detection.wiring import (
                     set_commitment_store,
                 )
+                from backend.followups.service import get_followup_service
 
                 set_commitment_store(
                     target.state.repository_registry.commitments
+                )
+                # Extend-only: hand the durable registry to the follow-up
+                # service singleton too, so its follow-up / attention
+                # mirrors reach the durable plane (the pipeline's
+                # commitment mirror falls back to the same registry when no
+                # explicit store is bound). In-memory behavior is
+                # unchanged; mirrors stay best-effort background writes.
+                get_followup_service().set_registry(
+                    target.state.repository_registry
                 )
             except Exception as exc:  # noqa: BLE001
                 log.warning(

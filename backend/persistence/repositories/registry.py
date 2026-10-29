@@ -12,6 +12,7 @@ every startup and carries no cross-process state.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from .attention_repo import AttentionRepository
@@ -46,11 +47,26 @@ class RepositoryRegistry:
     ) -> None:
         self._session_factory = session_factory
         self._secret_codec = secret_codec
+        #: Serializes the durable mirror writes made on this registry's
+        #: session factory. The pipeline's commitment mirror and the follow-up
+        #: service's follow-up / attention mirrors are separate background
+        #: coroutines; on a single-connection engine (the SQLite
+        #: ``StaticPool`` durable harness) their ``session.commit()`` calls
+        #: must not interleave, so every mirror serializes on this lock.
+        #: (Doubles of the registry without a lock run unwrapped.)
+        self._durable_lock = asyncio.Lock()
 
     @property
     def session_factory(self) -> Any:
         """The underlying session factory (for workstreams needing raw access)."""
         return self._session_factory
+
+    @property
+    def durable_lock(self) -> asyncio.Lock:
+        """The lock every durable mirror on this registry serializes on
+        (extend-only: mirrors that do not know this registry never touch
+        it; one durable plane = one lock)."""
+        return self._durable_lock
 
     @property
     def secret_codec(self) -> Any:

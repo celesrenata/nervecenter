@@ -41,6 +41,7 @@ Design notes
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from datetime import UTC, datetime
 from typing import Any, Protocol, Sequence
@@ -93,6 +94,7 @@ class DurableCommitmentStore(Protocol):
     async def create_commitment(
         self,
         *,
+        id: str | None = None,
         person_id: str,
         text: str,
         due_at: datetime | None = None,
@@ -100,7 +102,12 @@ class DurableCommitmentStore(Protocol):
         evidence: dict[str, Any] | None = None,
         source_communication_id: str | None = None,
     ) -> Any:
-        """Persist one commitment row; returns the stored row."""
+        """Persist one commitment row; returns the stored row.
+
+        An explicit deterministic ``id`` dedups (get-or-create) — the
+        pipeline derives it from the finding's provenance key so a replay
+        across a restart reuses the row.
+        """
         ...
 
 
@@ -157,10 +164,11 @@ class CommunicationPipeline:
 
     No globals, no I/O by default: the three core services are injected, and
     an optional :class:`DurableCommitmentStore` may be injected to mirror
-    detected commitments into the durable personal plane. With no store given,
-    the pipeline performs zero I/O and behaves exactly as before — the
-    injected store is the *only* path to durability. A pinned ``now`` makes
-    the whole pass reproducible.
+    detected commitments into the durable personal plane. With no store
+    given the pipeline falls back to the follow-up service's
+    ``RepositoryRegistry`` (when one was injected there) — the *inject
+    nothing* composition stays pure (zero I/O) and behaves exactly as
+    before. A pinned ``now`` makes the whole pass reproducible.
     """
 
     def __init__(
@@ -199,8 +207,50 @@ class CommunicationPipeline:
 
     @property
     def commitment_store(self) -> DurableCommitmentStore | None:
-        """The injected durable commitment sink, or ``None`` (no I/O)."""
+        """The explicitly injected durable commitment sink, or ``None``.
+
+        Resolution of the sink that actually writes is
+        :attr:`_commitment_sink` (the follow-up registry is the fallback).
+        """
         return self._commitment_store
+
+    @property
+    def _commitment_sink(self) -> DurableCommitmentStore | None:
+        """The resolved durable sink — explicit store, else the follow-up
+        service's registry (extend-only durability fallback).
+
+        A caller may bind the *registry* itself (not the commitments
+        repository), and a pipeline composed with no explicit store still
+        mirrors through the registry its follow-up service was given — so
+        the sink is *resolved*, never assumed: a registry is unwrapped to
+        its ``commitments`` repository. ``None`` (no explicit store, no
+        registry) means zero I/O.
+        """
+        store = self._commitment_store
+        if store is None:
+            store = getattr(self._followups, "registry", None)
+        if store is None:
+            return None
+        repo = getattr(store, "commitments", None)
+        if repo is not None and hasattr(repo, "create_commitment"):
+            return repo
+        return store
+
+    def _commitment_write_lock(self) -> asyncio.Lock | None:
+        """The lock serializing this pipeline's commitment writes.
+
+        Shared with the follow-up service's mirrors through the registry
+        (one durable plane = one lock). ``None`` → no lock (a bare store
+        without a registry; a single pipeline is then the only writer).
+        """
+        registry = getattr(self._followups, "registry", None)
+        if registry is not None:
+            lock = getattr(registry, "durable_lock", None)
+            if lock is not None:
+                return lock
+        if self._commitment_store is not None:
+            return getattr(self._commitment_store, "durable_lock", None)
+        return None
 
     # -- ingest ------------------------------------------------------------
     def ingest(
@@ -334,16 +384,18 @@ class CommunicationPipeline:
     ) -> None:
         """Mirror detected commitment findings into the durable store.
 
-        No-op unless a :class:`DurableCommitmentStore` was injected. The
+        No-op unless a durable sink is resolved (explicit store, else the
+        follow-up service's registry — see :attr:`_commitment_sink`). The
         pipeline is synchronous and must stay so (its callers invoke
         ``ingest`` without ``await``), so each write is scheduled as a
         background task rather than awaited. Writes are idempotent by the
         ``<kind>:<finding_id>`` key so a replay in the same process never
         schedules a duplicate row.
         """
-        store = self._commitment_store
+        store = self._commitment_sink
         if store is None:
             return
+        lock = self._commitment_write_lock()
 
         for finding in findings:
             if getattr(finding, "kind", None) != "commitment":
@@ -356,6 +408,7 @@ class CommunicationPipeline:
                 finding,
                 person_id=person_id,
                 store=store,
+                lock=lock,
             )
             try:
                 loop = asyncio.get_running_loop()
@@ -374,8 +427,9 @@ class CommunicationPipeline:
         *,
         person_id: str | None,
         store: DurableCommitmentStore,
+        lock: asyncio.Lock | None = None,
     ) -> None:
-        """Persist a single commitment finding via the injected store.
+        """Persist a single commitment finding via the resolved store.
 
         A commitment must be owed to a person; with no ``person_id`` there is
         nothing durable to key the row on, so it is skipped.
@@ -387,29 +441,54 @@ class CommunicationPipeline:
         Provenance to the source communication is preserved on
         ``evidence["created_from"]`` instead — the domain id the finding was
         extracted from (AC-R04).
+
+        The durable row carries *templated, provenance-only* strings (P0-I):
+        the detector's quoted fragments (``finding.matched`` / the quoted
+        part of ``finding.why``) stay on the live in-memory finding and
+        never reach the durable plane. The row id is derived from the
+        finding's deterministic provenance key, so a replay across a
+        restart reuses the row (get-or-create) instead of stacking a
+        duplicate. When a lock is given (the registry's durable lock) the
+        write is serialized with the follow-up / attention mirrors.
         """
         if person_id is None:
             return
-        why = getattr(finding, "why", None) or []
-        matched = getattr(finding, "matched", "") or ""
-        evidence: dict[str, Any] = {
-            "finding_id": finding.finding_id,
-            "finding_kind": finding.kind,
-            "created_from": finding.created_from,
-            "content_ref": finding.content_ref,
-            "confidence": finding.confidence,
-            "model_used": finding.model_used,
-            "why": list(why),
-        }
-        if matched:
-            evidence["matched"] = matched
-        await store.create_commitment(
-            person_id=person_id,
-            text=matched or (why[0] if why else "commitment"),
-            due_at=finding.due,
-            state="open",
-            evidence=evidence,
-        )
+
+        async def _write() -> None:
+            key = f"{finding.kind}:{finding.finding_id}"
+            digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+            due_iso = finding.due.isoformat() if finding.due is not None else None
+            text = f"Commitment — {finding.finding_id}"
+            if due_iso is not None:
+                text += f" (due {due_iso})"
+            templated_why: list[str] = [
+                f"{finding.kind}: detected by {finding.model_used}",
+                f"finding {finding.finding_id}",
+            ]
+            if due_iso is not None:
+                templated_why.append(f"due {due_iso}")
+            await store.create_commitment(
+                id=f"ct-{digest}",
+                person_id=person_id,
+                text=text,
+                due_at=finding.due,
+                state="open",
+                evidence={
+                    "finding_id": finding.finding_id,
+                    "finding_kind": finding.kind,
+                    "created_from": finding.created_from,
+                    "content_ref": finding.content_ref,
+                    "confidence": finding.confidence,
+                    "model_used": finding.model_used,
+                    "why": templated_why,
+                },
+            )
+
+        if lock is None:
+            await _write()
+        else:
+            async with lock:
+                await _write()
 
     async def wait_for_commitments(self) -> None:
         """Await all pending durable-commitment writes (flush the seam).
@@ -424,6 +503,31 @@ class CommunicationPipeline:
             return
         tasks, self._commitment_tasks = self._commitment_tasks, []
         await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def flush_durable(self) -> Exception | None:
+        """Settle the pending durable mirror writes; return the first
+        failure (``None`` when everything committed — or nothing was
+        pending).
+
+        The durable mirror is best-effort and never raises from the
+        synchronous ``ingest``; this is the explicit outcome check. The mail
+        worker gates its cursor on it (P0-D commit-gate); tests use it (via
+        the seam) to settle the plane before asserting. The commitment
+        writes are drained first, then the follow-up mirrors (deterministic
+        ordering of the reported failure).
+        """
+        first: Exception | None = None
+        if self._commitment_tasks:
+            tasks, self._commitment_tasks = self._commitment_tasks, []
+            for result in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(result, Exception) and first is None:
+                    first = result
+        drain = getattr(self._followups, "drain_durable", None)
+        if drain is not None:
+            follow_first = await drain()
+            if first is None and follow_first is not None:
+                first = follow_first
+        return first
 
 
 def _log_task_exception(task: "asyncio.Task[None]") -> None:

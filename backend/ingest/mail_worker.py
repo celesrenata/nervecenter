@@ -126,6 +126,15 @@ class IngestSeam(Protocol):
         """Run the §61 detection → follow-up → attention pass."""
         ...
 
+    async def flush_durable(self) -> Exception | None:
+        """Optional member: await the pipeline's pending durable mirror
+        writes and return the first failure (``None`` = everything
+        committed). The worker gates its cursor on this — a truthy
+        exception means ``commit_failed`` (P0-D). Doubles of the seam may
+        omit it; the worker getattr-guards (treats no-flush as
+        committed)."""
+        ...
+
 
 class DefaultIngestSeam:
     """Production :class:`IngestSeam` over the process-wide singletons."""
@@ -155,6 +164,17 @@ class DefaultIngestSeam:
 
     def run_pipeline(self, communication: Communication, *, now: Any) -> Any:
         return self.pipeline.ingest(communication, now=now)
+
+    async def flush_durable(self) -> Exception | None:
+        """Settle the pipeline's durable mirrors; surface the first failure.
+
+        The commitment seam and the follow-up / attention mirrors both
+        live on the process-wide pipeline / follow-up service, so the
+        commit-gate awaits the composed pipeline's
+        :meth:`~backend.communications.detection.wiring.CommunicationPipeline.
+        flush_durable`.
+        """
+        return await self.pipeline.flush_durable()
 
 
 def default_ingest_seam() -> IngestSeam:
@@ -408,6 +428,37 @@ class MailIngestWorker:
         if not isinstance(next_cursor, dict):
             next_cursor = dict(cursor)
         ingested, duplicates, seen = await self._process_batch(conn, items, seen_keys(cursor))
+        # P0-D commit-gate: the durable cursor (and its seen-list fold)
+        # advances only after the pipeline's durable mirror writes have
+        # settled. The seam surfaces the first durable failure; a seam
+        # double without ``flush_durable`` is treated as committed
+        # (getattr-guarded — its durability is its own concern).
+        flush = getattr(self._seam, "flush_durable", None)
+        durable_failure: Exception | None = None
+        if flush is not None:
+            try:
+                durable_failure = await flush()
+            except Exception as exc:  # noqa: BLE001 - the gate is best-effort
+                durable_failure = exc
+        if durable_failure is not None:
+            detail = redact_transport_error(str(durable_failure))
+            await self._connections.update_connection(
+                self.connection_id,
+                operational_status="error",
+                last_error_code="commit_failed",
+                last_error_message=detail,
+            )
+            log.warning(
+                "mail_ingest.commit_failed",
+                **base,
+                error_code="commit_failed",
+                error=detail,
+            )
+            # No cursor advance, no seen-list fold: the transport
+            # re-delivers the same items and the mirrors' idempotency
+            # (durable dedup by provenance key) absorbs what already
+            # committed.
+            return dict(base, status="error", error_code="commit_failed")
         await self._imports.set_cursor(
             self.connection_id, self.cursor_kind, cursor_with_seen(next_cursor, seen)
         )
@@ -485,6 +536,25 @@ class MailIngestWorker:
             }
             result = self._seam.ingest_communication(payload)
             communication = result["communication"]
+            # P0-C: hand detection the body this worker just stored —
+            # read it back out of the object store and register it
+            # *transiently* with the detection seam (getattr-guarded).
+            # Nothing is persisted; the graph record keeps only the
+            # ``content_ref`` pointer. Without this the worker path sees
+            # no text and yields zero findings / zero durable rows.
+            register = getattr(self._seam, "register_content", None)
+            if register is not None:
+                try:
+                    body = await self._object_store.get(key)
+                except Exception:  # noqa: BLE001 - missing body → empty text
+                    body = b""
+                register(
+                    str(
+                        getattr(communication, "content_ref", None)
+                        or payload["content_ref"]
+                    ),
+                    body.decode("utf-8", "replace"),
+                )
             self._seam.run_pipeline(communication, now=communication.timestamp)
             if bool(result.get("created")):
                 ingested += 1
