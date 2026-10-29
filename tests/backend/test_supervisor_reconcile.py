@@ -424,6 +424,177 @@ class TestReconcileInterval:
 # --------------------------------------------------------------------------
 
 
+def _sync_item(message_id: str) -> Any:
+    """One scripted :class:`MailItem` for the ``sync_once`` success tests."""
+    from datetime import UTC
+
+    from backend.connectors.mail.mail_transport import MailItem
+
+    return MailItem(
+        message_id=message_id,
+        account=_ACCOUNT,
+        subject="Sync once",
+        content_bytes=b"one line of body\n",
+        timestamp=datetime(2026, 10, 29, 0, 0, 0, tzinfo=UTC),
+        headers={"From": _ACCOUNT, "Message-ID": message_id},
+    )
+
+
+class _RecordingSeam:
+    """A minimal :class:`IngestSeam` that records ingest calls (no
+    ``flush_durable`` → treated as committed)."""
+
+    def __init__(self) -> None:
+        self.ingests: list[dict[str, Any]] = []
+
+    def ingest_communication(self, payload: dict[str, Any]) -> dict[str, Any]:
+        self.ingests.append(payload)
+        communication = SimpleNamespace(
+            communication_id=payload["communication_id"],
+            content_ref=payload.get("content_ref"),
+            channel=payload.get("channel"),
+            timestamp=payload.get("timestamp"),
+        )
+        return {"communication": communication, "conversation": None, "created": True}
+
+    def run_pipeline(self, communication: Any, *, now: Any) -> Any:
+        return None
+
+
+class _ExplodingSeam:
+    """An :class:`IngestSeam` that raises a credential-bearing message —
+    exercises the shared redaction path (URL userinfo is stripped by
+    :func:`backend.connectors.redact.redact_message`)."""
+
+    def ingest_communication(self, payload: dict[str, Any]) -> dict[str, Any]:
+        raise RuntimeError("boom connecting imap://u:boom-secret-value@corp.example")
+
+    def run_pipeline(self, communication: Any, *, now: Any) -> Any:
+        return None
+
+
+class TestSyncOnce:
+    """``sync_once`` — the control plane's delegation target for a manual
+    ``Sync Now`` / ``Import`` (workstream B → C). One bounded ingest cycle on
+    a one-shot worker over the shared durable seams; never touches the live
+    worker set (a running worker is left untouched, nothing is spawned)."""
+
+    async def test_sync_once_ingests_and_marks_healthy(
+        self, harness, monkeypatch
+    ) -> None:
+        from backend.connectors.registry import ConnectionControlPlaneError  # noqa: F401
+
+        seam = _RecordingSeam()
+        transport = StubMailTransport(items=[_sync_item("sync-1@corp.com")])
+        monkeypatch.setattr(
+            supervisor_module, "_build_transport", lambda kind, config: transport
+        )
+        supervisor = _supervisor(harness, seam=seam)
+
+        summary = await supervisor.sync_once(harness.conn.id)
+        assert summary["status"] == "ok"
+        assert summary["ingested"] == 1
+        assert len(seam.ingests) == 1
+
+        stored = await harness.registry.connections.get_connection(harness.conn.id)
+        assert stored.operational_status == "healthy"
+        assert stored.auth_status == "authenticated"
+        assert stored.last_error_code is None
+        # The durable cursor advanced with the folded seen-list.
+        cursor = await harness.registry.imports.get_cursor(
+            harness.conn.id, "imap_seq"
+        )
+        assert cursor is not None
+        assert f"{_ACCOUNT}:sync-1@corp.com" in cursor.cursor_value.get("seen", [])
+        # A real import job row was opened and its progress updated.
+        job = await harness.registry.imports.get_import_job(
+            str((stored.config or {}).get("import_job_id"))
+        )
+        assert job is not None
+        assert job.state == "running"
+        assert int((job.progress or {}).get("ingested", 0)) == 1
+        # sync_once leaves no worker behind (no loop task spawned).
+        assert harness.conn.id not in supervisor.workers
+
+    async def test_sync_once_records_durable_failure(self, harness) -> None:
+        """The fixture's transport factory fails fast; the failure must be a
+        stable :class:`ConnectionControlPlaneError` carrying the *durable*
+        row code (``connect_failed``) so the plane's ``_start_sync`` records
+        the same code on its failure path."""
+        from backend.connectors.registry import ConnectionControlPlaneError
+
+        supervisor = _supervisor(harness)
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await supervisor.sync_once(harness.conn.id)
+        assert exc.value.code == "connect_failed"
+
+        stored = await harness.registry.connections.get_connection(harness.conn.id)
+        assert stored.last_error_code == "connect_failed"
+        assert harness.conn.id not in supervisor.workers
+
+    async def test_sync_once_unknown_connection_is_connection_not_found(
+        self, harness
+    ) -> None:
+        from backend.connectors.registry import ConnectionControlPlaneError
+
+        supervisor = _supervisor(harness)
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await supervisor.sync_once("no-such-id")
+        assert exc.value.code == "connection_not_found"
+
+    async def test_sync_once_non_mail_kind_is_kind_not_supported(
+        self, harness
+    ) -> None:
+        """A ``graph_mail`` row (control-plane OAuth kind) is not servable by
+        the mail ingest kinds: a trigger registered against it must fail with
+        a stable code, never a worker (P1-106: an unservable provider must
+        never look like a healthy worker)."""
+        from backend.connectors.registry import ConnectionControlPlaneError
+
+        row = await harness.registry.connections.create_connection(
+            kind="graph_mail",
+            label="Outlook (OAuth)",
+            config={"account": "graph@example.com"},
+            enabled=True,
+        )
+        supervisor = _supervisor(harness)
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await supervisor.sync_once(row.id)
+        assert exc.value.code == "kind_not_supported"
+        assert row.id not in supervisor.workers
+
+    async def test_sync_once_disabled_connection_fails_stably(
+        self, harness
+    ) -> None:
+        from backend.connectors.registry import ConnectionControlPlaneError
+
+        await harness.registry.connections.update_connection(
+            harness.conn.id, enabled=False
+        )
+        supervisor = _supervisor(harness)
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await supervisor.sync_once(harness.conn.id)
+        assert exc.value.code == "ingest_failed"
+        assert "disabled" in exc.value.message
+
+    async def test_sync_once_failure_is_redacted(
+        self, harness, monkeypatch
+    ) -> None:
+        """An unexpected exception inside the cycle surfaces a stable code
+        (``ingest_failed``) and never leaks the raw exception text."""
+        from backend.connectors.registry import ConnectionControlPlaneError
+
+        transport = StubMailTransport(items=[_sync_item("sync-x@corp.com")])
+        monkeypatch.setattr(
+            supervisor_module, "_build_transport", lambda kind, config: transport
+        )
+        supervisor = _supervisor(harness, seam=_ExplodingSeam())
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await supervisor.sync_once(harness.conn.id)
+        assert exc.value.code == "ingest_failed"
+        assert "boom-secret-value" not in exc.value.message
+
+
 class TestUnsupportedKind:
     async def test_graph_mail_never_gets_a_worker(self, harness) -> None:
         """A ``graph_mail`` connection (the control-plane OAuth kind for

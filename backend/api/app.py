@@ -165,11 +165,20 @@ def _install_connection_control_plane(app: FastAPI) -> None:
         app.state.connection_control_plane = None
         return
     from backend.connectors.registry import ConnectionControlPlane
+    from backend.connectors.wiring import install_connection_wiring
 
     vault = getattr(app.state, "secret_vault", None)
     app.state.connection_control_plane = ConnectionControlPlane(
         registry, vault=vault
     )
+    # P1-103: register the production probes, the durable OAuth code→token
+    # exchanger, and the mail-ingest sync triggers (the latter only when the
+    # ingest supervisor is live). Best-effort — a registration failure leaves
+    # the affected endpoint in its honest degraded state.
+    try:
+        install_connection_wiring(app)
+    except Exception as exc:  # noqa: BLE001 - startup must not crash
+        log.warning("api.connection_wiring_failed", error=str(exc))
 
 
 def _install_control_plane_wiring(target: FastAPI) -> None:

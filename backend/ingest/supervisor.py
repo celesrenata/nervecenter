@@ -35,6 +35,12 @@ from typing import Any
 
 from backend.connectors.mail.mail_transport import ImapPollClient, GmailClient
 from backend.connectors.redact import redact_message
+from backend.connectors.registry import (
+    ERR_CONNECTION_NOT_FOUND,
+    ERR_KIND_NOT_SUPPORTED,
+    ERR_TRIGGER_FAILED,
+    ConnectionControlPlaneError,
+)
 from backend.ingest.mail_worker import (
     CURSOR_KINDS,
     MailIngestWorker,
@@ -241,15 +247,17 @@ class MailIngestSupervisor:
         except asyncio.CancelledError:
             raise
 
-    async def _spawn_for(self, conn: Any) -> None:
-        """Build and start the worker for one enabled mail connection.
+    def _build_worker_for(self, conn: Any) -> MailIngestWorker:
+        """Build the :class:`MailIngestWorker` for one mail connection.
 
-        Shared by startup and the reconcile loop (one code path, §16).
+        Shared by :meth:`_spawn_for` (the durable worker loop) and
+        :meth:`sync_once` (the one-shot control-plane sync) — one builder
+        so the two code paths cannot drift (§16).
         """
         kind = str(getattr(conn, "kind", "") or "").lower()
         cursor_kind, _ = _KIND_TO_CURSOR[kind]
         transport = _build_transport(kind, dict(getattr(conn, "config", None) or {}))
-        worker = MailIngestWorker(
+        return MailIngestWorker(
             connection_id=conn.id,
             cursor_kind=cursor_kind,
             connections=self._registry.connections,
@@ -261,6 +269,13 @@ class MailIngestSupervisor:
             backoff_base_s=self._backoff_base_s,
             backoff_max_s=self._backoff_max_s,
         )
+
+    async def _spawn_for(self, conn: Any) -> None:
+        """Build and start the worker for one enabled mail connection.
+
+        Shared by startup and the reconcile loop (one code path, §16).
+        """
+        worker = self._build_worker_for(conn)
         self._workers[conn.id] = worker
         worker.start()
 
@@ -281,6 +296,70 @@ class MailIngestSupervisor:
 
     def worker_for(self, connection_id: str) -> MailIngestWorker | None:
         return self._workers.get(connection_id)
+
+    async def sync_once(self, connection_id: str) -> dict[str, Any]:
+        """Run one bounded ingest cycle for a connection (workstream B → C).
+
+        Delegation target for the control plane's sync triggers
+        (:class:`backend.connectors.wiring.MailSyncTrigger`). Builds a
+        one-shot :class:`MailIngestWorker` over the shared durable seams
+        (never touching the live worker set — a manual ``Sync Now`` must
+        not disturb or duplicate a running worker) and runs a single poll.
+        The worker already maps the outcome durably: cursor advance +
+        ``healthy`` on success, a stable error code on the row on failure.
+        This method only normalizes the *kind-level* contract the plane
+        needs around the call:
+
+        - unknown connection id → :class:`ConnectionControlPlaneError`
+          with the stable ``connection_not_found`` code;
+        - a non-mail kind → ``kind_not_supported`` (the plane answers
+          ``ingest_unavailable`` itself for its own non-servable kinds;
+          this guard is for rows a trigger was registered against that
+          no longer look like mail);
+        - a failed cycle → a :class:`ConnectionControlPlaneError` carrying
+          the *durable* stable code the worker just wrote to the row
+          (``auth_expired`` / ``connect_failed`` / …) so the plane's
+          ``_start_sync`` failure mapping records the same code; falls
+          back to ``ingest_failed`` when no row code is present.
+        """
+        conn = await self._registry.connections.get_connection(connection_id)
+        if conn is None:
+            raise ConnectionControlPlaneError(
+                ERR_CONNECTION_NOT_FOUND,
+                f"connection {connection_id!r} not found",
+            )
+        kind = str(getattr(conn, "kind", "") or "").lower()
+        if kind not in _KIND_TO_CURSOR:
+            raise ConnectionControlPlaneError(
+                ERR_KIND_NOT_SUPPORTED, f"kind {kind!r} is not a mail ingest kind"
+            )
+        worker = self._build_worker_for(conn)
+        try:
+            await worker.poll_once()
+        except Exception as exc:  # noqa: BLE001 - stable code, redacted detail
+            raise ConnectionControlPlaneError(
+                ERR_TRIGGER_FAILED, redact_message(exc)
+            ) from exc
+        # ``poll_once`` returns the next-poll delay, not the summary — the
+        # cycle summary is the worker's durable last-summary snapshot (set
+        # during the poll, exposed through its public ``status()`` snapshot).
+        summary = dict(worker.status().get("last") or {})
+        status = str(summary.get("status") or "")
+        if status == "ok":
+            return summary
+        # Failed cycle: surface the durable stable code the worker wrote.
+        fresh = await self._registry.connections.get_connection(connection_id)
+        row_code = str(getattr(fresh, "last_error_code", "") or "") if fresh else ""
+        if status in ("error", "auth_expired") and row_code:
+            code, message = row_code, f"sync cycle failed ({status})"
+        elif status == "disabled":
+            code, message = ERR_TRIGGER_FAILED, "connection is disabled"
+        elif status == "missing":
+            code = ERR_CONNECTION_NOT_FOUND
+            message = "connection was removed during the sync cycle"
+        else:  # pragma: no cover - worker status set is frozen
+            code, message = ERR_TRIGGER_FAILED, f"sync cycle ended with status {status!r}"
+        raise ConnectionControlPlaneError(code, message)
 
     async def status(self) -> list[dict[str, Any]]:
         """Secret-free per-connection status for ``/api/health`` (spec §16).

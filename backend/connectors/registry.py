@@ -70,6 +70,7 @@ ERR_INGEST_UNAVAILABLE = "ingest_unavailable"
 ERR_CONSENT_REQUIRED = "consent_required"
 ERR_PROBE_UNSUPPORTED = "probe_unsupported"
 ERR_TRIGGER_FAILED = "ingest_failed"
+ERR_OAUTH_AUTH_REJECTED = "oauth_auth_rejected"
 
 #: Ingest cursor kinds (frozen by spec §6) — mail uses ``imap_seq`` /
 #: ``gmail_history``; the relay uses ``relay_seq``.
