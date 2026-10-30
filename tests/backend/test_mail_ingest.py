@@ -581,7 +581,8 @@ class _FakeGmailClient:
                     {"name": "Subject", "value": "Hi"},
                     {"name": "Date", "value": "Mon, 27 Oct 2026 09:00:00 +0000"},
                 ],
-                "bodyData": {"data": "SGkgdGhlcmU="},  # "Hi there"
+                # Real Gmail wire shape: body.data is base64url ("Hi there").
+                "body": {"data": "SGkgdGhlcmU="},
             }
         })
 

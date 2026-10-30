@@ -347,7 +347,7 @@ class ImapPollClient:
 
 
 def _b64url_decode(data: str, charset: str = "utf-8") -> str:
-    """Decode Gmail ``bodyData`` (base64url, padding often stripped).
+    """Decode a Gmail ``body.data`` payload (base64url, padding often stripped).
 
     Restores the required ``=`` padding, then decodes with the part's
     ``charset`` (default utf-8), ``errors=replace`` so a bad byte never
@@ -371,9 +371,10 @@ def _extract_text_body(payload: dict[str, Any]) -> str:
 
     Walks ``payload.parts`` recursively (multipart/mixed, multipart/...);
     prefers ``text/plain`` over ``text/html`` and falls back to html when
-    there is no plain text; skips ``attachable`` parts and non-``text/*``
-    parts; reads the body from ``part.body.bodyData`` (or the top-level
-    ``payload.bodyData`` for a simple message).
+    there is no plain text; skips attachment parts (which carry no inline
+    ``data``) and non-``text/*`` parts; reads the base64url body from
+    ``part.body.data`` (the Gmail Body resource field — the API has no
+    ``bodyData`` object).
     """
     best_plain: str | None = None
     best_html: str | None = None
@@ -389,13 +390,13 @@ def _extract_text_body(payload: dict[str, Any]) -> str:
             if "charset" in token.lower():
                 charset = token.split("=", 1)[1].strip().strip('"') or "utf-8"
         body = node.get("body")
-        attachable = bool(body.get("attachable")) if isinstance(body, dict) else False
-        data = ""
-        if isinstance(body, dict):
-            data = str(body.get("bodyData", {}).get("data", ""))
-        else:
-            data = str(node.get("bodyData", {}).get("data", ""))
-        if attachable or not data:
+        # Real Gmail wire: the payload ``body`` is the Body resource — the
+        # base64url body sits at ``body.data`` (the API has no ``bodyData``
+        # object; attachment parts carry ``attachmentId`` and no inline
+        # ``data``). An empty ``data`` therefore means "no inline body",
+        # which covers both attachments and stripped bodies.
+        data = str(body.get("data", "")) if isinstance(body, dict) else ""
+        if not data:
             return
         text = _b64url_decode(data, charset)
         if mime == "text/plain":

@@ -32,6 +32,7 @@ from backend.connectors.mail.mail_transport import (
     TransportAuthError,
     TransportConnectError,
     _b64url_decode,
+    _extract_text_body,
 )
 
 _ACCOUNT = "user@example.com"
@@ -179,9 +180,11 @@ def gmail_msg_resource(
 
 
 def _plain_payload(text: str) -> dict[str, Any]:
+    # Real Gmail wire shape: payload.body is the Body resource; the
+    # base64url body sits at body.data (no bodyData object in the API).
     return {
         "mimeType": "text/plain; charset=utf-8",
-        "bodyData": {"size": "1", "data": base64.urlsafe_b64encode(text.encode()).decode()},
+        "body": {"size": "1", "data": base64.urlsafe_b64encode(text.encode()).decode()},
     }
 
 
@@ -392,11 +395,11 @@ class TestGmailMultipart:
                     # html first on purpose — plain must still win
                     {
                         "mimeType": "text/html",
-                        "body": {"attachable": False, "bodyData": {"data": html_b64}},
+                        "body": {"data": html_b64},
                     },
                     {
                         "mimeType": "text/plain; charset=utf-8",
-                        "body": {"attachable": False, "bodyData": {"data": exact_b64}},
+                        "body": {"data": exact_b64},
                     },
                 ],
             },
@@ -446,11 +449,14 @@ class TestGmailMultipart:
                         "parts": [
                             {
                                 "mimeType": "text/html",
-                                "body": {"attachable": False, "bodyData": {"data": html_b64}},
+                                "body": {"data": html_b64},
                             },
                         ],
                     },
-                    {"mimeType": "application/pdf", "body": {"attachable": True}},
+                    {
+                        "mimeType": "application/pdf",
+                        "body": {"attachmentId": "att-1", "size": "123"},
+                    },
                 ],
             },
         }
@@ -467,6 +473,46 @@ class TestGmailMultipart:
         )
         assert len(items) == 1
         assert items[0].content_bytes == html.encode("utf-8")
+
+
+class TestGmailWireShape:
+    """A5: pin the canonical Gmail wire contract so the transport decodes
+    real ``users.messages`` payloads (``format=full``).
+
+    The Gmail Body resource carries the base64url body at ``body.data``
+    (there is no ``bodyData`` object), and attachment parts carry
+    ``attachmentId`` with no inline ``data``. A fixture that encoded a
+    made-up shape would let the suite pass while a live payload decoded to
+    an empty body — this class is the guard against that.
+    """
+
+    def test_extract_reads_body_data_not_bodydata(self) -> None:
+        text = "canonical wire shape"
+        data = base64.urlsafe_b64encode(text.encode()).decode()
+        payload = {
+            "mimeType": "text/plain; charset=utf-8",
+            "body": {"size": "20", "data": data},
+        }
+        assert _extract_text_body(payload) == text
+        # An empty body.data (or an attachmentId-only part) yields no body.
+        assert _extract_text_body(
+            {"mimeType": "application/pdf", "body": {"attachmentId": "a1"}}
+        ) == ""
+        assert _extract_text_body(
+            {"mimeType": "text/plain", "body": {"attachmentId": "a2"}}
+        ) == ""
+
+    def test_multipart_prefers_plain_from_body_data(self) -> None:
+        plain_b64 = base64.urlsafe_b64encode(b"plain wins").decode()
+        html_b64 = base64.urlsafe_b64encode(b"<p>html</p>").decode()
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/html", "body": {"data": html_b64}},
+                {"mimeType": "text/plain", "body": {"data": plain_b64}},
+            ],
+        }
+        assert _extract_text_body(payload) == "plain wins"
 
 
 class TestGmailPagination:
@@ -664,7 +710,7 @@ class TestGmailBodyDecoding:
             "id": "enc1",
             "payload": {
                 "mimeType": "text/plain; charset=utf-8",
-                "bodyData": {"size": "1", "data": raw_no_pad},
+                "body": {"size": "1", "data": raw_no_pad},
                 "headers": [
                     {"name": "From", "value": "a@b.c"},
                     {"name": "To", "value": _ACCOUNT},
