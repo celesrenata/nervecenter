@@ -80,10 +80,28 @@ function assertConsoleClean(cap: ConsoleCapture) {
   expect(cap.errors, 'console errors').toEqual([])
 }
 
-async function visitAuthenticated(page: import('@playwright/test').Page, path: string) {
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
+async function seedAuth(page: import('@playwright/test').Page) {
+  // Mint a real access token through the break-glass login (global-setup.mjs
+  // enables NERVE_LOCAL_ADMIN / NERVE_LOCAL_ADMIN_PASSWORD) and seed the
+  // sessionStorage key the auth transport reads (src/api/client.ts). The
+  // AC005-era `localStorage.authToken` was never read by the client, so
+  // auth-gated routes answered 401 and surfaced as console noise.
+  const login = await fetch('http://127.0.0.1:8000/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'local-admin', password: 'e2e-breakglass' }),
   })
+  if (!login.ok) {
+    throw new Error(`seedAuth: break-glass login failed (HTTP ${login.status})`)
+  }
+  const { access_token } = (await login.json()) as { access_token: string }
+  await page.addInitScript((token: string) => {
+    sessionStorage.setItem('nc.accessToken', token)
+  }, access_token)
+}
+
+async function visitAuthenticated(page: import('@playwright/test').Page, path: string) {
+  await seedAuth(page)
   await page.goto(path, { waitUntil: 'domcontentloaded' })
 }
 
