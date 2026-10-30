@@ -1,0 +1,74 @@
+# NerveCenter object-store bootstrap Job (spec §14 — MinIO).
+#
+# Creates the MinIO bucket the api plane writes artifacts into, using the
+# `mc` client bundled in the minio/minio image. It is data-driven from the
+# same `nervecenter-env` keys the app reads (NERVECENTER_OBJECT_STORE_URL /
+# _BUCKET / _ACCESS_KEY / _SECRET_KEY), so the bucket it creates is exactly
+# the bucket the API is configured to use.
+#
+# - `mc mb --ignore-existing` makes this idempotent: re-apply on every
+#   upgrade, like the migrate Job.
+# - No serviceAccountName / no RBAC: the Job only talks to MinIO over the
+#   network (cross-namespace headless service), never to the k8s API.
+# - Cross-namespace reach: MinIO runs in the `minio-service` namespace
+#   (tenant `minio-crawler`); the in-cluster endpoint is the headless
+#   Service `minio-crawler-hl.minio-service.svc:9000`. Credentials are the
+#   tenant root creds (MINIO_ACCESS_KEY / MINIO_SECRET_KEY in
+#   minio-service/minio-secrets) copied into `nervecenter-env` as
+#   NERVECENTER_OBJECT_STORE_ACCESS_KEY / _SECRET_KEY (see
+#   secrets.yaml.example).
+#
+# Ordering: run this Job (or confirm the bucket exists) BEFORE rolling the
+# api Deployment on first deploy; a first deploy without the bucket leaves
+# the object store "not ready" on /api/health.
+#
+# Prerequisite: the `nervecenter-env` Secret carries the four
+# NERVECENTER_OBJECT_STORE_* keys (URL must be `http://` or `https://`
+# `host:port` — an `s3://` form is unusable by `mc alias set`).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nervecenter-object-store-bootstrap
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: object-store-bootstrap
+spec:
+  backoffLimit: 3
+  activeDeadlineSeconds: 120
+  template:
+    metadata:
+      labels:
+        app: object-store-bootstrap
+    spec:
+      # Default service account: the Job makes no k8s API calls, so no
+      # dedicated SA or RBAC is required.
+      serviceAccountName: ""
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          # Same image as the live MinIO tenant (node-cached; bundles `mc`).
+          image: "minio/minio:RELEASE.2025-04-08T15-41-24Z"
+          command:
+            - "/bin/sh"
+            - "-c"
+            - |
+              set -eu
+              echo "Bootstrapping bucket '$NERVECENTER_OBJECT_STORE_BUCKET' at $NERVECENTER_OBJECT_STORE_URL"
+              /usr/bin/mc alias set nervcenter \
+                "$NERVECENTER_OBJECT_STORE_URL" \
+                "$NERVECENTER_OBJECT_STORE_ACCESS_KEY" \
+                "$NERVECENTER_OBJECT_STORE_SECRET_KEY"
+              /usr/bin/mc mb --ignore-existing "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET"
+              /usr/bin/mc ls "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET"
+              echo "bucket $NERVECENTER_OBJECT_STORE_BUCKET ready"
+          envFrom:
+            - secretRef:
+                name: nervecenter-env
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "0.1"
+            limits:
+              memory: "128Mi"
+              cpu: "0.5"

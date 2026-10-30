@@ -23,6 +23,12 @@ resources:
   - nats-deployment.yaml
   - nats-service.yaml
   - migrate-job.yaml
+  # Object-store bootstrap Job (spec §14): creates the MinIO bucket the api
+  # plane uses. Like the migrate Job it is re-applied on every upgrade (idempotent
+  # `mc mb --ignore-existing`). Its NERVECENTER_OBJECT_STORE_* keys come from the
+  # out-of-band `nervecenter-env` Secret (envFrom), resolved at pod runtime —
+  # nothing object-store-related is in this kustomization.
+  - object-store-bootstrap.yaml
   - api-deployment.yaml
   - api-service.yaml
   - mcp-deployment.yaml

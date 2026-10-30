@@ -164,9 +164,16 @@ def config_from_env(env: dict[str, str] | None = None) -> ObjectStoreConfig:
         )
 
     region = source.get(ENV_OBJECT_STORE_REGION, "").strip() or DEFAULT_REGION
-    secure = True
-    if scheme == "http":
-        secure = source.get(ENV_OBJECT_STORE_SECURE, "1").strip() != "0"
+    # Transport security follows the URL scheme by default: an in-cluster
+    # ``http://`` MinIO endpoint is dialed in plain text, while ``s3://`` and
+    # ``https://`` use TLS. ``NERVECENTER_OBJECT_STORE_SECURE`` is an explicit
+    # ``0``/``1`` override (e.g. to TLS an ``http://`` URL that fronts a
+    # reverse proxy). Any other value falls through to the scheme default, so
+    # a plain-HTTP endpoint is never silently upgraded to TLS.
+    secure = scheme != "http"
+    secure_flag = source.get(ENV_OBJECT_STORE_SECURE, "").strip()
+    if secure_flag in ("0", "1"):
+        secure = secure_flag == "1"
     return ObjectStoreConfig(
         scheme="s3",
         url=url,

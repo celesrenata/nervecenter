@@ -62,6 +62,28 @@ services:
       postgres:
         condition: service_healthy
 
+  # --- MinIO (object store, §14; parity with the in-cluster nervecenter bootstrap) ------------------
+  # Local dev defaults the api to this MinIO (mirroring prod's in-cluster headless svc).
+  # The root creds below are local-dev placeholders — override MINIO_ACCESS_KEY / MINIO_SECRET_KEY
+  # (and OBJECT_STORE_*) to match the k8s tenant if desired.
+  minio:
+    image: minio/minio:RELEASE.2025-04-08T15-41-24Z
+    command: server /data --address :9000 --console-address ":9001"
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   # --- api (uvicorn backend.api.app:app :8000) -----------------------------------------------------
   api:
     image: ${API_IMAGE:-nervecenter/api:latest}
@@ -78,11 +100,19 @@ services:
       NERVE_OMNIROUTE_URL: http://omniroute:8080
       NERVE_MOCK_INFER: "1"
       NERVECENTER_MOCK_INFER: "1"
+      # §14 object store — default to the local MinIO (prod-equivalent); unset
+      # OBJECT_STORE_URL to run without one (store degrades to "not configured").
+      NERVECENTER_OBJECT_STORE_URL: ${OBJECT_STORE_URL:-http://minio:9000}
+      NERVECENTER_OBJECT_STORE_BUCKET: ${OBJECT_STORE_BUCKET:-nervcenter-artifacts}
+      NERVECENTER_OBJECT_STORE_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+      NERVECENTER_OBJECT_STORE_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
     depends_on:
       postgres:
         condition: service_healthy
       nats:
         condition: service_started
+      minio:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "python -c 'import urllib.request;urllib.request.urlopen(\"http://127.0.0.1:8000/api/health\",timeout=3)' || exit 1"]
       interval: 15s
@@ -109,3 +139,4 @@ services:
 volumes:
   pgdata:
   jetstream:
+  miniodata:
