@@ -8,7 +8,7 @@ These pin the *pinned cursor contract* the parallel mail-worker owns:
   UIDVALIDITY change resets that folder to a fresh sync.
 - Gmail (``gmail_history``): ``{"history_id": int, "account": str,
   "seen": [...]}`` — resume reuses the saved valid history id (never ``+1``);
-  an expired id (404) triggers a bounded full resync.
+  an expired id (400/404) triggers a bounded full resync.
 
 Wires are faked at the boundary only: a fake ``imaplib``-shaped object for
 the IMAP transport and a fake ``httpx.AsyncClient`` for the Gmail transport
@@ -20,7 +20,10 @@ the same items, no skips, no duplicates.
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import threading
+import time
 from typing import Any
 
 import pytest
@@ -209,6 +212,7 @@ class FakeGmailClient:
         page_size: int = 25,
         start_id: int = 10,
         expired_ids: frozenset[int] = frozenset(),
+        expired_status: int = 404,
         inbox_message_ids: list[str] | None = None,
     ) -> None:
         self._entries = sorted(entries or [], key=lambda e: int(e["id"]))
@@ -216,6 +220,7 @@ class FakeGmailClient:
         self._page_size = page_size
         self._start_id = start_id
         self._expired = expired_ids
+        self._expired_status = expired_status
         self._inbox_ids = list(inbox_message_ids or [])
         self.start_calls = 0
         self.history_calls: list[int] = []  # startHistoryId per call
@@ -251,7 +256,10 @@ class FakeGmailClient:
             self.history_calls.append(start)
             self.history_params.append(dict(params))
             if start in self._expired:
-                return FakeGmailResp(404, {"error": {"code": 404, "message": "expired"}})
+                return FakeGmailResp(
+                    self._expired_status,
+                    {"error": {"code": self._expired_status, "message": "expired"}},
+                )
             return FakeGmailResp(200, self._history_window(start))
         if url.endswith("/users/me/messages"):
             return FakeGmailResp(200, {"messages": [{"id": m} for m in self._inbox_ids]})
@@ -620,6 +628,50 @@ class TestGmailExpiredHistory:
         assert cursor["account"] == _ACCOUNT.lower()
         assert set(cursor["seen"]) == {
             f"{_ACCOUNT.lower()}:gmail:m{n}" for n in (1, 2, 3, 4, 5)
+        }
+
+    async def test_history_400_invalid_argument_triggers_bounded_full_resync(
+        self, monkeypatch: Any
+    ) -> None:
+        """A3/A9: real Gmail reports an expired ``startHistoryId`` as
+        ``400 INVALID_ARGUMENT`` as well as ``404`` — the transport maps both
+        to the same bounded full resync (a raw 400 must not surface as an
+        unhandled HTTP error). Delivery stays exactly-once: the seen-list
+        suppresses resync re-delivery, incremental continues from the fresh
+        baseline."""
+        messages = {
+            mid: (200, gmail_msg_resource(mid, f"s-{mid}", _date(i), _plain_payload(f"b-{mid}")))
+            for i, mid in enumerate(("m1", "m2", "m3", "m4"), start=1)
+        }
+        fake = FakeGmailClient(
+            entries=[_gentry(1, 100, "m4")],
+            messages=messages,
+            start_id=100,
+            expired_ids=frozenset({90}),
+            expired_status=400,
+            inbox_message_ids=["m1", "m2", "m3"],
+        )
+        _install_gmail(monkeypatch, fake)
+        items, cursor = await GmailClient(max_items=25).run(
+            _connector(),
+            {
+                "history_id": 90,
+                "account": _ACCOUNT.lower(),
+                "seen": [
+                    f"{_ACCOUNT.lower()}:gmail:m1",
+                    f"{_ACCOUNT.lower()}:gmail:m3",
+                ],
+            },
+            credentials={"access_token": "tok"},
+        )
+        # m2 is the only resync delivery (m1/m3 suppressed by the durable
+        # seen-list); m4 arrives exactly once via the incremental from the
+        # fresh baseline 100.
+        assert [m.message_id for m in items] == ["gmail:m2", "gmail:m4"]
+        assert fake.start_calls == 1
+        assert cursor["history_id"] == 101
+        assert set(cursor["seen"]) == {
+            f"{_ACCOUNT.lower()}:gmail:m{n}" for n in (1, 2, 3, 4)
         }
 
     async def test_deleted_message_404_skips_that_message_only(
@@ -1078,3 +1130,115 @@ class TestImapErrorMapping:
             await ImapPollClient().run(
                 _connector(), {}, credentials={"username": _ACCOUNT, "password": _SECRET}
             )
+
+
+class TestImapOffLoop:
+    """The blocking imaplib session must run off the event loop.
+
+    The connect → login → select → search → fetch → logout sequence is one
+    synchronous unit (:meth:`ImapPollClient._poll_sync`) handed to
+    ``asyncio.to_thread`` (repo precedent: ``backend.connectors.registry``
+    ``make_imap_probe``) — a slow socket must not stall the shared loop.
+    """
+
+    async def test_poll_sync_is_routed_through_to_thread_and_off_loop(
+        self, monkeypatch: Any
+    ) -> None:
+        import backend.connectors.mail.mail_transport as mt
+
+        fake = FakeImap(
+            folders={
+                "INBOX": {
+                    "uids": {101: imap_msg("A", "<off-1>", "a", _date(1))},
+                    "validity": 1,
+                },
+            }
+        )
+        observed: dict[str, Any] = {}
+
+        class _TracedImap(FakeImap):
+            def select(self, mailbox, readonly=False):
+                observed["thread"] = threading.get_ident()
+                time.sleep(0.2)  # stand-in for blocking socket I/O
+                return super().select(mailbox, readonly=readonly)
+
+        monkeypatch.setattr(
+            mt.imaplib,
+            "IMAP4_SSL",
+            lambda host, port, timeout=None: _TracedImap(folders=fake.folders),
+        )
+
+        # Spy on to_thread: run() must hand _poll_sync — and only it — to it.
+        real_to_thread = asyncio.to_thread
+        routed: list[tuple[Any, tuple[Any, ...]]] = []
+
+        async def spy(func, /, *args, **kwargs):
+            routed.append((func, args))
+            return await real_to_thread(func, *args, **kwargs)
+
+        monkeypatch.setattr(mt.asyncio, "to_thread", spy)
+
+        connector = _connector()
+        loop_thread = threading.get_ident()
+        items, cursor = await ImapPollClient().run(
+            connector,
+            {"uid": 0, "uidvalidity": 1, "folder": "INBOX"},
+            credentials={"username": _ACCOUNT, "password": _SECRET},
+        )
+
+        # The poll still behaves exactly as before (items + cursor contract).
+        assert [m.message_id for m in items] == ["<off-1>"]
+        assert cursor["uid"] == 101
+        assert cursor["folder"] == "INBOX"
+        # The blocking unit is _poll_sync, routed through to_thread...
+        assert len(routed) == 1
+        func, args = routed[0]
+        assert func.__func__ is ImapPollClient._poll_sync
+        assert args[0] is connector
+        # ...and the blocking I/O actually executed off the event-loop thread.
+        assert observed["thread"] is not None
+        assert observed["thread"] != loop_thread
+
+    async def test_slow_imap_poll_does_not_block_the_event_loop(
+        self, monkeypatch: Any
+    ) -> None:
+        import backend.connectors.mail.mail_transport as mt
+
+        class _SlowImap(FakeImap):
+            def select(self, mailbox, readonly=False):
+                time.sleep(0.4)  # simulate a slow / stalled socket
+                return super().select(mailbox, readonly=readonly)
+
+        monkeypatch.setattr(
+            mt.imaplib,
+            "IMAP4_SSL",
+            lambda host, port, timeout=None: _SlowImap(
+                folders={
+                    "INBOX": {
+                        "uids": {101: imap_msg("A", "<off-2>", "a", _date(1))},
+                        "validity": 1,
+                    },
+                }
+            ),
+        )
+
+        beats = [0]
+
+        async def heartbeat():
+            for _ in range(3):
+                beats[0] += 1
+                await asyncio.sleep(0.1)
+
+        hb = asyncio.create_task(heartbeat())
+        items, _ = await ImapPollClient().run(
+            _connector(),
+            {"uid": 0, "uidvalidity": 1, "folder": "INBOX"},
+            credentials={"username": _ACCOUNT, "password": _SECRET},
+        )
+        await asyncio.gather(hb, return_exceptions=True)
+
+        # While the 0.4s blocking select ran in a worker thread, the loop
+        # stayed responsive and the heartbeat ticked 3x (t≈0/0.1/0.2). A
+        # blocking run on the loop would leave exactly 1 tick.
+        assert [m.message_id for m in items] == ["<off-2>"]
+        assert beats[0] >= 3

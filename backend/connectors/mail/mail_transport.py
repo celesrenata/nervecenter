@@ -29,7 +29,7 @@ items, with no skips and no duplicates):
   UIDVALIDITY change resets that folder to a fresh sync.
 - Gmail (``gmail_history``): ``{"history_id": int, "account": str,
   "seen": [...]}`` — resume reuses the saved *valid* history id (IDs are
-  non-contiguous, so never ``+1``); an expired id (404) triggers a bounded
+  non-contiguous, so never ``+1``); an expired id (400/404) triggers a bounded
   full resync before continuing incrementally.
 
 The ``seen`` list is the durable, capped dedup guard persisted in the same
@@ -41,6 +41,7 @@ in the database and must never contain a secret (§4).
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import email
@@ -84,7 +85,7 @@ class TransportConnectError(Exception):
 
 
 class _HistoryExpired(Exception):
-    """Internal: the saved Gmail history id is expired (history.get → 404)."""
+    """Internal: the saved Gmail history id is expired (history.get → 400/404)."""
 
 
 # -- seen-list helpers (mirror backend.ingest.seen; kept local so the
@@ -250,6 +251,46 @@ class ImapPollClient:
         stored_uid = int(cursor.get("uid", 0) or 0)
         stored_validity = int(cursor.get("uidvalidity", 0) or 0)
         seen = _seen_keys(cursor)
+        # The imaplib session is blocking stdlib socket I/O and must not run
+        # on the event loop. The whole connect → login → select → search →
+        # fetch → logout sequence is one synchronous unit executed in a
+        # worker thread (repo precedent: backend/connectors/registry.py
+        # ``make_imap_probe`` — "the real probe blocks on imaplib, so it runs
+        # in a worker thread").
+        return await asyncio.to_thread(
+            self._poll_sync,
+            connector,
+            username,
+            password,
+            account,
+            folder,
+            stored_uid,
+            stored_validity,
+            seen,
+            cursor,
+        )
+
+    def _poll_sync(
+        self,
+        connector: MailConnector,
+        username: str,
+        password: str,
+        account: str,
+        folder: str,
+        stored_uid: int,
+        stored_validity: int,
+        seen: list[str],
+        cursor: dict[str, Any],
+    ) -> tuple[list[MailItem], dict[str, Any]]:
+        """Blocking imaplib poll (connect → login → select → search → fetch).
+
+        Runs in a worker thread via :meth:`run` (see the ``asyncio.to_thread``
+        call there). ``seen`` is the fresh list from :func:`_seen_keys` and is
+        only ever *reassigned* (via ``_mark_seen``), never mutated in place,
+        so the caller's cursor is left untouched. Raises
+        :class:`TransportAuthError` / :class:`TransportConnectError` exactly
+        as the module docstring prescribes.
+        """
         conn: imaplib.IMAP4 | imaplib.IMAP4_SSL | None = None
         try:
             if connector.ssl:
@@ -433,7 +474,7 @@ class GmailClient:
       ``startHistoryId`` on an empty account — A1/A2).
     - **Resume**: reuse the saved *valid* ``history_id`` (A3) — history ids
       are non-contiguous, so the cursor is never ``+1``.
-    - **Expired id** (``history.get`` → 404): a bounded full resync
+    - **Expired id** (``history.get`` → 400 or 404): a bounded full resync
       (``history.start`` + ``users/me/messages`` under the INBOX label, capped
       by ``max_items``) then continue incrementally from the fresh baseline
       (A3/A9).
@@ -481,7 +522,7 @@ class GmailClient:
                         client, token, saved_history, items, seen, account
                     )
                 except _HistoryExpired:
-                    # A3/A9: the saved id expired (404) → bounded full
+                    # A3/A9: the saved id expired (400/404) → bounded full
                     # resync, then continue incrementally from the baseline.
                     baseline, seen = await self._full_resync(
                         client, token, items, seen, account
@@ -604,7 +645,13 @@ class GmailClient:
             )
             if resp.status_code in (401, 403):
                 raise TransportAuthError(f"gmail history -> {resp.status_code}")
-            if resp.status_code == 404:
+            # Real Gmail signals an expired ``startHistoryId`` with
+            # ``400 INVALID_ARGUMENT`` as well as ``404``; both map to the
+            # bounded full resync. The resync path is idempotent (the seen-
+            # list suppresses re-delivery), so over-triggering on a non-
+            # expiry 400 is safe — under-triggering (a raw 400 → unhandled
+            # ``raise_for_status()``) is not.
+            if resp.status_code in (400, 404):
                 raise _HistoryExpired("expired historyId")
             if resp.status_code >= 500:
                 raise TransportConnectError(f"gmail history -> {resp.status_code}")
