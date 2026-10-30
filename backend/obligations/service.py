@@ -694,18 +694,56 @@ class ObligationsTodayProvider:
         except Exception:  # noqa: BLE001 — degrade
             return []
 
+    async def waiting_on(self, ctx: Any) -> list[dict[str, Any]]:
+        """Obligations whose ball is in someone else's court (P2-F §4).
+
+        Normalised to the Today item shape (``kind`` / ``deadline_at``) so the
+        aggregator can dedup against ``needs_you`` and sort by deadline.
+        """
+        registry = getattr(ctx, "registry", None)
+        if registry is None:
+            return []
+        try:
+            svc = ObligationsService(registry.obligations)
+            rows = await svc.waiting_on(limit=50)
+            out = []
+            for d in rows:
+                out.append(
+                    {
+                        "id": d["id"],
+                        "kind": "obligation",
+                        "title": d.get("title"),
+                        "deadline_at": d.get("due_at"),
+                        "obligation_type": d.get("obligation_type"),
+                        "status": d.get("status"),
+                        "next_action": d.get("next_action"),
+                        "consequence": d.get("consequence"),
+                    }
+                )
+            return out
+        except Exception:  # noqa: BLE001 — degrade
+            return []
+
+
+_obligations_today_provider_singleton: ObligationsTodayProvider | None = None
+
 
 def register_obligations_today_provider() -> ObligationsTodayProvider:
     """Register :class:`ObligationsTodayProvider` with the Today aggregator.
 
-    Call once at app startup (idempotent — the Today registry is a set).
-    Returns the provider for testability.
+    Call once at app startup. Returns the single process-wide provider
+    instance so that repeated registrations (multiple ``create_app()``
+    calls in tests, restarts) resolve to the same object — the aggregator's
+    identity dedup then keeps exactly one copy, so a waiting-on obligation
+    is never double-counted across sections.
     """
+    global _obligations_today_provider_singleton
+    if _obligations_today_provider_singleton is None:
+        _obligations_today_provider_singleton = ObligationsTodayProvider()
     from backend.api.endpoints import today
 
-    provider = ObligationsTodayProvider()
-    today.register_today_provider(provider)
-    return provider
+    today.register_today_provider(_obligations_today_provider_singleton)
+    return _obligations_today_provider_singleton
 
 
 __all__ = [

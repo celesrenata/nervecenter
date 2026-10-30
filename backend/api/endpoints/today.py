@@ -64,6 +64,7 @@ from sqlalchemy import select, text
 from backend.persistence.models.personal import (
     AttentionItemRow,
     CommitmentRow,
+    ConnectionRow,
     PreferenceRow,
 )
 
@@ -130,6 +131,13 @@ class TodaySectionProvider(Protocol):
 
     async def handled(self, ctx: TodayContext) -> list[dict[str, Any]]:
         """Items completed/deferred in the last 24 hours."""
+        ...
+
+    async def waiting_on(self, ctx: TodayContext) -> list[dict[str, Any]]:
+        """Responsibilities awaiting others / services (optional).
+
+        Providers may omit this method; the aggregator falls back to ``[]``.
+        """
         ...
 
 
@@ -292,6 +300,9 @@ class _AttentionProvider:
                 )
         return out
 
+    async def waiting_on(self, ctx: TodayContext) -> list[dict[str, Any]]:
+        return []
+
 
 class _CommitmentsProvider:
     """Durable ``commitments`` (F+J plane)."""
@@ -349,6 +360,9 @@ class _CommitmentsProvider:
                     }
                 )
         return out
+
+    async def waiting_on(self, ctx: TodayContext) -> list[dict[str, Any]]:
+        return []
 
 
 class _CalendarProvider:
@@ -443,6 +457,9 @@ class _CalendarProvider:
     async def handled(self, ctx: TodayContext) -> list[dict[str, Any]]:
         return []
 
+    async def waiting_on(self, ctx: TodayContext) -> list[dict[str, Any]]:
+        return []
+
 
 register_today_provider(_AttentionProvider())
 register_today_provider(_CommitmentsProvider())
@@ -463,11 +480,12 @@ def _log_provider_failed(provider: Any, section: str, exc: Exception) -> None:
     )
 
 
-async def _collect_sections(ctx: TodayContext) -> tuple[list, list, list]:
+async def _collect_sections(ctx: TodayContext) -> tuple[list, list, list, list]:
     """Run every provider, isolating per-provider failures (log, continue)."""
     needs: list[dict[str, Any]] = []
     coming: list[dict[str, Any]] = []
     handled: list[dict[str, Any]] = []
+    waiting: list[dict[str, Any]] = []
     for provider in _providers():
         try:
             needs.extend(await provider.needs_you(ctx))
@@ -481,11 +499,20 @@ async def _collect_sections(ctx: TodayContext) -> tuple[list, list, list]:
             handled.extend(await provider.handled(ctx))
         except Exception as exc:  # noqa: BLE001
             _log_provider_failed(provider, "handled", exc)
+        waiting_method = getattr(provider, "waiting_on", None)
+        if waiting_method is not None:
+            try:
+                waiting.extend(await waiting_method(ctx))
+            except Exception as exc:  # noqa: BLE001
+                _log_provider_failed(provider, "waiting_on", exc)
 
     # coming_up must not repeat an item already in needs_you (overlapping
     # due windows) — dedup against the pre-truncation set.
     needs_in = {(it.get("kind"), str(it.get("id"))) for it in needs}
     coming = [c for c in coming if (c.get("kind"), str(c.get("id"))) not in needs_in]
+    # waiting_on must not repeat an item already in needs_you (a waiting
+    # obligation is still an "other" for the user, not an own decision).
+    waiting = [w for w in waiting if (w.get("kind"), str(w.get("id"))) not in needs_in]
 
     needs = _needs_you_sort(needs)[:NEEDS_YOU_CAP]
     coming = sorted(
@@ -494,7 +521,10 @@ async def _collect_sections(ctx: TodayContext) -> tuple[list, list, list]:
     handled = sorted(
         handled, key=lambda h: (h.get("at") or "", str(h.get("id"))), reverse=True
     )[:HANDLED_CAP]
-    return needs, coming, handled
+    waiting = sorted(
+        waiting, key=lambda w: (w.get("deadline_at") or "9999", str(w.get("id")))
+    )[:NEEDS_YOU_CAP]
+    return needs, coming, handled, waiting
 
 
 def _apply_low_energy(needs: list, coming: list) -> tuple[list, list]:
@@ -537,6 +567,60 @@ async def _read_low_energy(request: Request) -> bool:
         return False
 
 
+#: Source Health: a source whose last successful sync is older than this is
+#: "stale" (it *was* working, now it is silent — visibly distinct from an
+#: empty inbox, spec P2-F §5).
+SOURCE_STALE_AFTER = timedelta(hours=24)
+
+
+async def _source_health(ctx: TodayContext) -> list[dict[str, Any]]:
+    """P2-F §5: what NerveCenter actually knows and whether each source is
+    current — ``fresh`` (synced within 24h) vs ``stale`` (was working, now
+    silent) vs ``disconnected`` (no auth / error). Reads durable
+    ``connections``; degrades to ``[]`` when there is no registry.
+
+    Honest semantics: no rows configured → empty list (nothing is *known*),
+    which is the "no sources configured" state, not "all sources stale".
+    """
+    if ctx.registry is None:
+        return []
+    try:
+        async with ctx.registry.session_factory() as session:
+            rows = (
+                (await session.execute(select(ConnectionRow))).scalars().all()
+            )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("today.source_health_probe_failed", error=str(exc))
+        return []
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if not row.enabled:
+            continue
+        last_success = _ensure_utc(row.last_success_at)
+        if row.auth_status in ("unconfigured", "auth_expired", "auth_failed"):
+            status = "disconnected"
+        elif row.operational_status in ("error", "degraded"):
+            status = "stale"
+        elif last_success is None:
+            # Configured + authenticated but never synced.
+            status = "stale" if row.operational_status == "never_synced" else "disconnected"
+        elif ctx.now - last_success <= SOURCE_STALE_AFTER:
+            status = "fresh"
+        else:
+            status = "stale"
+        out.append(
+            {
+                "id": row.id,
+                "kind": f"source:{row.kind}",
+                "label": row.label or row.kind,
+                "status": status,
+                "last_success_at": _iso(last_success),
+                "detail": row.last_error_message,
+            }
+        )
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -564,14 +648,25 @@ async def get_today(request: Request) -> dict[str, Any]:
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
     ctx = TodayContext(registry=getattr(request.app.state, "repository_registry", None), now=now)
-    needs, coming, handled = await _collect_sections(ctx)
+    needs, coming, handled, waiting = await _collect_sections(ctx)
     low_energy = await _read_low_energy(request)
+    source_health = await _source_health(ctx)
     if low_energy:
         needs, coming = _apply_low_energy(needs, coming)
+        # Spec: Low Energy keeps urgent deadlines visible — waiting items
+        # collapse to the ones actually near due (48h), in deadline order.
+        window = now + COMING_UP_WINDOW
+        waiting = [
+            w
+            for w in waiting
+            if (d := _ensure_utc_iso(w.get("deadline_at"))) is not None and d <= window
+        ][:LOW_ENERGY_COMING_UP_CAP]
     return {
         "needs_you": needs,
         "coming_up": coming,
         "handled": handled,
+        "waiting_on": waiting,
+        "source_health": source_health,
         "low_energy": low_energy,
         # Visual-complexity flag for the UI (spec §13 reduced layout). No
         # streak/missed fields exist in this shape by design.

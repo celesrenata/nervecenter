@@ -50,12 +50,13 @@ Legend: `[ ]` open · `[x]` done · `[-]` in progress · `[!]` live-verification
 
 ## P2-F — Today 3.0
 
-- [ ] Sectioned Today: Needs You / Coming Up / Handled / Waiting On / Source Health from the obligation plane + source freshness.
-- [ ] Handled log (durable) of system-organized actions.
-- [ ] Source Health: fresh / stale / disconnected per connector (from ingest cursors + last_verified_at).
-- [ ] Low Energy collapse mode wired into Today response.
+- [x] Sectioned Today (backend API): Needs You / Coming Up / Handled / Waiting On / Source Health from the obligation plane + source freshness. `waiting_on` + `source_health` added to the `TodaySectionProvider` protocol and the aggregator; obligations provider contributes durable `waiting_on` rows.
+- [x] Handled log (durable) of system-organized actions (obligations last-24h done rows).
+- [x] Source Health: fresh / stale / disconnected per connector (durable `connections` table — auth_status / operational_status / last_success_at, 24h freshness threshold).
+- [x] Low Energy collapse mode wired into Today response (needs_you → single item; coming_up + waiting_on → near-due only).
+- [x] Tests: section content, stale vs empty vs disconnected, LEM waiting collapse, singleton provider dedup.
 - [ ] Web TodayView sections; Apple Today surface reads same API.
-- [ ] Tests: section content, stale vs empty, LEM; [!] live-gates: real Postgres + iPhone/Watch delivery.
+- [ ] [!] live-gates: real Postgres + iPhone/Watch delivery (UNVERIFIED).
 
 ## P2-QA + Evidence
 

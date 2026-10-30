@@ -32,14 +32,24 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from backend.api.app import create_app
+from backend.obligations.service import register_obligations_today_provider
+from backend.persistence.models.obligations import ObligationRow
 from backend.persistence.models.personal import (
     AttentionItemRow,
     CalendarAccountRow,
     CalendarEventRow,
     CommitmentRow,
+    ConnectionRow,
     PreferenceRow,
 )
 from backend.persistence.repositories import RepositoryRegistry
+
+# The obligations Today provider is normally registered by wiring.py at app
+# startup; in these unit tests we only mount ``today.router``, so register the
+# (single, module-level) instance once at import — matching how the built-in
+# providers register at import time. The ``is``-dedup keeps this stable across
+# fixtures, so no per-test instance accumulation.
+register_obligations_today_provider()
 
 TODAY_TABLES = [
     AttentionItemRow.__table__,
@@ -47,6 +57,8 @@ TODAY_TABLES = [
     CalendarAccountRow.__table__,
     CalendarEventRow.__table__,
     CommitmentRow.__table__,
+    ConnectionRow.__table__,
+    ObligationRow.__table__,
 ]
 
 NOW = datetime(2026, 10, 27, 12, 0, 0, tzinfo=UTC)  # reference clock (tests)
@@ -318,3 +330,138 @@ class TestTodayWired:
             body = client.get("/api/today").json()
         assert len(body["needs_you"]) == 3
         assert body["simplified"] is False
+
+
+def _obligation_row(**kw) -> ObligationRow:
+    base = dict(
+        obligation_type="waiting_on",
+        origin="inferred",
+        source_account="gmail",
+        dedup_key=f"waiting_on|test:{uuid4()}",
+        title="Wait for reply",
+        status="waiting",
+        trigger={},
+        uncertainty={},
+        evidence=[],
+    )
+    base.update(kw)
+    return ObligationRow(**base)
+
+
+def _connection_row(**kw) -> ConnectionRow:
+    base = dict(
+        kind="gmail",
+        label="Gmail",
+        auth_status="authenticated",
+        operational_status="healthy",
+        last_success_at=NOW - timedelta(hours=1),
+        last_attempt_at=NOW - timedelta(hours=1),
+        sync_cursor={},
+        import_progress={},
+        enabled=True,
+        config={},
+    )
+    base.update(kw)
+    return ConnectionRow(**base)
+
+
+# ---------------------------------------------------------------------------
+# P2-F: Waiting On + Source Health sections
+# ---------------------------------------------------------------------------
+
+
+class TestTodayP2FSections:
+    """P2-F §4/§5: ``waiting_on`` and ``source_health`` in the Today response."""
+
+    async def test_response_shape_includes_waiting_on_and_source_health(
+        self, wired
+    ):
+        app, _ = wired
+        with TestClient(app) as client:
+            body = client.get("/api/today").json()
+        assert body["waiting_on"] == []
+        assert body["source_health"] == []
+        # The two new sections never 500 on an empty DB.
+        assert body["low_energy"] is False
+
+    async def test_waiting_on_from_durable_obligation_rows(self, wired):
+        """A durable ``obligation`` row of type ``waiting_on`` surfaces in
+        the Waiting On section with the Today item shape."""
+        app, _ = wired
+        engine = app.state._test_engine
+        await _insert(
+            engine,
+            _obligation_row(
+                title="Waiting on Dana for the contract",
+                due_at=NOW + timedelta(hours=3),
+                next_action="Nudge Dana",
+            ),
+        )
+        with TestClient(app) as client:
+            body = client.get("/api/today").json()
+        assert len(body["waiting_on"]) == 1
+        item = body["waiting_on"][0]
+        assert item["kind"] == "obligation"
+        assert item["title"] == "Waiting on Dana for the contract"
+        assert item["deadline_at"]
+        assert item["next_action"] == "Nudge Dana"
+        # Not duplicated into needs_you / coming_up.
+        assert all(i.get("id") != item["id"] for i in body["needs_you"])
+        assert all(c.get("id") != item["id"] for c in body["coming_up"])
+
+    async def test_waiting_on_collapses_to_near_due_under_low_energy(
+        self, wired
+    ):
+        """Low Energy keeps only the near-due waiting items (48h window)."""
+        app, _ = wired
+        engine = app.state._test_engine
+        near = _obligation_row(title="Near", due_at=NOW + timedelta(hours=6))
+        far = _obligation_row(title="Far", due_at=NOW + timedelta(days=30))
+        await _insert(
+            engine,
+            near,
+            far,
+            PreferenceRow(key="today.low_energy_mode", value={"low_energy": True}),
+        )
+        with TestClient(app) as client:
+            body = client.get("/api/today").json()
+        assert body["low_energy"] is True
+        assert [w["title"] for w in body["waiting_on"]] == ["Near"]
+
+    async def test_source_health_fresh_stale_disconnected(self, wired):
+        """Stale connector data is visibly distinct from an empty inbox."""
+        app, _ = wired
+        engine = app.state._test_engine
+        await _insert(
+            engine,
+            # Healthy: last sync 1h ago.
+            _connection_row(kind="gmail", label="Gmail"),
+            # Stale: last success 48h ago.
+            _connection_row(
+                kind="imap",
+                label="Old IMAP",
+                last_success_at=NOW - timedelta(hours=48),
+                last_attempt_at=NOW - timedelta(hours=48),
+            ),
+            # Disconnected: auth expired.
+            _connection_row(
+                kind="imessage",
+                label="iMessage",
+                auth_status="auth_expired",
+                operational_status="error",
+                last_success_at=NOW - timedelta(days=10),
+                last_error_message="token expired",
+            ),
+            # Disabled: must not appear.
+            _connection_row(kind="calendar", label="Disabled", enabled=False),
+        )
+        with TestClient(app) as client:
+            body = client.get("/api/today").json()
+        health = {h["label"]: h for h in body["source_health"]}
+        assert set(health) == {"Gmail", "Old IMAP", "iMessage"}
+        assert health["Gmail"]["status"] == "fresh"
+        assert health["Gmail"]["kind"] == "source:gmail"
+        assert health["Old IMAP"]["status"] == "stale"
+        assert health["iMessage"]["status"] == "disconnected"
+        assert health["iMessage"]["detail"] == "token expired"
+        assert "Disabled" not in health
