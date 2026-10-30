@@ -93,6 +93,7 @@ from schemas.goals import Goal as GoalSchema
 import backend.persistence.models.bills  # noqa: F401
 import backend.persistence.models.routines  # noqa: F401
 import backend.persistence.models.wellness  # noqa: F401
+import backend.persistence.models.obligations  # noqa: F401
 from schemas.relationships import TemporalWindow
 from schemas.tasks import Task as TaskSchema
 
@@ -156,6 +157,8 @@ TABLES_WITH_ID = frozenset(
         "routines",
         "routine_check_ins",
         "sleep_records",
+        # Unified obligation plane, Alembic 012 (P2-A — Personal Reliability).
+        "obligations",
     }
 )
 
@@ -169,6 +172,13 @@ TEMPORAL_COLUMNS = {
     "decisions": ("decided_at",),
     "entities": ("valid_from", "valid_to"),
     "relationships": ("valid_from", "valid_to", "asserted_at"),
+    "obligations": (
+        "due_at",
+        "last_verified_at",
+        "snooze_until",
+        "dismissed_at",
+        "completed_at",
+    ),
 }
 
 #: FK/ID-like column names that must be ``String`` (not UUID) in the ORM.

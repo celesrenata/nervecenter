@@ -22,6 +22,7 @@ from .communications_repo import CommunicationsRepository
 from .commitments_repo import CommitmentsRepository
 from .connections_repo import ConnectionsRepository, SecretCodec
 from .import_repo import ImportRepository
+from .obligations_repo import ObligationsRepository
 from .relay_seen_repo import RelaySeenRepository
 from .routines_repo import RoutinesRepository
 from .wellness_repo import WellnessRepository
@@ -127,6 +128,11 @@ class RepositoryRegistry:
     def relay_seen(self) -> RelaySeenRepository:
         """Durable per-device relay seen messages — the authoritative dedup gate (workstream H)."""
         return RelaySeenRepository(self._session_factory)
+
+    @property
+    def obligations(self) -> ObligationsRepository:
+        """Durable unified obligation plane (P2-A — Personal Reliability)."""
+        return ObligationsRepository(self._session_factory)
 
 
 __all__ = ["RepositoryRegistry"]

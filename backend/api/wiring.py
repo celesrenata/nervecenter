@@ -407,6 +407,24 @@ async def wire_dependencies(target: FastAPI) -> None:
         except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
             log.warning("api.wiring.routines_today_provider_failed", error=str(exc))
 
+    # Today section providers (P2-A): the unified obligation plane registers a
+    # Today provider that surfaces actionable obligations (needs_you),
+    # due-within-window obligations (coming_up), and the last-24h handled log.
+    # Same tolerance pattern as the bills/routines blocks above: no durable
+    # registry -> no-op, a missing module is tolerated, and any failure
+    # degrades to a warning so startup never crashes.
+    if getattr(target.state, "repository_registry", None) is not None:
+        try:
+            from backend.obligations.service import (
+                register_obligations_today_provider,
+            )
+
+            register_obligations_today_provider()
+        except ImportError:
+            pass  # obligations package absent from this build — no-op
+        except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
+            log.warning("api.wiring.obligations_today_provider_failed", error=str(exc))
+
     # Wellness sleep seam (spec §10, frozen by workstream H): an async
     # ``days -> list[{bed_at, wake_at, duration_minutes, source}]`` callable
     # that the wellness trends endpoint resolves at request time from

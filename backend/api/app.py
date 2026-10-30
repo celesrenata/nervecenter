@@ -73,6 +73,7 @@ from backend.api.endpoints import (
     metrics,
     models,
     models_history,
+    obligations,
     overview,
     relationships,
     relay,
@@ -140,6 +141,7 @@ ALL_ROUTERS = (
     today.router,
     wellness.router,
     bills.router,
+    obligations.router,
 )
 
 

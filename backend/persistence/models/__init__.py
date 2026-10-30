@@ -12,6 +12,8 @@ by schema contract:
 - :mod:`~backend.persistence.models.tasks` — Task, TaskRun.
 - :mod:`~backend.persistence.models.goals` — Goal, AgentResult.
 - :mod:`~backend.persistence.models.planned_changes` — PlannedChange.
+- :mod:`~backend.persistence.models.obligations` — :class:`ObligationRow`
+  (P2-A unified obligation plane).
 - :mod:`~backend.persistence.models.auth` — auth infrastructure (S101):
   :class:`AuthSession`, :class:`AuthDevice`, :class:`PairingChallenge`,
   :class:`ApprovalRecord`.
@@ -29,6 +31,12 @@ from .events import Event
 from .evidence import Evidence
 from .goals import AgentResult, Goal
 from .incidents_agents import Agent, Incident
+from .obligations import (
+    OBLIGATION_ORIGINS,
+    OBLIGATION_STATUSES,
+    OBLIGATION_TYPES,
+    ObligationRow,
+)
 from .planned_changes import PlannedChange
 from .relationships import Relationship
 from .tasks import Task, TaskRun
@@ -57,4 +65,8 @@ __all__ = [
     "AuthDevice",
     "PairingChallenge",
     "ApprovalRecord",
+    "ObligationRow",
+    "OBLIGATION_TYPES",
+    "OBLIGATION_ORIGINS",
+    "OBLIGATION_STATUSES",
 ]
