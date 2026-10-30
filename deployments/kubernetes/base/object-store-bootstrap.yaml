@@ -6,6 +6,20 @@
 # _BUCKET / _ACCESS_KEY / _SECRET_KEY), so the bucket it creates is exactly
 # the bucket the API is configured to use.
 #
+# It then proves the bucket is *usable*, not just present, with a disposable
+# write/read/delete round-trip on `bootstrap/verify-<timestamp>.txt`:
+#
+#   1. PUT the probe object (body: "nervcenter-object-store-bootstrap"),
+#   2. GET it back (`mc cat`) and assert the body matches byte-for-byte,
+#   3. DELETE it,
+#   4. assert the `bootstrap/` listing no longer contains the key.
+#
+# Every step runs under `set -eu`, so the Job exits non-zero on the first
+# failure — the Job log is the live evidence that a real put/get/delete
+# worked against the configured endpoint (Workstream D requirement). The
+# probe key is left behind only if the run fails mid-way, by design: a
+# re-run uses a fresh timestamped key, so failures are inspectable.
+#
 # - `mc mb --ignore-existing` makes this idempotent: re-apply on every
 #   upgrade, like the migrate Job.
 # - No serviceAccountName / no RBAC: the Job only talks to MinIO over the
@@ -62,6 +76,37 @@ spec:
               /usr/bin/mc mb --ignore-existing "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET"
               /usr/bin/mc ls "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET"
               echo "bucket $NERVECENTER_OBJECT_STORE_BUCKET ready"
+              # Disposable write/read/delete round-trip (Workstream D evidence).
+              # set -eu makes any failing step abort the Job with a non-zero exit.
+              BODY="nervcenter-object-store-bootstrap"
+              KEY="bootstrap/verify-$(date -u +%Y%m%dT%H%M%SZ).txt"
+              echo "$BODY" > /tmp/verify-body.txt
+              echo "verify: writing probe object '$KEY'"
+              /usr/bin/mc cp /tmp/verify-body.txt "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET/$KEY"
+              echo "verify: reading probe object back"
+              /usr/bin/mc cat "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET/$KEY" > /tmp/verify-read.txt
+              if [ "$(cat /tmp/verify-read.txt)" != "$BODY" ]; then
+                echo "verify: FAIL — read body does not match written body" >&2
+                exit 1
+              fi
+              echo "verify: read body matches"
+              echo "verify: deleting probe object"
+              /usr/bin/mc rm "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET/$KEY"
+              # POSIX-only assertion (the minio image has no grep): a
+              # recursive LIST of the `bootstrap/` prefix must contain no line
+              # mentioning the probe key.
+              REMOVED_OK=1
+              for LINE in $(/usr/bin/mc ls --recursive "nervcenter/$NERVECENTER_OBJECT_STORE_BUCKET/bootstrap/"); do
+                case "$LINE" in
+                  *"$KEY"*) REMOVED_OK=0 ;;
+                esac
+              done
+              if [ "$REMOVED_OK" != "1" ]; then
+                echo "verify: FAIL — probe object still listed after delete: $KEY" >&2
+                exit 1
+              fi
+              echo "verify: probe object deleted — write/read/delete round-trip OK"
+              rm -f /tmp/verify-body.txt /tmp/verify-read.txt
           envFrom:
             - secretRef:
                 name: nervecenter-env
