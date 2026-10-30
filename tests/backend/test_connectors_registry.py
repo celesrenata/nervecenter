@@ -15,7 +15,9 @@ file-backed SQLite engine — no network, no real IMAP:
 - sync/import: no trigger → honest ``ingest_unavailable`` (operational
   ``error``); trigger success/failure → ``syncing`` bookkeeping, import-job
   lifecycle, ``degraded`` then ``error`` on repeated failure;
-- OAuth start/complete with an injectable token exchanger;
+- OAuth start/complete with an injectable token exchanger, including the
+  PKCE (S256) challenge/verifier pair and the callback-state binding that
+  rejects a forged ``state`` (CSRF guard, P1-106);
 - the relay plane: pair (token returned once), register (constant-time
   check), deduped batch ingest, health, and the consent gate on
   initial-history import.
@@ -23,6 +25,8 @@ file-backed SQLite engine — no network, no real IMAP:
 
 from __future__ import annotations
 
+import base64
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -38,6 +42,7 @@ from backend.connectors.registry import (
     APP_PASSWORD,
     ACCESS_TOKEN,
     CURSOR_RELAY,
+    REFRESH_TOKEN,
     RELAY_TOKEN,
     ConnectionControlPlane,
     ConnectionControlPlaneError,
@@ -53,6 +58,7 @@ from backend.persistence.models.personal import (
     IngestCursorRow,
     PersonIdentityRow,
     PersonRow,
+    RelaySeenMessageRow,
     SecretRow,
 )
 from backend.persistence.repositories import RepositoryRegistry
@@ -66,6 +72,7 @@ PERSONAL_TABLES = [
     ConversationRow.__table__,
     ImportJobRow.__table__,
     IngestCursorRow.__table__,
+    RelaySeenMessageRow.__table__,
 ]
 
 IMAP_CONFIG = {"host": "imap.example.org", "port": 993, "account": "me@example.org"}
@@ -103,14 +110,35 @@ class FakeTrigger:
             raise self._fail
 
 
-class FakeExchanger:
-    """A :class:`TokenExchanger` returning a fixed token."""
+def _s256(verifier: str) -> str:
+    """RFC 7636 §4.1: base64url(SHA-256(verifier)) without padding."""
+    digest = hashlib.sha256(verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
 
-    def __init__(self, token: str = "oauth-access-token"):
+
+def _url_query(query: str) -> dict[str, str]:
+    """Parse a URL query string into a dict (test helper for authorize URLs)."""
+    from urllib.parse import parse_qs
+
+    return {k: v[0] for k, v in parse_qs(query).items()}
+
+
+class FakeExchanger:
+    """A :class:`TokenExchanger` returning a fixed token.
+
+    Accepts either a bare string (legacy access-token shape) or a dict
+    grant mapping (``{"access_token": …, "refresh_token": …}``) to mirror
+    the production relay's code-exchange result."""
+
+    def __init__(
+        self, token: str | dict[str, str] = "oauth-access-token"
+    ) -> None:
         self.calls: list[tuple[str, str, str]] = []
         self._token = token
 
-    async def exchange(self, provider: str, code: str, state: str) -> str:
+    async def exchange(
+        self, provider: str, code: str, state: str
+    ) -> str | dict[str, str]:
         self.calls.append((provider, code, state))
         return self._token
 
@@ -550,10 +578,11 @@ class TestOauth:
         row = await plane.create_connection(kind="graph_mail")
         exchanger = FakeExchanger("ms-token")
         plane.set_token_exchanger(exchanger)
-        result = await plane.complete_oauth(row.id, code="c1", state="s1")
+        flow = await plane.start_oauth(row.id)
+        result = await plane.complete_oauth(row.id, code="c1", state=flow["state"])
         assert result["ok"] is True
         assert result["auth_status"] == "authenticated"
-        assert exchanger.calls == [("microsoft", "c1", "s1")]
+        assert exchanger.calls == [("microsoft", "c1", flow["state"])]
         stored = await registry.connections.get_secret(
             kind=ACCESS_TOKEN, owner_kind="connection", owner_id=row.id
         )
@@ -572,20 +601,137 @@ class TestOauth:
         assert "ms-token" not in str(secret_row.payload)
         assert vault.decrypt_secret(secret_row.payload) == "ms-token"
 
+    async def test_complete_oauth_grant_stores_both_durable_kinds(self, env):
+        """A grant-mapping exchanger persists both the durable access token
+        and the durable refresh token; a legacy string exchanger persists
+        only the access token (refresh token is absent)."""
+        plane, registry, vault, _ = env
+        row = await plane.create_connection(kind="gmail")
+        exchanger = FakeExchanger(
+            {"access_token": "g-at-1", "refresh_token": "g-rt-1"}
+        )
+        plane.set_token_exchanger(exchanger)
+        flow = await plane.start_oauth(row.id)
+        result = await plane.complete_oauth(row.id, code="c1", state=flow["state"])
+        assert result["ok"] is True
+        assert result["auth_status"] == "authenticated"
+        # Both durable kinds are persisted.
+        access = await registry.connections.get_secret(
+            kind=ACCESS_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert access == "g-at-1"
+        refresh = await registry.connections.get_secret(
+            kind=REFRESH_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert refresh == "g-rt-1"
+        # The durable rows carry the fernet ciphertext, not the raw tokens.
+        async with registry.session_factory() as session:
+            secret_rows = (
+                await session.execute(
+                    select(SecretRow).where(
+                        SecretRow.owner_id == row.id,
+                        SecretRow.kind.in_([ACCESS_TOKEN, REFRESH_TOKEN]),
+                    )
+                )
+            ).scalars().all()
+            assert len(secret_rows) == 2
+            for sr in secret_rows:
+                assert sr.payload["alg"] == "fernet"
+                assert "g-at-1" not in str(sr.payload)
+                assert "g-rt-1" not in str(sr.payload)
+
+    async def test_complete_oauth_legacy_string_exchanger_stores_access_only(
+        self, env
+    ):
+        """A legacy string exchanger persists only the access token; no
+        refresh token is stored (access-only onboarding)."""
+        plane, registry, vault, _ = env
+        row = await plane.create_connection(kind="graph_mail")
+        exchanger = FakeExchanger("ms-legacy-token")
+        plane.set_token_exchanger(exchanger)
+        flow = await plane.start_oauth(row.id)
+        result = await plane.complete_oauth(row.id, code="c1", state=flow["state"])
+        assert result["ok"] is True
+        access = await registry.connections.get_secret(
+            kind=ACCESS_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert access == "ms-legacy-token"
+        refresh = await registry.connections.get_secret(
+            kind=REFRESH_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert refresh is None
+
     async def test_complete_oauth_without_exchanger(self, env):
         plane, *_ = env
         row = await plane.create_connection(kind="gmail")
+        flow = await plane.start_oauth(row.id)
         with pytest.raises(ConnectionControlPlaneError) as exc:
-            await plane.complete_oauth(row.id, code="c", state="s")
+            await plane.complete_oauth(row.id, code="c", state=flow["state"])
         assert exc.value.code == "oauth_incomplete"
 
     async def test_complete_oauth_empty_token(self, env):
         plane, *_ = env
         row = await plane.create_connection(kind="gmail")
         plane.set_token_exchanger(FakeExchanger(""))
+        flow = await plane.start_oauth(row.id)
         with pytest.raises(ConnectionControlPlaneError) as exc:
-            await plane.complete_oauth(row.id, code="c", state="s")
+            await plane.complete_oauth(row.id, code="c", state=flow["state"])
         assert exc.value.code == "oauth_incomplete"
+
+    # -- PKCE (P1-106) + callback-state verification (CSRF) --------------------
+
+    async def test_start_oauth_emits_s256_challenge_and_verifier(self, env):
+        """The authorize URL must carry a PKCE ``code_challenge`` (S256) that
+        matches the returned ``code_verifier`` (RFC 7636 §4.2)."""
+        plane, *_ = env
+        row = await plane.create_connection(
+            kind="gmail", config={"client_id": "cid", "oauth_redirect_uri": "http://cb"}
+        )
+        result = await plane.start_oauth(row.id)
+        url_query = result["authorization_url"].split("?", 1)[1]
+        challenge = _url_query(url_query)["code_challenge"]
+        assert challenge == _s256(result["code_verifier"])
+        assert _url_query(url_query)["code_challenge_method"] == "S256"
+
+    async def test_complete_oauth_rejects_forged_state(self, env):
+        """A callback ``state`` that does not match the persisted per-flow
+        state must be rejected with the stable code — the CSRF guard. The
+        token must NOT be exchanged or stored."""
+        plane, registry, *_ = env
+        row = await plane.create_connection(kind="gmail")
+        exchanger = FakeExchanger("forged-token")
+        plane.set_token_exchanger(exchanger)
+        await plane.start_oauth(row.id)
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await plane.complete_oauth(row.id, code="c", state="attacker-state")
+        assert exc.value.code == "oauth_incomplete"
+        # No exchange happened, no secret stored, auth unchanged.
+        assert exchanger.calls == []
+        stored = await registry.connections.get_secret(
+            kind=ACCESS_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert stored is None
+        public = await plane.get_connection(row.id)
+        assert public["auth_status"] == "unconfigured"
+
+    async def test_complete_oauth_rejects_stale_state_after_replay(self, env):
+        """Once a flow's state has been consumed, replaying the same state
+        (a second callback for the same code) is rejected — one flow per
+        state, no token reuse."""
+        plane, registry, *_ = env
+        row = await plane.create_connection(kind="graph_mail")
+        plane.set_token_exchanger(FakeExchanger("tok"))
+        flow = await plane.start_oauth(row.id)
+        first = await plane.complete_oauth(row.id, code="c1", state=flow["state"])
+        assert first["ok"] is True
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await plane.complete_oauth(row.id, code="c1", state=flow["state"])
+        assert exc.value.code == "oauth_incomplete"
+        # Still exactly one stored access token from the first (valid) flow.
+        stored = await registry.connections.get_secret(
+            kind=ACCESS_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        assert stored == "tok"
 
 
 # -- diagnostics ------------------------------------------------------------------

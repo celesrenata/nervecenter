@@ -34,6 +34,7 @@ class AttentionRepository:
     async def create_attention_item(
         self,
         *,
+        id: str | None = None,
         title: str,
         importance: int = 5,
         urgency: str = "normal",
@@ -50,6 +51,10 @@ class AttentionRepository:
         if urgency not in VALID_URGENCIES:
             raise ValueError(f"invalid urgency: {urgency!r}")
         async with self._sessions() as session:
+            if id is not None:
+                existing = await session.get(AttentionItemRow, id)
+                if existing is not None:
+                    return existing
             row = AttentionItemRow(
                 title=title,
                 importance=importance,
@@ -62,6 +67,8 @@ class AttentionRepository:
                 state=state,
                 resolution_condition=resolution_condition,
             )
+            if id is not None:
+                row.id = id
             session.add(row)
             await session.commit()
             return row

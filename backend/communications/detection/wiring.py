@@ -40,8 +40,11 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import logging
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Protocol, Sequence
 
 from pydantic import BaseModel, Field
 
@@ -52,6 +55,8 @@ from backend.communications.detection.service import (
 )
 from backend.communications.models import Communication, CommunicationDirection
 from backend.followups.service import FollowUpService, get_followup_service
+
+_logger = logging.getLogger(__name__)
 
 
 def _ensure_utc(value: datetime | None) -> datetime:
@@ -73,6 +78,37 @@ _FOLLOWUP_KINDS = ("commitment", "request")
 #: ``FollowUpService._upsert_attention``). SUPPRESSED / RESOLVED items are
 #: not live and are never reported as live follow-up attention.
 _LIVE_ATTENTION_STATUSES = ("NOW", "TODAY", "SOON", "WAITING_ON", "FYI")
+
+
+class DurableCommitmentStore(Protocol):
+    """Durable personal-plane sink for detected commitments (extend-only).
+
+    The :class:`CommunicationPipeline` is pure by default — it performs no
+    I/O unless a store is injected. When one is supplied, each detected
+    commitment finding is mirrored into the durable ``commitments`` table so
+    the commitment survives a process restart. The pipeline talks only to this
+    protocol, so the concrete ``CommitmentsRepository`` (or any test double)
+    can satisfy it without the pipeline importing the persistence layer.
+    """
+
+    async def create_commitment(
+        self,
+        *,
+        id: str | None = None,
+        person_id: str,
+        text: str,
+        due_at: datetime | None = None,
+        state: str = "open",
+        evidence: dict[str, Any] | None = None,
+        source_communication_id: str | None = None,
+    ) -> Any:
+        """Persist one commitment row; returns the stored row.
+
+        An explicit deterministic ``id`` dedups (get-or-create) — the
+        pipeline derives it from the finding's provenance key so a replay
+        across a restart reuses the row.
+        """
+        ...
 
 
 class FollowUpLink(BaseModel):
@@ -126,8 +162,13 @@ class PipelineResult(BaseModel):
 class CommunicationPipeline:
     """Deterministic orchestration of detection → follow-ups → attention.
 
-    No globals, no I/O: all three services are injected. A pinned ``now``
-    makes the whole pass reproducible.
+    No globals, no I/O by default: the three core services are injected, and
+    an optional :class:`DurableCommitmentStore` may be injected to mirror
+    detected commitments into the durable personal plane. With no store
+    given the pipeline falls back to the follow-up service's
+    ``RepositoryRegistry`` (when one was injected there) — the *inject
+    nothing* composition stays pure (zero I/O) and behaves exactly as
+    before. A pinned ``now`` makes the whole pass reproducible.
     """
 
     def __init__(
@@ -136,10 +177,20 @@ class CommunicationPipeline:
         detection: DetectionService,
         followups: FollowUpService,
         attention: AttentionService,
+        commitment_store: DurableCommitmentStore | None = None,
     ) -> None:
         self._detection = detection
         self._followups = followups
         self._attention = attention
+        self._commitment_store = commitment_store
+        #: Commitment finding keys (``<kind>:<finding_id>``) already mirrored
+        #: to the durable store, so re-ingesting the same communication in
+        #: process never schedules a duplicate write (mirrors the follow-up
+        #: idempotency convention).
+        self._persisted_commitments: set[str] = set()
+        #: Background tasks persisting commitments; flushed by
+        #: :meth:`wait_for_commitments`.
+        self._commitment_tasks: list[asyncio.Task[None]] = []
 
     # -- injected services --------------------------------------------------
     @property
@@ -153,6 +204,53 @@ class CommunicationPipeline:
     @property
     def attention(self) -> AttentionService:
         return self._attention
+
+    @property
+    def commitment_store(self) -> DurableCommitmentStore | None:
+        """The explicitly injected durable commitment sink, or ``None``.
+
+        Resolution of the sink that actually writes is
+        :attr:`_commitment_sink` (the follow-up registry is the fallback).
+        """
+        return self._commitment_store
+
+    @property
+    def _commitment_sink(self) -> DurableCommitmentStore | None:
+        """The resolved durable sink — explicit store, else the follow-up
+        service's registry (extend-only durability fallback).
+
+        A caller may bind the *registry* itself (not the commitments
+        repository), and a pipeline composed with no explicit store still
+        mirrors through the registry its follow-up service was given — so
+        the sink is *resolved*, never assumed: a registry is unwrapped to
+        its ``commitments`` repository. ``None`` (no explicit store, no
+        registry) means zero I/O.
+        """
+        store = self._commitment_store
+        if store is None:
+            store = getattr(self._followups, "registry", None)
+        if store is None:
+            return None
+        repo = getattr(store, "commitments", None)
+        if repo is not None and hasattr(repo, "create_commitment"):
+            return repo
+        return store
+
+    def _commitment_write_lock(self) -> asyncio.Lock | None:
+        """The lock serializing this pipeline's commitment writes.
+
+        Shared with the follow-up service's mirrors through the registry
+        (one durable plane = one lock). ``None`` → no lock (a bare store
+        without a registry; a single pipeline is then the only writer).
+        """
+        registry = getattr(self._followups, "registry", None)
+        if registry is not None:
+            lock = getattr(registry, "durable_lock", None)
+            if lock is not None:
+                return lock
+        if self._commitment_store is not None:
+            return getattr(self._commitment_store, "durable_lock", None)
+        return None
 
     # -- ingest ------------------------------------------------------------
     def ingest(
@@ -175,6 +273,15 @@ class CommunicationPipeline:
         """
         clock = _ensure_utc(now)
         report = self._detection.detect(communication, now=clock)
+
+        # Extend-only durability seam: mirror each detected commitment into
+        # the durable personal plane (no-op when no store is injected).
+        # ``ingest`` stays synchronous — writes run in the background, never
+        # awaited here, so the call-site contract (no ``await``) is preserved.
+        self._persist_commitments(
+            report.findings,
+            person_id=communication.person_id,
+        )
 
         links: list[FollowUpLink] = []
         for finding in report.findings:
@@ -268,10 +375,208 @@ class CommunicationPipeline:
             attention_id=fu.attention_id,
         )
 
+    # -- durable commitment seam (extend-only) ------------------------------
+    def _persist_commitments(
+        self,
+        findings: Sequence[Any],
+        *,
+        person_id: str | None,
+    ) -> None:
+        """Mirror detected commitment findings into the durable store.
+
+        No-op unless a durable sink is resolved (explicit store, else the
+        follow-up service's registry — see :attr:`_commitment_sink`). The
+        pipeline is synchronous and must stay so (its callers invoke
+        ``ingest`` without ``await``), so each write is scheduled as a
+        background task rather than awaited. Writes are idempotent by the
+        ``<kind>:<finding_id>`` key so a replay in the same process never
+        schedules a duplicate row.
+        """
+        store = self._commitment_sink
+        if store is None:
+            return
+        lock = self._commitment_write_lock()
+
+        for finding in findings:
+            if getattr(finding, "kind", None) != "commitment":
+                continue
+            key = f"{finding.kind}:{finding.finding_id}"
+            if key in self._persisted_commitments:
+                continue
+            self._persisted_commitments.add(key)
+            coro = self._persist_one_commitment(
+                finding,
+                person_id=person_id,
+                store=store,
+                lock=lock,
+            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                # No running loop (a synchronous caller): settle the write
+                # inline so durability still lands, then move on.
+                asyncio.run(coro)
+                continue
+            task = loop.create_task(coro)
+            task.add_done_callback(_log_task_exception)
+            self._commitment_tasks.append(task)
+
+    async def _persist_one_commitment(
+        self,
+        finding: Any,
+        *,
+        person_id: str | None,
+        store: DurableCommitmentStore,
+        lock: asyncio.Lock | None = None,
+    ) -> None:
+        """Persist a single commitment finding via the resolved store.
+
+        A commitment must be owed to a person; with no ``person_id`` there is
+        nothing durable to key the row on, so it is skipped.
+
+        ``source_communication_id`` is left ``None``: the pipeline only ever
+        sees the in-memory domain :class:`Communication`, never the durable
+        ``communications`` row, so the domain ``communication_id``
+        (``<prefix>:<id>``) is not a valid FK target for the durable column.
+        Provenance to the source communication is preserved on
+        ``evidence["created_from"]`` instead — the domain id the finding was
+        extracted from (AC-R04).
+
+        The durable row carries *templated, provenance-only* strings (P0-I):
+        the detector's quoted fragments (``finding.matched`` / the quoted
+        part of ``finding.why``) stay on the live in-memory finding and
+        never reach the durable plane. The row id is derived from the
+        finding's deterministic provenance key, so a replay across a
+        restart reuses the row (get-or-create) instead of stacking a
+        duplicate. When a lock is given (the registry's durable lock) the
+        write is serialized with the follow-up / attention mirrors.
+        """
+        if person_id is None:
+            return
+
+        async def _write() -> None:
+            key = f"{finding.kind}:{finding.finding_id}"
+            digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+            due_iso = finding.due.isoformat() if finding.due is not None else None
+            text = f"Commitment — {finding.finding_id}"
+            if due_iso is not None:
+                text += f" (due {due_iso})"
+            templated_why: list[str] = [
+                f"{finding.kind}: detected by {finding.model_used}",
+                f"finding {finding.finding_id}",
+            ]
+            if due_iso is not None:
+                templated_why.append(f"due {due_iso}")
+            await store.create_commitment(
+                id=f"ct-{digest}",
+                person_id=person_id,
+                text=text,
+                due_at=finding.due,
+                state="open",
+                evidence={
+                    "finding_id": finding.finding_id,
+                    "finding_kind": finding.kind,
+                    "created_from": finding.created_from,
+                    "content_ref": finding.content_ref,
+                    "confidence": finding.confidence,
+                    "model_used": finding.model_used,
+                    "why": templated_why,
+                },
+            )
+
+        if lock is None:
+            await _write()
+        else:
+            async with lock:
+                await _write()
+
+    async def wait_for_commitments(self) -> None:
+        """Await all pending durable-commitment writes (flush the seam).
+
+        ``ingest`` stays synchronous, so durable writes are scheduled in the
+        background. Callers (and tests) that need the durable plane settled —
+        e.g. before shutdown or before asserting on the rows — await this. A
+        write that already ran to completion via ``asyncio.run`` in a
+        synchronous context has no pending task.
+        """
+        if not self._commitment_tasks:
+            return
+        tasks, self._commitment_tasks = self._commitment_tasks, []
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def flush_durable(self) -> Exception | None:
+        """Settle the pending durable mirror writes; return the first
+        failure (``None`` when everything committed — or nothing was
+        pending).
+
+        The durable mirror is best-effort and never raises from the
+        synchronous ``ingest``; this is the explicit outcome check. The mail
+        worker gates its cursor on it (P0-D commit-gate); tests use it (via
+        the seam) to settle the plane before asserting. The commitment
+        writes are drained first, then the follow-up mirrors (deterministic
+        ordering of the reported failure).
+        """
+        first: Exception | None = None
+        if self._commitment_tasks:
+            tasks, self._commitment_tasks = self._commitment_tasks, []
+            for result in await asyncio.gather(*tasks, return_exceptions=True):
+                if isinstance(result, Exception) and first is None:
+                    first = result
+        drain = getattr(self._followups, "drain_durable", None)
+        if drain is not None:
+            follow_first = await drain()
+            if first is None and follow_first is not None:
+                first = follow_first
+        return first
+
+
+def _log_task_exception(task: "asyncio.Task[None]") -> None:
+    """Log (never raise) a background persistence failure.
+
+    Durability is a best-effort extension of the deterministic pipeline; a
+    failed write must not surface as an error in ``ingest()`` (which callers
+    invoke synchronously). The exception is logged, not raised.
+    """
+    try:
+        exc = task.exception()
+    except BaseException as exc:  # cancelled
+        _logger.warning(
+            "durable commitment persistence cancelled: %s", exc, exc_info=exc
+        )
+        return
+    if exc is not None:
+        _logger.warning(
+            "durable commitment persistence failed: %s", exc, exc_info=exc
+        )
+
 
 # Process-wide composition over the existing singletons (app seam, see the
 # module docstring). The class itself stays fully injectable/testable.
 _pipeline: CommunicationPipeline | None = None
+#: Pending store for pipelines composed after :func:`set_commitment_store`
+#: (startup wires the store before the first ``get_pipeline()`` call).
+_pending_store: DurableCommitmentStore | None = None
+
+
+def set_commitment_store(store: DurableCommitmentStore | None) -> None:
+    """App seam: bind (or unbind) the durable commitment sink (extend-only).
+
+    ``get_pipeline()`` composes the pipeline with no store, so by default it
+    is pure — detected commitments are never written to the durable table.
+    The app startup wiring calls this once with a
+    :class:`~backend.persistence.repositories.commitments_repo.CommitmentsRepository`
+    (obtained via the ``RepositoryRegistry``) whenever a durable engine exists,
+    so the live app mirrors detected commitments to Postgres. The value is
+    applied to the live pipeline when one exists *and* recorded as the default
+    for pipelines composed later (the usual case: startup precedes the first
+    ingest), so re-calling ``get_pipeline()`` after ``reset_pipeline()`` keeps
+    the store. Tests that build the pipeline directly stay pure unless they
+    call this setter. The setter itself never rebuilds the composed pipeline.
+    """
+    global _pipeline, _pending_store
+    _pending_store = store
+    if _pipeline is not None:
+        _pipeline._commitment_store = store
 
 
 def get_pipeline() -> CommunicationPipeline:
@@ -282,20 +587,25 @@ def get_pipeline() -> CommunicationPipeline:
             detection=get_detection_service(),
             followups=get_followup_service(),
             attention=get_attention_service(),
+            commitment_store=_pending_store,
         )
     return _pipeline
 
 
 def reset_pipeline() -> None:
-    """Test hook — forget the composed pipeline (singletons untouched)."""
-    global _pipeline
+    """Test hook — forget the composed pipeline and any bound store
+    (singletons untouched; restores the pure default)."""
+    global _pipeline, _pending_store
     _pipeline = None
+    _pending_store = None
 
 
 __all__ = [
     "CommunicationPipeline",
+    "DurableCommitmentStore",
     "FollowUpLink",
     "PipelineResult",
     "get_pipeline",
     "reset_pipeline",
+    "set_commitment_store",
 ]

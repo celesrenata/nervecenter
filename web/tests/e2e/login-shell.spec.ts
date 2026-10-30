@@ -165,11 +165,11 @@ test.describe('login view (LG-1…LG-4)', () => {
     await page.getByRole('button', { name: 'Sign in' }).click()
 
     // The successful break-glass login must leave /login and land in the app
-    // (the Overview landing view) — not strand the user on the sign-in form.
+    // (the Today landing view) — not strand the user on the sign-in form.
     // This is the fix under test: AuthContext.login now navigates to '/'
     // on success, mirroring the SSO callback (AuthCallback → '/').
     await page.waitForURL((url) => url.pathname === '/')
-    await expect(page.locator('main h1')).toHaveText('Overview')
+    await expect(page.locator('main h1')).toHaveText('Today')
   })
 
   test('SSO button renders only when sso/config reports enabled', async ({

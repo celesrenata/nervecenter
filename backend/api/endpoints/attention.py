@@ -82,7 +82,13 @@ def _aggregator(request: Request) -> Any:
 
 
 def _dump_durable(obj: Any) -> dict[str, Any]:
-    """Serialize a durable attention row *or* an in-memory item to a dict."""
+    """Serialize a durable attention row *or* an in-memory item to a dict.
+
+    Durable :class:`AttentionItemRow` objects are mapped onto the in-memory
+    wire shape (``attention_id``/``reason``/float ``urgency``/``status`` …) via
+    :func:`backend.attention.aggregator.row_to_wire`, so a durable-only
+    transition response matches the list/now endpoints byte-for-byte.
+    """
     if obj is None:
         return {}
     if isinstance(obj, dict):
@@ -92,6 +98,10 @@ def _dump_durable(obj: Any) -> dict[str, Any]:
         return cast("dict[str, Any]", model_dump(mode="json"))
     table = getattr(obj, "__table__", None)
     if table is not None:
+        if getattr(table, "name", None) == "attention_items":
+            from backend.attention.aggregator import row_to_wire
+
+            return row_to_wire(obj)
         return {c.name: getattr(obj, c.name) for c in table.columns}
     return vars(obj)
 
@@ -179,34 +189,47 @@ async def create_attention(request: Request, payload: AttentionCreateRequest) ->
     return item
 
 
-def _mutate(request: Request, attention_id: str, fn) -> AttentionItem:
-    svc = _service(request)
-    result = fn(svc, attention_id)
+async def _transition(
+    request: Request,
+    attention_id: str,
+    action: str,
+    *,
+    until: datetime | None = None,
+) -> dict[str, Any]:
+    """Route a user action through the durable :class:`AttentionAggregator`.
+
+    With a durable registry on ``app.state`` this writes through the durable
+    repository and mirrors the in-memory queue; without one (degraded mode) the
+    aggregator degrades to the historical in-memory-only behavior, so the
+    response is byte-identical to the pre-change wire shape. The response is
+    the durable row when one was written, or the in-memory item otherwise.
+    """
+    result = await _aggregator(request).transition(attention_id, action, until=until)
     if result is None:
         raise _not_found(attention_id)
-    return result
+    return _dump_durable(result)
 
 
-@router.post("/{attention_id}/resolve", response_model=AttentionItem)
-async def resolve_attention(request: Request, attention_id: str) -> AttentionItem:
-    return _mutate(request, attention_id, lambda s, i: s.resolve(i))
+@router.post("/{attention_id}/resolve")
+async def resolve_attention(request: Request, attention_id: str) -> dict[str, Any]:
+    return await _transition(request, attention_id, "resolve")
 
 
-@router.post("/{attention_id}/suppress", response_model=AttentionItem)
-async def suppress_attention(request: Request, attention_id: str) -> AttentionItem:
-    return _mutate(request, attention_id, lambda s, i: s.suppress(i))
+@router.post("/{attention_id}/suppress")
+async def suppress_attention(request: Request, attention_id: str) -> dict[str, Any]:
+    return await _transition(request, attention_id, "suppress")
 
 
-@router.post("/{attention_id}/acknowledge", response_model=AttentionItem)
-async def acknowledge_attention(request: Request, attention_id: str) -> AttentionItem:
-    return _mutate(request, attention_id, lambda s, i: s.acknowledge(i))
+@router.post("/{attention_id}/acknowledge")
+async def acknowledge_attention(request: Request, attention_id: str) -> dict[str, Any]:
+    return await _transition(request, attention_id, "acknowledge")
 
 
-@router.post("/{attention_id}/snooze", response_model=AttentionItem)
+@router.post("/{attention_id}/snooze")
 async def snooze_attention(
     request: Request, attention_id: str, payload: AttentionSnoozeRequest
-) -> AttentionItem:
-    return _mutate(request, attention_id, lambda s, i: s.snooze(i, payload.until))
+) -> dict[str, Any]:
+    return await _transition(request, attention_id, "snooze", until=payload.until)
 
 
 @router.post("/{attention_id}/dismiss")

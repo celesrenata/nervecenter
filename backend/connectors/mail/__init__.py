@@ -20,6 +20,15 @@ from backend.connectors.mail.oauth import (
     provider,
     validate_token_ref,
 )
+from backend.connectors.mail.oauth_refresh import (
+    ACCESS_TOKEN_KIND,
+    MailOAuthRefreshError,
+    MailOAuthRefresher,
+    REFRESH_TOKEN_KIND,
+    RefreshedTokens,
+    exchange_refresh_token,
+    stored_refresh_token,
+)
 from backend.connectors.mail.service import (
     MailConnectorNotFoundError,
     MailConnectorService,
@@ -47,4 +56,11 @@ __all__ = [
     "MailConnectorService",
     "get_mail_connector_service",
     "reset_mail_connector_service",
+    "MailOAuthRefreshError",
+    "MailOAuthRefresher",
+    "RefreshedTokens",
+    "REFRESH_TOKEN_KIND",
+    "ACCESS_TOKEN_KIND",
+    "exchange_refresh_token",
+    "stored_refresh_token",
 ]

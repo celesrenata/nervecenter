@@ -106,6 +106,8 @@ export function AddConnectionWizard({
   const [authUrl, setAuthUrl] = useState<string | null>(null)
   const [oauthCode, setOauthCode] = useState('')
   const [relayToken, setRelayToken] = useState<{ device_id: string; token: string } | null>(null)
+  /** Explicit consent for the relay history import (spec §5 — mandatory). */
+  const [relayConsent, setRelayConsent] = useState(false)
 
   function patch(partial: Partial<WizardState>) {
     setState((prev) => ({ ...prev, ...partial }))
@@ -211,6 +213,19 @@ export function AddConnectionWizard({
       case 'import':
         await run(async () => {
           if (!connection) return
+          if (state.kind === 'relay') {
+            // Relay history import is consented + device-token authenticated:
+            // POST /api/relay/import-request with the one-time pairing token.
+            if (!relayToken) return
+            const res = await connectionsApi.relayImportRequest(
+              relayToken.device_id,
+              relayToken.token,
+              relayConsent,
+            )
+            if (isDegradedWrite(res)) throw new Error(res.detail)
+            if (res.ok) onCreated(connection)
+            return
+          }
           const res = await connectionsApi.startImport(connection.id)
           if (isDegradedWrite(res)) throw new Error(res.detail)
           setConnection(res)
@@ -420,12 +435,36 @@ export function AddConnectionWizard({
       )}
 
       {/* ── import ── */}
-      {state.step === 'import' && (
+      {state.step === 'import' && state.kind !== 'relay' && (
         <p className="text-sm text-secondary">
           Import the initial history. The import runs as a background job; its progress is tracked
           on the connection card. If no importer is registered for this kind yet, the backend
           reports that honestly — you can retry later.
         </p>
+      )}
+
+      {state.step === 'import' && state.kind === 'relay' && (
+        <div className="space-y-3">
+          <p className="text-sm text-secondary">
+            Import the device's message history into your records. The import runs as a
+            background job; its progress is tracked on the connection card.
+          </p>
+          <label className="flex items-start gap-2.5 rounded-md border border-line bg-hover/40 p-3 text-sm">
+            <input
+              type="checkbox"
+              checked={relayConsent}
+              onChange={(e) => setRelayConsent(e.target.checked)}
+              className="mt-0.5 h-4 w-4 accent-accent"
+            />
+            <span>
+              <span className="font-medium text-primary">I consent to import this device's full
+              message history.</span>{' '}
+              <span className="text-secondary">
+                History import requires explicit consent and cannot be done on your behalf.
+              </span>
+            </span>
+          </label>
+        </div>
       )}
 
       {/* ── done ── */}
@@ -439,7 +478,11 @@ export function AddConnectionWizard({
         <button
           type="button"
           onClick={advance}
-          disabled={state.busy || state.step === 'pick_kind' && state.kind === null}
+          disabled={
+            state.busy ||
+            (state.step === 'pick_kind' && state.kind === null) ||
+            (state.step === 'import' && state.kind === 'relay' && !relayConsent)
+          }
           className="rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover disabled:opacity-50"
         >
           {state.step === 'import' && state.error ? 'Retry import' : primaryLabel(state)}

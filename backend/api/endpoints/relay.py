@@ -35,7 +35,8 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
 from backend.api.models import ApiResponseMeta, ListResponse
@@ -44,8 +45,31 @@ from backend.messages.ingest_bridge import MessagesIngestBridge
 
 router = APIRouter(prefix="/api/relay", tags=["relay"])
 
+# Ingest / import authenticate with the device's own pairing token (an opaque
+# secret minted by ``/pair``, not a signed JWT) presented as a Bearer.
+_bearer = HTTPBearer(auto_error=False)
+
+# One generic 401 detail for every relay-auth failure mode (missing header,
+# unknown device, wrong token) so the error body never leaks which check failed.
+_REDACTED_RELAY = "relay request is not authorized"
+
 
 # -- helpers ------------------------------------------------------------------
+
+
+async def _require_relay_token(
+    plane: ConnectionControlPlane,
+    device_id: str,
+    credentials: HTTPAuthorizationCredentials | None,
+) -> None:
+    """Constant-time bearer check against the exact device's stored relay token.
+
+    Every failure mode (missing header, unknown device, token mismatch) raises
+    the same generic 401 — the response never reveals which check failed.
+    """
+    token = credentials.credentials if credentials else ""
+    if not await plane.relay_verify_token(device_id=device_id, token=token):
+        raise HTTPException(status_code=401, detail=_REDACTED_RELAY)
 
 
 def _meta(**pagination: int | None) -> ApiResponseMeta:
@@ -167,17 +191,24 @@ async def relay_register(request: Request, body: RegisterRequest) -> dict[str, A
 
 
 @router.post("/messages")
-async def relay_messages(request: Request, body: MessagesRequest) -> dict[str, Any]:
+async def relay_messages(
+    request: Request,
+    body: MessagesRequest,
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+) -> dict[str, Any]:
     """Durable batch ingest with ``(device_id, message_id)`` dedup.
 
-    Each new message is persisted (person → communication → conversation),
-    the connection is marked healthy, and the message is mirrored into the
+    Requires the device's pairing token as a Bearer credential; a missing or
+    wrong token is a generic 401 before anything durable is touched. Each new
+    message is persisted (person → communication → conversation), the
+    connection is marked healthy, and the message is mirrored into the
     in-memory messages service for live reads. Re-sending an already-seen
     ``message_id`` is a no-op (``skipped``).
     """
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
         return _degraded_write(request, "durable storage is not configured")
+    await _require_relay_token(plane, body.device_id, credentials)
     try:
         result = await plane.relay_ingest_batch(
             device_id=body.device_id,
@@ -207,16 +238,22 @@ async def relay_health(request: Request) -> ListResponse:
 
 
 @router.post("/import-request")
-async def relay_import_request(request: Request, body: ImportRequest) -> dict[str, Any]:
+async def relay_import_request(
+    request: Request,
+    body: ImportRequest,
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),
+) -> dict[str, Any]:
     """Request the initial history import.
 
-    Without explicit ``consent: true`` this returns **422** with the stable
-    code ``consent_required`` (history import requires explicit user consent
-    per the spec freeze).
+    Requires the device's pairing token as a Bearer credential. Without
+    explicit ``consent: true`` this returns **422** with the stable code
+    ``consent_required`` (history import requires explicit user consent per the
+    spec freeze).
     """
     plane = _plane(request)
     if plane is None or not plane.registry_configured:
         return _degraded_write(request, "durable storage is not configured")
+    await _require_relay_token(plane, body.device_id, credentials)
     try:
         return await plane.relay_import_request(device_id=body.device_id, consent=body.consent)
     except ConnectionControlPlaneError as exc:

@@ -32,6 +32,7 @@ class CommitmentsRepository:
     async def create_commitment(
         self,
         *,
+        id: str | None = None,
         person_id: str,
         text: str,
         due_at: datetime | None = None,
@@ -39,7 +40,18 @@ class CommitmentsRepository:
         evidence: dict[str, Any] | None = None,
         source_communication_id: str | None = None,
     ) -> CommitmentRow:
+        """Create a commitment row; an explicit ``id`` dedups (get-or-create).
+
+        The deterministic id (derived from the finding's provenance key by the
+        pipeline) is what makes a replay across a restart idempotent — the row
+        is reused, never duplicated. Without an ``id`` the table default
+        (UUIDv4) applies, as before.
+        """
         async with self._sessions() as session:
+            if id is not None:
+                existing = await session.get(CommitmentRow, id)
+                if existing is not None:
+                    return existing
             row = CommitmentRow(
                 person_id=person_id,
                 text=text,
@@ -48,6 +60,8 @@ class CommitmentsRepository:
                 evidence=evidence or {},
                 source_communication_id=source_communication_id,
             )
+            if id is not None:
+                row.id = id
             session.add(row)
             await session.commit()
             return row
@@ -91,13 +105,19 @@ class CommitmentsRepository:
     async def create_followup(
         self,
         *,
+        id: str | None = None,
         text: str,
         person_id: str | None = None,
         due_at: datetime | None = None,
         state: str = "open",
         linked_refs: list[Any] | None = None,
     ) -> FollowupRow:
+        """Create a follow-up row; an explicit ``id`` dedups (get-or-create)."""
         async with self._sessions() as session:
+            if id is not None:
+                existing = await session.get(FollowupRow, id)
+                if existing is not None:
+                    return existing
             row = FollowupRow(
                 person_id=person_id,
                 text=text,
@@ -105,9 +125,15 @@ class CommitmentsRepository:
                 state=state,
                 linked_refs=linked_refs or [],
             )
+            if id is not None:
+                row.id = id
             session.add(row)
             await session.commit()
             return row
+
+    async def get_followup(self, followup_id: str) -> FollowupRow | None:
+        async with self._sessions() as session:
+            return await session.get(FollowupRow, followup_id)
 
     async def list_followups(
         self, *, state: str | None = None
@@ -118,6 +144,21 @@ class CommitmentsRepository:
                 stmt = stmt.where(FollowupRow.state == state)
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def set_followup_state(
+        self, followup_id: str, state: str
+    ) -> FollowupRow | None:
+        """Transition a follow-up to ``state`` (open/done/dropped/expired)."""
+
+        if state not in VALID_STATES:
+            raise ValueError(f"invalid followup state: {state!r}")
+        async with self._sessions() as session:
+            row = await session.get(FollowupRow, followup_id)
+            if row is None:
+                return None
+            row.state = state
+            await session.commit()
+            return row
 
     @staticmethod
     def to_dict(row: Any) -> dict[str, Any]:

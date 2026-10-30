@@ -41,6 +41,7 @@ from .config import (
     ObjectStoreConfig,
     config_from_env,
     create_object_store_from_env,
+    object_store_status,
 )
 from .contracts import MetadataMap, ObjectMetadata, ObjectStore, validate_key, validate_metadata
 from .errors import (
@@ -65,6 +66,7 @@ __all__ = [
     "ObjectStoreConfig",
     "config_from_env",
     "create_object_store_from_env",
+    "object_store_status",
     # contracts
     "MetadataMap",
     "ObjectMetadata",

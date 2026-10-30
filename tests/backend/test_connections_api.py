@@ -29,6 +29,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
 from backend.api.app import create_app
+from backend.api.auth import current_access
 from backend.connectors.registry import (
     CONNECTION_KINDS,
     ConnectionControlPlane,
@@ -46,6 +47,26 @@ from backend.persistence.models.personal import (
     SecretRow,
 )
 from backend.persistence.repositories import RepositoryRegistry
+
+# The ``/api/connections*`` routes are access-token protected. These functional
+# contract tests exercise the control-plane behavior (degradation, CRUD,
+# secret-stripping, error codes, no-plaintext-credential) *as* an authenticated
+# principal; the requirement that the routes demand a valid access token is
+# locked in separately by ``tests/backend/test_relay_auth.py``. A
+# ``current_access`` dependency override stands in for that principal.
+_TEST_CLAIMS: dict[str, Any] = {"sub": "contract-tests", "roles": ["admin"]}
+
+
+def _with_access(app: FastAPI) -> FastAPI:
+    """Run functional contract tests as an authenticated principal.
+
+    Overrides the ``current_access`` guard with a static claims dict so the
+    control-plane behavior under test is exercised without minting real JWTs
+    (the token *requirement* itself is covered in ``test_relay_auth.py``).
+    """
+    app.dependency_overrides[current_access] = lambda: _TEST_CLAIMS
+    return app
+
 
 PERSONAL_TABLES = [
     PersonRow.__table__,
@@ -107,6 +128,7 @@ async def _make_wired_app(tmp_path: Path) -> tuple[FastAPI, ConnectionControlPla
 
     app.include_router(connections.router)
     app.state.connection_control_plane = plane
+    app.dependency_overrides[current_access] = lambda: _TEST_CLAIMS
     app.state._test_engine = engine  # disposed in the fixture finalizer
     return app, plane, engine
 
@@ -129,7 +151,7 @@ class TestDegradation:
     def test_list_empty_200(self, monkeypatch):
         monkeypatch.delenv("NERVE_DB_URL", raising=False)
         monkeypatch.delenv("NERVECENTER_DATABASE_URL", raising=False)
-        with TestClient(create_app()) as client:
+        with TestClient(_with_access(create_app())) as client:
             for path in ("/api/connections", "/api/connections/"):
                 response = client.get(path)
             assert response.status_code == 200
@@ -139,7 +161,7 @@ class TestDegradation:
 
     def test_get_unknown_id_synthetic_200(self, monkeypatch):
         monkeypatch.delenv("NERVE_DB_URL", raising=False)
-        with TestClient(create_app()) as client:
+        with TestClient(_with_access(create_app())) as client:
             response = client.get("/api/connections/does-not-exist")
         assert response.status_code == 200
         body = response.json()
@@ -147,7 +169,7 @@ class TestDegradation:
 
     def test_create_degrades_to_executed_false(self, monkeypatch):
         monkeypatch.delenv("NERVE_DB_URL", raising=False)
-        with TestClient(create_app()) as client:
+        with TestClient(_with_access(create_app())) as client:
             response = client.post("/api/connections", json={"kind": "imap"})
         body = response.json()
         assert body["accepted"] is True
@@ -167,7 +189,7 @@ class TestDegradation:
     )
     def test_writes_degrade_to_executed_false(self, monkeypatch, method, path):
         monkeypatch.delenv("NERVE_DB_URL", raising=False)
-        with TestClient(create_app()) as client:
+        with TestClient(_with_access(create_app())) as client:
             response = client.request(method, path, json={"config": {}} if method == "patch" else {})
         body = response.json()
         assert body["accepted"] is True
@@ -175,12 +197,12 @@ class TestDegradation:
 
     def test_delete_degrades_to_204(self, monkeypatch):
         monkeypatch.delenv("NERVE_DB_URL", raising=False)
-        with TestClient(create_app()) as client:
+        with TestClient(_with_access(create_app())) as client:
             assert client.delete("/api/connections/xyz").status_code == 204
 
     def test_permissions_degrade_to_empty(self, monkeypatch):
         monkeypatch.delenv("NERVE_DB_URL", raising=False)
-        with TestClient(create_app()) as client:
+        with TestClient(_with_access(create_app())) as client:
             response = client.get("/api/connections/xyz/permissions")
             diagnostics = client.get("/api/connections/xyz/diagnostics")
         for r in (response, diagnostics):

@@ -224,7 +224,7 @@ def test_full_61_chain(pipeline, detection, followups, attention):
     assert item.sources == ["followups"]
     assert item.status is AttentionState.NOW
     assert item.due == FRIDAY_DUE
-    assert item.suggested_action.startswith("Follow up:")
+    assert item.suggested_action.startswith("Follow through:")
     # Provenance back to the finding is in the explanation (AC-R06/R07);
     # audit fields are populated (AC-R15).
     assert any("commitment/commitment-message:8821" in w for w in item.why)

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Any
 
 from .errors import ObjectStoreConfigError, ObjectStoreNotConfigured
 
@@ -162,18 +163,94 @@ def config_from_env(env: dict[str, str] | None = None) -> ObjectStoreConfig:
             missing=tuple(missing),
         )
 
-    secure = True
-    if scheme == "http":
-        secure = source.get(ENV_OBJECT_STORE_SECURE, "1").strip() != "0"
+    region = source.get(ENV_OBJECT_STORE_REGION, "").strip() or DEFAULT_REGION
+    # Transport security follows the URL scheme by default: an in-cluster
+    # ``http://`` MinIO endpoint is dialed in plain text, while ``s3://`` and
+    # ``https://`` use TLS. ``NERVECENTER_OBJECT_STORE_SECURE`` is an explicit
+    # ``0``/``1`` override (e.g. to TLS an ``http://`` URL that fronts a
+    # reverse proxy). Any other value falls through to the scheme default, so
+    # a plain-HTTP endpoint is never silently upgraded to TLS.
+    secure = scheme != "http"
+    secure_flag = source.get(ENV_OBJECT_STORE_SECURE, "").strip()
+    if secure_flag in ("0", "1"):
+        secure = secure_flag == "1"
     return ObjectStoreConfig(
         scheme="s3",
         url=url,
         bucket=bucket,
         access_key=access_key,
         secret_key=secret_key,
-        region=source.get(ENV_OBJECT_STORE_REGION, "").strip() or DEFAULT_REGION,
+        region=region,
         secure=secure,
     )
+
+
+#: Required ``NERVECENTER_OBJECT_STORE_*`` variables for an S3/MinIO endpoint
+#: (bucket + credentials).  The region and secure-flag variables are
+#: optional and therefore excluded.
+_OBJECT_STORE_REQUIRED_S3 = (
+    ENV_OBJECT_STORE_BUCKET,
+    ENV_OBJECT_STORE_ACCESS_KEY,
+    ENV_OBJECT_STORE_SECRET_KEY,
+)
+
+
+def object_store_status(env: dict[str, str] | None = None) -> dict[str, Any]:
+    """Non-raising readiness probe for the object store configuration.
+
+    Reports configuration *status* without constructing a backend and
+    without ever echoing configured values.  Suitable for a ``/api/health``
+    readiness section (spec P1-A: "surface *why* ingest is gated").
+
+    Returns a dict with:
+
+    - ``status``: ``"not_configured"`` (no
+      :data:`ENV_OBJECT_STORE_URL`), ``"incomplete"`` (a supported endpoint
+      is named but required variables are absent), ``"configured"`` (a
+      supported endpoint is fully configured), or ``"memory"`` (explicit
+      ``memory://`` request).
+    - ``scheme``: the URL scheme (e.g. ``"s3"``) or ``None``.
+    - ``unsupported_scheme``: ``True`` when a URL is set but its scheme is
+      not supported.
+    - ``missing``: every required :data:`ENV_OBJECT_STORE_VARS` name that is
+      absent (names only, never values).
+    """
+    source = dict(env) if env is not None else dict(os.environ)
+    url = source.get(ENV_OBJECT_STORE_URL, "").strip()
+    if not url:
+        return {
+            "status": "not_configured",
+            "scheme": None,
+            "unsupported_scheme": False,
+            "missing": (ENV_OBJECT_STORE_URL,),
+        }
+    scheme = url.split(":", 1)[0].lower()
+    if scheme == "memory":
+        return {
+            "status": "memory",
+            "scheme": "memory",
+            "unsupported_scheme": False,
+            "missing": (),
+        }
+    if scheme not in _S3_SCHEMES:
+        return {
+            "status": "incomplete",
+            "scheme": scheme,
+            "unsupported_scheme": True,
+            "missing": (
+                ENV_OBJECT_STORE_BUCKET,
+                ENV_OBJECT_STORE_ACCESS_KEY,
+                ENV_OBJECT_STORE_SECRET_KEY,
+            ),
+        }
+    missing = tuple(v for v in _OBJECT_STORE_REQUIRED_S3
+                    if not source.get(v, "").strip())
+    return {
+        "status": "configured" if not missing else "incomplete",
+        "scheme": "s3",
+        "unsupported_scheme": False,
+        "missing": missing,
+    }
 
 
 def create_object_store_from_env(env: dict[str, str] | None = None):

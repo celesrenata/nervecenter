@@ -555,8 +555,14 @@ async def get_today(request: Request) -> dict[str, Any]:
 
     House degradation: without a durable registry this answers 200 with
     empty sections and ``low_energy: false`` — never 503, and never demo data.
+
+    Test seam: when ``app.state._test_now`` is set to a
+    :class:`datetime`, that clock is used instead of the wall clock so that
+    window-based tests stay deterministic regardless of the real date.
     """
-    now = datetime.now(UTC)
+    now = getattr(request.app.state, "_test_now", None) or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
     ctx = TodayContext(registry=getattr(request.app.state, "repository_registry", None), now=now)
     needs, coming, handled = await _collect_sections(ctx)
     low_energy = await _read_low_energy(request)

@@ -182,6 +182,26 @@ def build_db_engine() -> AsyncEngine | None:
     return engine
 
 
+def _load_secret_codec():
+    """Load the durable :class:`SecretCodec` for the repository registry.
+
+    Returns the Fernet vault when ``NERVE_SECRET_KEY`` is set (so secrets are
+    encrypted at the durable boundary), or ``None`` — which the registry
+    interprets as the identity codec — when the key is absent or invalid.
+    Never raises: startup must degrade, not crash. The loaded vault (or
+    ``None``) is also bound onto ``app.state.secret_vault`` so the connection
+    control plane reuses the same codec instead of building a second
+    registry.
+    """
+    from backend.connectors.vault import VaultError, load_from_env
+
+    try:
+        return load_from_env()
+    except VaultError as exc:
+        log.warning("api.wiring.vault_absent", code=exc.code)
+        return None
+
+
 def build_nats_client() -> NatsClient | None:
     """Build the NATS client from the resolved URL; ``None`` when unset.
 
@@ -281,13 +301,50 @@ async def wire_dependencies(target: FastAPI) -> None:
     # durable engine when one is configured; when no DB URL is set the
     # attribute is cleared so endpoints keep their honest "not configured"
     # behavior — wiring is intentionally optional (see module docstring).
-    # The secrets vault (workstream B) will swap in a real SecretCodec; until
-    # then the identity codec keeps the durable boundary intact.
+    #
+    # The registry is bound to the *single* durable :class:`SecretCodec`. When
+    # ``NERVE_SECRET_KEY`` is set, that codec is the Fernet vault
+    # (workstream B) so every secret — OAuth tokens, credentials — is
+    # encrypted at the durable boundary. When the key is absent the codec
+    # degrades to the identity one (honest "no key" behavior); startup never
+    # raises. This registry is the ONE codec-bound registry shared by the
+    # connection control plane, the mail worker, and the calendar sync —
+    # ``app.state.secret_vault`` carries the loaded vault so the control plane
+    # reuses the same codec instead of rebuilding a second registry.
     if target.state.db_engine is not None:
         try:
+            target.state.secret_vault = _load_secret_codec()
             target.state.repository_registry = RepositoryRegistry(
-                make_session_factory(target.state.db_engine)
+                make_session_factory(target.state.db_engine),
+                secret_codec=target.state.secret_vault,
             )
+            # Extend-only durability seam: bind the durable commitment sink
+            # onto the live CommunicationPipeline so detected commitments are
+            # mirrored to Postgres. ``set_commitment_store`` is a no-op when no
+            # pipeline has been composed yet (first call to ``get_pipeline()``
+            # happens lazily on first ingest); re-applying is safe.
+            try:
+                from backend.communications.detection.wiring import (
+                    set_commitment_store,
+                )
+                from backend.followups.service import get_followup_service
+
+                set_commitment_store(
+                    target.state.repository_registry.commitments
+                )
+                # Extend-only: hand the durable registry to the follow-up
+                # service singleton too, so its follow-up / attention
+                # mirrors reach the durable plane (the pipeline's
+                # commitment mirror falls back to the same registry when no
+                # explicit store is bound). In-memory behavior is
+                # unchanged; mirrors stay best-effort background writes.
+                get_followup_service().set_registry(
+                    target.state.repository_registry
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "api.wiring.commitment_store_failed", error=str(exc)
+                )
         except Exception as exc:  # noqa: BLE001 - startup must not crash on config errors
             log.warning("api.wiring.repository_registry_failed", error=str(exc))
             target.state.repository_registry = None

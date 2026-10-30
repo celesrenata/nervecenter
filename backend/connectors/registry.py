@@ -36,7 +36,11 @@ import structlog
 from ..persistence.models.personal import ConnectionRow
 from ..persistence.repositories import RepositoryRegistry
 from .mail.imap_client import ImapClient, ImapProbeResult
-from .mail.oauth import OauthProviderName, build_authorization_url
+from .mail.oauth import (
+    OauthProviderName,
+    build_authorization_url,
+    make_pkce_pair,
+)
 from .vault import VaultError, load_from_env
 
 log = structlog.get_logger(__name__)
@@ -66,6 +70,7 @@ ERR_INGEST_UNAVAILABLE = "ingest_unavailable"
 ERR_CONSENT_REQUIRED = "consent_required"
 ERR_PROBE_UNSUPPORTED = "probe_unsupported"
 ERR_TRIGGER_FAILED = "ingest_failed"
+ERR_OAUTH_AUTH_REJECTED = "oauth_auth_rejected"
 
 #: Ingest cursor kinds (frozen by spec §6) — mail uses ``imap_seq`` /
 #: ``gmail_history``; the relay uses ``relay_seq``.
@@ -102,6 +107,7 @@ DENIED_CONFIG_KEYS = (
     "refresh_token",
     "secret_ref",
     "oauth_state",
+    "oauth_code_verifier",
 )
 
 #: Stable error code → plain-language recovery action (frozen diagnostics map).
@@ -202,9 +208,20 @@ class IngestTrigger(Protocol):
 
 @runtime_checkable
 class TokenExchanger(Protocol):
-    """Injectable OAuth code→token exchanger (no network in tests)."""
+    """Injectable OAuth code→token exchanger (no network in tests).
 
-    async def exchange(self, provider: OauthProviderName, code: str, state: str) -> str: ...
+    Returns either the bare access token (``str`` — legacy) or the full
+    provider token-grant mapping (``{"access_token": …, "refresh_token": …}``)
+    when the exchanger completes the code exchange itself (the relay,
+    prompt2 §47). :meth:`ConnectionControlPlane.complete_oauth` persists the
+    durable ``access_token`` in both shapes — and, when the grant carries a
+    ``refresh_token``, that durable kind as well, which the mail worker's
+    GAP-1 refresh (``MailOAuthRefresher``) reads back from the vault.
+    """
+
+    async def exchange(
+        self, provider: OauthProviderName, code: str, state: str
+    ) -> str | dict[str, str]: ...
 
 
 class ConnectionControlPlaneError(Exception):
@@ -342,6 +359,26 @@ def _redact(message: str | None) -> str | None:
 def _token_equals(a: str, b: str) -> bool:
     """Constant-time token comparison."""
     return _secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _token_grant_parts(token: Any) -> tuple[str, str]:
+   """Normalise a :class:`TokenExchanger` result to ``(access, refresh)``.
+
+   A legacy exchanger returns the bare access token (``str``); an exchanger
+   that completes the code exchange itself may return the provider's full
+   grant mapping. Both shapes are accepted so the frozen ``FakeExchanger``
+   contract keeps working; a grant without a refresh token simply yields an
+   empty refresh part (access-only onboarding). Token values never appear in
+   logs or raised messages — failures carry stable codes only.
+   """
+   if isinstance(token, str):
+       return token.strip(), ""
+   if isinstance(token, dict):
+       return (
+           str(token.get("access_token") or "").strip(),
+           str(token.get("refresh_token") or "").strip(),
+       )
+   return "", ""
 
 
 def _parse_dt(value: Any) -> datetime | None:
@@ -738,7 +775,13 @@ class ConnectionControlPlane:
     # -- OAuth flow (gmail / graph_mail) -------------------------------------------
 
     async def start_oauth(self, connection_id: str) -> dict[str, Any]:
-        """Begin a provider sign-in: return ``{authorization_url, state, provider}``."""
+        """Begin a provider sign-in: return ``{authorization_url, state, provider, code_verifier}``.
+
+        The per-flow ``state`` and PKCE ``code_verifier`` are persisted in the
+        connection's non-secret ``config`` so :meth:`complete_oauth` can bind
+        the callback to this exact flow (CSRF guard, P1-106). Both are denied
+        config keys — never echoed back from the public projection.
+        """
         row = await self._require_row(connection_id)
         provider_name = OAUTH_PROVIDER_BY_KIND.get(row.kind)
         if provider_name is None:
@@ -749,22 +792,48 @@ class ConnectionControlPlane:
         client_id = str(config.get("client_id", ""))
         redirect_uri = str(config.get("oauth_redirect_uri", ""))
         state = _secrets.token_urlsafe(24)
-        # Persist the per-flow state (config, non-secret) for later verification.
+        verifier, challenge = make_pkce_pair()
+        # Persist the per-flow state + PKCE verifier (config, non-secret) for
+        # later verification; the challenge goes in the authorize URL.
         merged = dict(config)
         merged["oauth_state"] = state
+        merged["oauth_code_verifier"] = verifier
         await self._registry.connections.update_connection(connection_id, config=merged)
         url = build_authorization_url(
-            provider_name, client_id=client_id, redirect_uri=redirect_uri, state=state
+            provider_name,
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            code_challenge=challenge,
         )
-        return {"authorization_url": url, "state": state, "provider": provider_name}
+        return {
+            "authorization_url": url,
+            "state": state,
+            "code_verifier": verifier,
+            "provider": provider_name,
+        }
 
     async def complete_oauth(self, connection_id: str, code: str, state: str) -> dict[str, Any]:
-        """Exchange the code (injectable exchanger) and store the token via the vault."""
+        """Verify the callback state, exchange the code, store the token.
+
+        The callback ``state`` is compared in constant time against the
+        per-flow state persisted by :meth:`start_oauth`; a mismatch is a CSRF
+        attempt and is rejected with ``oauth_incomplete`` *before* any token
+        exchange happens. A consumed state is removed on success, so the same
+        code+state pair can only ever be exchanged once.
+        """
         row = await self._require_row(connection_id)
         provider_name = OAUTH_PROVIDER_BY_KIND.get(row.kind)
         if provider_name is None:
             raise ConnectionControlPlaneError(
                 ERR_OAUTH_INCOMPLETE, f"kind {row.kind!r} does not use OAuth"
+            )
+        expected_state = str((row.config or {}).get("oauth_state") or "")
+        # An empty persisted state means no flow was started (or it was
+        # already consumed) — reject without touching the exchanger.
+        if not expected_state or not _token_equals(expected_state, state):
+            raise ConnectionControlPlaneError(
+                ERR_OAUTH_INCOMPLETE, "callback state does not match the started flow"
             )
         if self._token_exchanger is None:
             raise ConnectionControlPlaneError(
@@ -773,7 +842,29 @@ class ConnectionControlPlane:
         token = await self._token_exchanger.exchange(provider_name, code, state)
         if not token:
             raise ConnectionControlPlaneError(ERR_OAUTH_INCOMPLETE, "token exchange returned empty")
-        await self.store_secret(connection_id=connection_id, kind=ACCESS_TOKEN, plaintext=token)
+        # Consume the one-shot state so a replayed callback cannot re-exchange.
+        config = dict(row.config or {})
+        config.pop("oauth_state", None)
+        config.pop("oauth_code_verifier", None)
+        await self._registry.connections.update_connection(connection_id, config=config)
+        # Persist the durable token kinds. The legacy string exchanger stores
+        # only an access token; a grant mapping also carries a refresh token,
+        # which the mail worker's GAP-1 refresh reads back from the vault.
+        # Both are written under their durable kinds (vault-encrypted), so a
+        # restarted worker resumes with the current tokens — the refresh token
+        # is never lost on rotation.
+        access, refresh = _token_grant_parts(token)
+        if not access:
+            raise ConnectionControlPlaneError(
+                ERR_OAUTH_INCOMPLETE, "token exchange returned no access token"
+            )
+        await self.store_secret(
+            connection_id=connection_id, kind=ACCESS_TOKEN, plaintext=access
+        )
+        if refresh:
+            await self.store_secret(
+                connection_id=connection_id, kind=REFRESH_TOKEN, plaintext=refresh
+            )
         await self._registry.connections.update_connection(
             connection_id, auth_status="authenticated", last_attempt_at=_now()
         )
@@ -885,6 +976,26 @@ class ConnectionControlPlane:
         updated = await self._registry.connections.get_connection(conn.id)
         return {**_public(updated), "ok": True, "detail": "relay device registered"}
 
+    async def relay_verify_token(self, *, device_id: str, token: str) -> bool:
+        """Constant-time check that ``token`` is the device's registered relay token.
+
+        Returns ``False`` (never raises, never distinguishes the reason) for an
+        empty token, an unknown device, or a token that does not match the
+        stored :data:`RELAY_TOKEN` credential — so the caller can map every
+        failure mode to a single generic 401 without leaking which check failed.
+        """
+        if not token:
+            return False
+        row = await self._find_relay_connection(device_id)
+        if row is None:
+            return False
+        stored = await self._registry.connections.get_secret(
+            kind=RELAY_TOKEN, owner_kind="connection", owner_id=row.id
+        )
+        if stored is None:
+            return False
+        return _token_equals(token, stored)
+
     async def _find_relay_connection(self, device_id: str) -> ConnectionRow | None:
         rows = await self._registry.connections.list_connections()
         for row in rows:
@@ -895,7 +1006,13 @@ class ConnectionControlPlane:
     async def relay_ingest_batch(
         self, *, device_id: str, messages: list[dict[str, Any]]
     ) -> dict[str, Any]:
-        """POST /api/relay/messages — durable batch ingest with (device_id, message_id) dedup."""
+        """POST /api/relay/messages — durable batch ingest with (device_id, message_id) dedup.
+
+        Dedup runs in two tiers: the bounded in-process ``relay_seq`` cursor is a
+        fast path (messages seen this process are skipped without a DB read), and
+        the durable ``relay_seen_messages`` table is the **authoritative** gate —
+        a message is never re-imported even after a restart cleared the cursor.
+        """
         conn = await self._find_relay_connection(device_id)
         if conn is None:
             raise ConnectionControlPlaneError(
@@ -915,7 +1032,13 @@ class ConnectionControlPlane:
             if not message_id:
                 continue
             dedup_key = f"{device_id}:{message_id}"
+            # Fast path: seen within this process (cursor) — no DB read needed.
             if dedup_key in seen:
+                skipped += 1
+                continue
+            # Authoritative gate: the durable seen-table survives restarts.
+            if await self._registry.relay_seen.is_seen(conn.id, device_id, message_id):
+                seen.append(dedup_key)
                 skipped += 1
                 continue
             stored += 1
@@ -960,6 +1083,11 @@ class ConnectionControlPlane:
         )
         await self._registry.communications.upsert_conversation(
             person_id=person.id, channel=channel, last_message_at=received_at
+        )
+        # Authoritative durable dedup row — survives restarts (the bounded cursor
+        # is only a fast path). Recorded after the communication write succeeds.
+        await self._registry.relay_seen.mark_seen(
+            conn.id, device_id, message_id, content_ref=content_ref
         )
 
     async def _resolve_person(self, conn: ConnectionRow, channel: str, peer: str, peer_name: Any):
@@ -1007,6 +1135,10 @@ class ConnectionControlPlane:
                     "last_seen_at": _utc_iso(config.get("last_seen_at")),
                     "last_message_at": _utc_iso(config.get("last_message_at")),
                     "pending_backlog": int(config.get("pending_backlog", 0) or 0),
+                    # Durable import backlog: pending/running import jobs (e.g.
+                    # the consented history import) — survives restarts, unlike
+                    # the device's in-flight ``pending_backlog`` counter.
+                    "import_backlog": await self._registry.imports.count_import_jobs(row.id),
                 }
             )
         return out

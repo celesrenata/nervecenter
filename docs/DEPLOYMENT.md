@@ -91,7 +91,80 @@ Apply the migration job:
 kubectl apply -f deployments/kubernetes/base/migrate-job.yaml
 ```
 
-### 7. Deploy API Service
+### 7. Bootstrap Object Store (MinIO, §14)
+
+The api plane writes artifacts to the MinIO object store. Before the API
+rolls, confirm the bucket exists **and is usable**. The
+`nervecenter-object-store-bootstrap` Job does two things, in order:
+
+1. **Creates the bucket** with `mc mb --ignore-existing` (idempotent —
+   re-run on every upgrade, like the migrate Job). It reads the same
+   `NERVECENTER_OBJECT_STORE_*` keys the API uses, from the out-of-band
+   `nervecenter-env` Secret (`envFrom`), so the bucket it creates is exactly
+   the one the API is configured to use. No `serviceAccountName`/RBAC — it
+   only talks to MinIO over the network (cross-namespace headless Service
+   `minio-crawler-hl.minio-service.svc:9000`).
+2. **Verifies a real write/read/delete round-trip** on a disposable probe
+   object `bootstrap/verify-<UTC-timestamp>.txt` (body
+   `nervcenter-object-store-bootstrap`): it PUTs the object (`mc cp`), GETs it
+   back (`mc cat`) and asserts the body matches, DELETEs it (`mc rm`), then
+   asserts a recursive listing of the `bootstrap/` prefix no longer contains
+   the key. Every step runs under `set -eu`, so the Job exits non-zero on the
+   first failure — the Job log is the live evidence, not just a claim.
+
+The four keys are wired into `nervecenter-env` from the tenant root creds
+(`rootUser`/`rootPassword` in `minio-service/minio-secrets`) — see
+`secrets.yaml.example` for the exact key names and re-encode commands.
+
+```bash
+kubectl apply -f deployments/kubernetes/base/object-store-bootstrap.yaml
+kubectl -n nervecenter wait --for=condition=complete job/nervecenter-object-store-bootstrap --timeout=180s
+```
+
+Expected log lines on success (key name only — no credentials ever appear):
+
+```text
+Bootstrapping bucket 'nervcenter-artifacts' at http://minio-crawler-hl.minio-service.svc:9000
+Added `nervcenter` successfully.
+Bucket created successfully `nervcenter/nervcenter-artifacts`.
+bucket nervcenter-artifacts ready
+verify: writing probe object 'bootstrap/verify-20261030T120000Z.txt'
+`/tmp/verify-body.txt` -> `nervcenter/nervcenter-artifacts/bootstrap/verify-20261030T120000Z.txt`
+┌───────┬─────────────┬──────────┬─────────┐
+│ Total │ Transferred │ Duration │ Speed   │
+│ 34 B  │ 34 B        │ 00m00s   │ ...     │
+└───────┴─────────────┴──────────┴─────────┘
+verify: reading probe object back
+verify: read body matches
+verify: deleting probe object
+Removed `nervcenter/nervcenter-artifacts/bootstrap/verify-20261030T120000Z.txt`.
+verify: probe object deleted — write/read/delete round-trip OK
+```
+
+**Re-running an existing Job** (Jobs are immutable, so `apply` alone is a
+no-op once the Job exists): delete the old Job object first, then apply.
+This is safe — the Job is a disposable bootstrap; deleting it does not touch
+any workload or data.
+
+```bash
+kubectl -n nervecenter delete job nervecenter-object-store-bootstrap
+kubectl apply -f deployments/kubernetes/base/object-store-bootstrap.yaml
+kubectl -n nervecenter wait --for=condition=complete job/nervecenter-object-store-bootstrap --timeout=180s
+kubectl -n nervecenter logs job/nervecenter-object-store-bootstrap --tail=40
+```
+
+A failed step leaves the probe object behind (a fresh run uses a new
+timestamped key), so a failed log is directly inspectable; the round-trip
+step is what turns "bucket exists" into "bucket works". `tools/verify_object_store.py`
+drives the same write/read/delete round-trip through the app's own object-store
+factory (put/get/head/delete), for an out-of-band double-check from a machine
+that has the `NERVECENTER_OBJECT_STORE_*` env set.
+
+A missing bucket leaves the object store "not ready" on `/api/health`
+(`status=incomplete`), so run this before (or immediately after) the API
+rollout on a first deploy.
+
+### 8. Deploy API Service
 
 Apply the API deployment and service:
 
@@ -100,7 +173,7 @@ kubectl apply -f deployments/kubernetes/base/api-deployment.yaml
 kubectl apply -f deployments/kubernetes/base/api-service.yaml
 ```
 
-### 8. Deploy MCP Server
+### 9. Deploy MCP Server
 
 Apply the MCP deployment and service:
 
@@ -109,7 +182,7 @@ kubectl apply -f deployments/kubernetes/base/mcp-deployment.yaml
 kubectl apply -f deployments/kubernetes/base/mcp-service.yaml
 ```
 
-### 9. Deploy Web UI
+### 10. Deploy Web UI
 
 Apply the web deployment and service:
 
@@ -118,7 +191,7 @@ kubectl apply -f deployments/kubernetes/base/web-deployment.yaml
 kubectl apply -f deployments/kubernetes/base/web-service.yaml
 ```
 
-### 10. Set Up SSO
+### 11. Set Up SSO
 
 1. Create the OAuth secret:
 
@@ -141,7 +214,7 @@ kubectl apply -f deployments/kubernetes/base/oauth-deployment.yaml
 kubectl apply -f deployments/kubernetes/base/oauth-service.yaml
 ```
 
-### 11. Configure Ingress
+### 12. Configure Ingress
 
 Apply the Ingress configuration:
 
@@ -179,6 +252,29 @@ kubectl -n nervecenter port-forward svc/web 8080:80
 open http://localhost:8080
 ```
 
+5. Check Object Store (§14):
+
+The `/api/health` `object_store` section reports the store's *configuration
+status* (via the non-raising `object_store_status` probe — it performs no live
+network call). With MinIO wired it reads `"status": "configured"`,
+`"scheme": "s3"`, `"missing": []`.
+
+```bash
+curl -s http://localhost:8000/api/health | python3 -m json.tool | sed -n '/object_store/,/}/p'
+```
+
+`status: configured` means all required `NERVECENTER_OBJECT_STORE_*` variables
+are set. To confirm the store actually works end-to-end (credentials accepted
+**and** the bucket exists), run the round-trip verifier with the same
+endpoint/credentials the API uses:
+
+```bash
+python tools/verify_object_store.py
+```
+
+It drives the app's real factory and SigV4 adapter through
+put/get/head/delete, leaves the bucket clean, and never prints the secret key.
+
 ## Troubleshooting
 
 If you encounter issues:
@@ -200,6 +296,22 @@ kubectl -n nervecenter describe pod <pod-name>
 ```bash
 kubectl -n nervecenter get all
 ```
+
+4. Object store not ready on `/api/health` (spec §14):
+
+- `status: "not_configured"` (missing `NERVECENTER_OBJECT_STORE_URL`) → the
+  `nervecenter-env` Secret has no object-store keys; wire them (see
+  `secrets.yaml.example`).
+- `status: "incomplete"` with a missing `NERVECENTER_OBJECT_STORE_*` name →
+  that specific key is absent from `nervecenter-env`; add it.
+- `status: "configured"` in health but `tools/verify_object_store.py` fails →
+  the bucket is missing or the credentials are wrong. Re-run the bootstrap Job
+  to create the bucket, and confirm the creds are the tenant **root** keys
+  (`rootUser`/`rootPassword` in `minio-service/minio-secrets`), not the
+  `MINIO_ACCESS_KEY` pair (a stale operator red herring).
+- `Access Key Id ... does not exist` from the bootstrap Job → same root-creds
+  mix-up; the endpoint `http://minio-crawler-hl.minio-service.svc:9000` is
+  correct (path-style, in-cluster).
 
 ## Notes
 

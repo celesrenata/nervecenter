@@ -18,7 +18,12 @@ Covers the ``backend.storage`` source-only package:
   missing ``NERVECENTER_OBJECT_STORE_*`` variable;
 - **S3/MinIO adapter**: the ``httpx``-based adapter signs requests (SigV4
   ``Authorization``) and round-trips put/exists/get/head/delete against an
-  in-memory S3 emulator served through ``httpx.MockTransport`` — no network.
+  in-memory S3 emulator served through ``httpx.MockTransport`` — no network;
+- **endpoint transport**: an ``http://`` endpoint (the in-cluster MinIO case)
+  is dialed in plain text by default — ``secure`` is derived from the URL
+  scheme, and ``NERVECENTER_OBJECT_STORE_SECURE`` only overrides it when set
+  to an explicit ``0``/``1`` — and the portful netloc (``host:port``) is
+  preserved in the ``Host`` header so MinIO's vhost-style routing works.
 """
 
 from __future__ import annotations
@@ -320,6 +325,50 @@ class TestS3ObjectStoreConstructor:
         assert isinstance(store, S3ObjectStore)
 
 
+class TestEndpointTransportSecurity:
+    """Scheme-derived transport security + explicit ``_SECURE`` override.
+
+    An in-cluster MinIO endpoint is plain ``http://host:9000``; it must be
+    dialed over plain text by default (never silently upgraded to TLS).
+    """
+
+    def test_http_endpoint_is_plain_by_default(self) -> None:
+        env = _env()
+        env.pop(ENV_OBJECT_STORE_SECURE)
+        assert env[ENV_OBJECT_STORE_URL] == "http://minio.local:9000"
+        config = config_from_env(env)
+        assert config.scheme == "s3"
+        assert config.secure is False
+
+    def test_https_endpoint_is_secure_by_default(self) -> None:
+        env = _env()
+        env.pop(ENV_OBJECT_STORE_SECURE)
+        env[ENV_OBJECT_STORE_URL] = "https://s3.example.com"
+        config = config_from_env(env)
+        assert config.secure is True
+
+    def test_s3_scheme_defaults_secure(self) -> None:
+        env = _env()
+        env.pop(ENV_OBJECT_STORE_SECURE)
+        env[ENV_OBJECT_STORE_URL] = "s3://s3.amazonaws.com"
+        config = config_from_env(env)
+        assert config.secure is True
+
+    def test_secure_zero_explicitly_plains_http(self) -> None:
+        config = config_from_env(_env(**{ENV_OBJECT_STORE_SECURE: "0"}))
+        assert config.secure is False
+
+    def test_secure_one_explicitly_tls_http(self) -> None:
+        config = config_from_env(_env(**{ENV_OBJECT_STORE_SECURE: "1"}))
+        assert config.secure is True
+
+    def test_garbage_secure_falls_back_to_scheme(self) -> None:
+        env = _env(**{ENV_OBJECT_STORE_SECURE: "bogus"})
+        config = config_from_env(env)
+        # ``bogus`` is not ``0``/``1`` -> scheme default (http => plain).
+        assert config.secure is False
+
+
 # ---------------------------------------------------------------------------
 # S3/MinIO adapter — against an in-memory S3 emulator via httpx.MockTransport
 # ---------------------------------------------------------------------------
@@ -398,6 +447,38 @@ async def _emulator_store() -> tuple[ObjectStoreConfig, S3ObjectStore, dict]:
     )
     store = S3ObjectStore(config, transport=transport)
     return config, store, objects
+
+
+async def test_incluster_host_header_keeps_port() -> None:
+    """A plain-HTTP in-cluster endpoint must keep ``host:port`` in the Host header.
+
+    MinIO routes path-style requests by the ``Host`` header; an in-cluster
+    endpoint such as ``http://minio-crawler-hl.minio-service.svc:9000`` carries
+    a port that the adapter must not strip.
+    """
+
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("host", ""))
+        if request.method == "PUT":
+            return httpx.Response(200, headers={"ETag": '"x"'})
+        return httpx.Response(404, text="NoSuchKey")
+
+    config = ObjectStoreConfig(
+        scheme="s3",
+        url="http://minio-crawler-hl.minio-service.svc:9000",
+        bucket=BUCKET,
+        access_key="ak",
+        secret_key="sk",
+        region="us-east-1",
+        secure=False,
+    )
+    store = S3ObjectStore(config, transport=httpx.MockTransport(handler))
+    await store.put("probe.txt", b"hi")
+    # Every request (the exists probe + the PUT) carries the portful host.
+    assert seen
+    assert all(h == "minio-crawler-hl.minio-service.svc:9000" for h in seen)
 
 
 class TestS3Adapter:

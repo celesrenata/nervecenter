@@ -79,7 +79,19 @@ export default async function main() {
     ['-m', 'uvicorn', 'backend.api.app:app', '--port', '8000', '--log-level', 'warning'],
     {
       cwd: REPO_ROOT,
-      env: { ...process.env, NERVE_MOCK_INFER: '1' },
+      env: {
+        ...process.env,
+        NERVE_MOCK_INFER: '1',
+        // Enable the break-glass local-admin login (backend/api/auth.py
+        // POST /api/auth/login) with a fixed e2e password. The auth-gated
+        // routes (all of /api/connections — backend/api/endpoints/
+        // connections.py `Depends(current_access)`) require a real
+        // locally-minted access token, so the specs establish a session
+        // through this endpoint instead of seeding a fake bearer string.
+        // No default password exists (AC-S03); this one is test-only.
+        NERVE_LOCAL_ADMIN: '1',
+        NERVE_LOCAL_ADMIN_PASSWORD: 'e2e-breakglass',
+      },
       stdio: 'ignore',
       detached: true,
     },

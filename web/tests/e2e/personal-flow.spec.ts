@@ -106,11 +106,32 @@ function assertClean({
   expect(consoleErrors, 'console errors').toEqual([])
 }
 
-/** Seed the same (non-enforced) token convention the AC005 suite uses. */
+/**
+ * Establish a REAL session against the live e2e backend so auth-gated
+ * routes answer 200/201 instead of 401.
+ *
+ * The AC005-era fixture seeded a non-enforced `localStorage.authToken`,
+ * but the client reads `sessionStorage.nc.accessToken` and only injects
+ * `Authorization: Bearer <token>` when it is set (src/api/client.ts).
+ * Since the auth-gated connection routes (`Depends(current_access)`) now
+ * require a valid locally-minted access token, we mint one through the
+ * break-glass login (enabled in global-setup.mjs via
+ * NERVE_LOCAL_ADMIN / NERVE_LOCAL_ADMIN_PASSWORD) and seed it into the
+ * sessionStorage key the transport actually reads.
+ */
 async function seedAuth(page: import('@playwright/test').Page) {
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
+  const login = await fetch('http://127.0.0.1:8000/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'local-admin', password: 'e2e-breakglass' }),
   })
+  if (!login.ok) {
+    throw new Error(`seedAuth: break-glass login failed (HTTP ${login.status})`)
+  }
+  const { access_token } = (await login.json()) as { access_token: string }
+  await page.addInitScript((token: string) => {
+    sessionStorage.setItem('nc.accessToken', token)
+  }, access_token)
 }
 
 test('PF-1 boot gate: Now + Today render honest empty states (no demo records)', async ({

@@ -28,7 +28,10 @@ Per poll, in order:
    → ``auth_status="auth_expired"`` and
    :class:`~backend.connectors.mail.mail_transport.TransportConnectError`
    → ``operational_status="error"`` + ``last_error_code``, then reconnect
-   with bounded exponential backoff.
+   with bounded exponential backoff. Stored/logged failure text is always
+   passed through :func:`redact_transport_error` first (stable code +
+   redacted message — URL-embedded ``user:pass@`` and token-shaped
+   substrings never reach the database or logs).
 
 A first-ever poll (no stored cursor) is the *initial history import*: the
 worker records it in an ``import_jobs`` row whose id is kept in the
@@ -61,6 +64,7 @@ from backend.connectors.mail.mail_transport import (
     TransportAuthError,
     TransportConnectError,
 )
+from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
 from backend.ingest.seen import (
     cursor_with_seen,
     is_seen,
@@ -79,6 +83,10 @@ CONNECTION_KINDS = ("gmail", "imap", "outlook")
 
 #: ``ingest_cursors.kind`` per source type.
 CURSOR_KINDS = {"gmail": "gmail_history", "imap": "imap_seq"}
+
+#: OAuth provider per connection kind (mirrors the control plane's
+#: ``OAUTH_PROVIDER_BY_KIND``; only the kinds the ingest worker serves).
+MAIL_OAUTH_PROVIDERS = {"gmail": "google", "outlook": "microsoft"}
 
 #: Backoff bounds (seconds): delay = min(base * 2**failures, max).
 DEFAULT_BACKOFF_BASE_S = 2.0
@@ -118,6 +126,15 @@ class IngestSeam(Protocol):
         """Run the §61 detection → follow-up → attention pass."""
         ...
 
+    async def flush_durable(self) -> Exception | None:
+        """Optional member: await the pipeline's pending durable mirror
+        writes and return the first failure (``None`` = everything
+        committed). The worker gates its cursor on this — a truthy
+        exception means ``commit_failed`` (P0-D). Doubles of the seam may
+        omit it; the worker getattr-guards (treats no-flush as
+        committed)."""
+        ...
+
 
 class DefaultIngestSeam:
     """Production :class:`IngestSeam` over the process-wide singletons."""
@@ -148,6 +165,17 @@ class DefaultIngestSeam:
     def run_pipeline(self, communication: Communication, *, now: Any) -> Any:
         return self.pipeline.ingest(communication, now=now)
 
+    async def flush_durable(self) -> Exception | None:
+        """Settle the pipeline's durable mirrors; surface the first failure.
+
+        The commitment seam and the follow-up / attention mirrors both
+        live on the process-wide pipeline / follow-up service, so the
+        commit-gate awaits the composed pipeline's
+        :meth:`~backend.communications.detection.wiring.CommunicationPipeline.
+        flush_durable`.
+        """
+        return await self.pipeline.flush_durable()
+
 
 def default_ingest_seam() -> IngestSeam:
     """The production seam over the process-wide singletons."""
@@ -168,6 +196,25 @@ def _secret_kind_for(conn: Any) -> str:
     return "app_password"
 
 
+# -- transport-error redaction (GAP 2: §4 — never log/emit credentials) --------
+
+
+def redact_transport_error(message: Any, *, limit: int = 256) -> str:
+    """Stable, redacted form of a transport exception for durable storage.
+
+    Delegates to the shared :func:`backend.connectors.redact.redact_message`
+    so the mail worker, health, calendar, and supervisor planes all use one
+    redactor. The returned text carries the message's *shape* with every
+    credential-bearing fragment removed: URL ``user:pass@`` userinfo is
+    stripped to ``user@`` and token-shaped substrings are replaced by
+    ``REDACTED`` markers. The result is truncated to ``limit`` characters
+    so the ``last_error_message`` column stays bounded.
+    """
+    from backend.connectors.redact import redact_message
+
+    return redact_message(message, limit=limit)
+
+
 def _content_key(connection_id: str, mail_id: str) -> str:
     """Stable, secret-free object-store key for one fetched message."""
     digest = hashlib.sha256(f"{connection_id}:{mail_id}".encode("utf-8")).hexdigest()[:24]
@@ -179,6 +226,38 @@ def _communication_id(connection_id: str, mail_id: str) -> str:
     (same ``communication_id`` → ``created=False``), never a duplicate row."""
     digest = hashlib.sha256(f"{connection_id}:{mail_id}".encode("utf-8")).hexdigest()[:24]
     return f"comm-mail-{digest}"
+
+
+# -- single-flight OAuth refresh (GAP 1 race guard) ---------------------------
+#
+# Two live :class:`MailIngestWorker` instances can exist for the same
+# connection: the durable loop worker (supervisor ``_spawn_for``) and the
+# one-shot ``sync_once`` worker the control-plane "Sync Now" trigger builds
+# (``MailSyncTrigger`` → ``supervisor.sync_once``). Each builds its own
+# ``MailOAuthRefresher``, so without a guard both could read the same stored
+# ``refresh_token`` and fire two concurrent refresh grants. Providers rotate
+# the refresh token on use (GAP 1), so the second grant fails with
+# ``invalid_grant`` and the blanket ``except`` in
+# :meth:`MailIngestWorker._attempt_token_refresh` would then map the
+# connection to ``auth_expired`` even though the *first* refresh persisted a
+# perfectly good rotated token. The lock below makes the refresh
+# refresh+persist rotation single-flight per connection: the concurrent caller
+# waits, then re-reads the vault (which now holds the rotated token) on its
+# next transport pass instead of re-refreshing. Process-wide on purpose —
+# both worker instances share the same event loop; bounded by the (small)
+# number of mail connections, so the registry never grows unbounded.
+
+_REFRESH_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _refresh_lock(connection_id: str) -> asyncio.Lock:
+    """Return (creating on first use) the single-flight refresh lock for one
+    connection. Created on the running loop — see the module note above."""
+    lock = _REFRESH_LOCKS.get(connection_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _REFRESH_LOCKS[connection_id] = lock
+    return lock
 
 
 class MailIngestWorker:
@@ -204,6 +283,7 @@ class MailIngestWorker:
         backoff_base_s: float = DEFAULT_BACKOFF_BASE_S,
         backoff_max_s: float = DEFAULT_BACKOFF_MAX_S,
         sleep_func: Any = asyncio.sleep,
+        oauth_refresher: Any | None = None,
     ) -> None:
         self.connection_id = connection_id
         self.cursor_kind = cursor_kind
@@ -216,6 +296,11 @@ class MailIngestWorker:
         self._backoff_base_s = float(backoff_base_s)
         self._backoff_max_s = float(backoff_max_s)
         self._sleep_func = sleep_func
+        #: Optional durable :class:`~backend.connectors.mail.oauth_refresh.
+        #: MailOAuthRefresher` — when set, an OAuth transport failure
+        #: (``auth_method == "oauth2"``) triggers one refresh attempt before
+        #: the auth-expired mapping. Supervisor-wired; tests inject a stub.
+        self._oauth_refresher = oauth_refresher
         self._stop_event: asyncio.Event | None = None
         self._task: asyncio.Task[None] | None = None
         self._failure_count = 0
@@ -297,6 +382,16 @@ class MailIngestWorker:
         conn = await self._connections.get_connection(self.connection_id)
         if conn is None:
             return dict(base, status="missing")
+        # Capture the access token this poll is about to present, so a failed
+        # OAuth refresh can later tell whether the vault already holds a
+        # fresher one (single-flight guard, see ``_attempt_token_refresh``).
+        access_token: str | None = None
+        if _secret_kind_for(conn) == "access_token":
+            access_token = await self._connections.get_secret(
+                kind="access_token",
+                owner_kind="connection",
+                owner_id=self.connection_id,
+            )
         if not bool(getattr(conn, "enabled", False)):
             return dict(base, status="disabled")
 
@@ -304,43 +399,108 @@ class MailIngestWorker:
         cursor: dict[str, Any] = dict(cursor_row.cursor_value or {}) if cursor_row is not None else {}
 
         try:
-            credentials = await self._resolve_credentials(conn)
-            connector = self._connector_for(conn)
-            items, next_cursor = await self._transport.run(
-                connector, cursor, credentials=credentials
-            )
+            items, next_cursor = await self._run_transport_once(conn, cursor)
         except TransportAuthError as exc:
-            await self._connections.update_connection(
-                self.connection_id,
-                auth_status="auth_expired",
-                operational_status="error",
-                last_error_code="auth_expired",
-                last_error_message=str(exc)[:256],
-            )
-            log.warning("mail_ingest.auth_expired", **base, error_code="auth_expired")
-            return dict(base, status="auth_expired")
+            # GAP 1: on an OAuth connection, one durable refresh attempt —
+            # the rotated ``refresh_token`` is written back to the vault
+            # before retrying with the fresh access token.
+            retry_ok = False
+            if await self._attempt_token_refresh(conn, access_token):
+                try:
+                    items, next_cursor = await self._run_transport_once(conn, cursor)
+                    retry_ok = True
+                except Exception:  # noqa: BLE001 - fresh token also failed
+                    retry_ok = False
+            if retry_ok:
+                log.info(
+                    "mail_ingest.auth_refreshed",
+                    **base,
+                )
+                # The fresh token was accepted: continue the normal
+                # processing path (batch ingest + cursor + healthy mapping).
+            else:
+                detail = redact_transport_error(str(exc))
+                await self._connections.update_connection(
+                    self.connection_id,
+                    auth_status="auth_expired",
+                    operational_status="error",
+                    last_error_code="auth_expired",
+                    last_error_message=detail,
+                )
+                log.warning(
+                    "mail_ingest.auth_expired",
+                    **base,
+                    error_code="auth_expired",
+                    error=detail,
+                )
+                return dict(base, status="auth_expired")
         except TransportConnectError as exc:
+            detail = redact_transport_error(str(exc))
             await self._connections.update_connection(
                 self.connection_id,
                 operational_status="error",
                 last_error_code="connect_failed",
-                last_error_message=str(exc)[:256],
+                last_error_message=detail,
             )
-            log.warning("mail_ingest.connect_failed", **base, error_code="connect_failed")
+            log.warning(
+                "mail_ingest.connect_failed",
+                **base,
+                error_code="connect_failed",
+                error=detail,
+            )
             return dict(base, status="error")
         except Exception as exc:  # noqa: BLE001 - one bad poll must not kill the loop
+            detail = redact_transport_error(f"{type(exc).__name__}: {exc}")
             await self._connections.update_connection(
                 self.connection_id,
                 operational_status="error",
                 last_error_code="ingest_failed",
-                last_error_message=f"{type(exc).__name__}: {exc}"[:256],
+                last_error_message=detail,
             )
-            log.exception("mail_ingest.unexpected", **base, error_code="ingest_failed")
+            # No ``log.exception``: the exception text is credential-bearing
+            # (GAP 2) — only its redacted form may reach the logs.
+            log.error(
+                "mail_ingest.unexpected",
+                **base,
+                error_code="ingest_failed",
+                error=detail,
+            )
             return dict(base, status="error")
 
         if not isinstance(next_cursor, dict):
             next_cursor = dict(cursor)
         ingested, duplicates, seen = await self._process_batch(conn, items, seen_keys(cursor))
+        # P0-D commit-gate: the durable cursor (and its seen-list fold)
+        # advances only after the pipeline's durable mirror writes have
+        # settled. The seam surfaces the first durable failure; a seam
+        # double without ``flush_durable`` is treated as committed
+        # (getattr-guarded — its durability is its own concern).
+        flush = getattr(self._seam, "flush_durable", None)
+        durable_failure: Exception | None = None
+        if flush is not None:
+            try:
+                durable_failure = await flush()
+            except Exception as exc:  # noqa: BLE001 - the gate is best-effort
+                durable_failure = exc
+        if durable_failure is not None:
+            detail = redact_transport_error(str(durable_failure))
+            await self._connections.update_connection(
+                self.connection_id,
+                operational_status="error",
+                last_error_code="commit_failed",
+                last_error_message=detail,
+            )
+            log.warning(
+                "mail_ingest.commit_failed",
+                **base,
+                error_code="commit_failed",
+                error=detail,
+            )
+            # No cursor advance, no seen-list fold: the transport
+            # re-delivers the same items and the mirrors' idempotency
+            # (durable dedup by provenance key) absorbs what already
+            # committed.
+            return dict(base, status="error", error_code="commit_failed")
         await self._imports.set_cursor(
             self.connection_id, self.cursor_kind, cursor_with_seen(next_cursor, seen)
         )
@@ -418,6 +578,25 @@ class MailIngestWorker:
             }
             result = self._seam.ingest_communication(payload)
             communication = result["communication"]
+            # P0-C: hand detection the body this worker just stored —
+            # read it back out of the object store and register it
+            # *transiently* with the detection seam (getattr-guarded).
+            # Nothing is persisted; the graph record keeps only the
+            # ``content_ref`` pointer. Without this the worker path sees
+            # no text and yields zero findings / zero durable rows.
+            register = getattr(self._seam, "register_content", None)
+            if register is not None:
+                try:
+                    body = await self._object_store.get(key)
+                except Exception:  # noqa: BLE001 - missing body → empty text
+                    body = b""
+                register(
+                    str(
+                        getattr(communication, "content_ref", None)
+                        or payload["content_ref"]
+                    ),
+                    body.decode("utf-8", "replace"),
+                )
             self._seam.run_pipeline(communication, now=communication.timestamp)
             if bool(result.get("created")):
                 ingested += 1
@@ -426,6 +605,95 @@ class MailIngestWorker:
         return ingested, duplicates, seen
 
     # -- helpers -----------------------------------------------------------
+
+    async def _run_transport_once(self, conn: Any, cursor: dict[str, Any]) -> tuple[list[Any], dict[str, Any]]:
+        """Resolve the transient credential and run one transport pass.
+
+        Re-resolving on every call means a post-refresh retry automatically
+        picks up the fresh vault-backed access token (never a cached one).
+        """
+        credentials = await self._resolve_credentials(conn)
+        connector = self._connector_for(conn)
+        return await self._transport.run(connector, cursor, credentials=credentials)
+
+    async def _attempt_token_refresh(self, conn: Any, rejected_access_token: str | None) -> bool:
+        """One durable OAuth refresh after a credential rejection (GAP 1).
+
+        Applies only to OAuth connections (the worker resolves their
+        credential under the ``access_token`` secret kind). The app keys
+        (``client_id`` / ``client_secret``) are non-secret config — the
+        calendar-plane convention; their absence simply disables refresh
+        and falls through to the ``auth_expired`` mapping. The rotated
+        ``refresh_token`` and the fresh ``access_token`` are written back
+        through the vault-backed ``upsert_secret`` path *before* this
+        returns, so a restarted worker resumes with the current tokens.
+        Returns ``True`` only when a fresh access token was produced (either
+        by this call's refresh, or — the single-flight path — when a
+        concurrent refresh already persisted one; see the lock below).
+
+        ``rejected_access_token`` is the access token the *failed* transport
+        call presented, captured before the poll. It lets the single-flight
+        guard distinguish "the vault already holds a newer access token than
+        the one I was rejected on" (a concurrent refresh already ran — use
+        that, do **not** re-grant) from "the vault still holds the stale
+        token" (genuinely expired — refresh).
+        """
+        if _secret_kind_for(conn) != "access_token":
+            return False
+        provider_name = MAIL_OAUTH_PROVIDERS.get(str(getattr(conn, "kind", "")).lower())
+        if provider_name is None:
+            return False
+        config = getattr(conn, "config", None) or {}
+        client_id = str(config.get("client_id") or "").strip()
+        client_secret = str(config.get("client_secret") or "").strip()
+        if not client_id or not client_secret:
+            return False
+        refresher = self._oauth_refresher or MailOAuthRefresher(
+            connections=self._connections
+        )
+        try:
+            # Single-flight per connection (GAP 1 race guard): the refresh
+            # reads the stored refresh token, the provider rotates it on use,
+            # and the rotated value is persisted inside this lock. Two live
+            # worker instances can exist for one connection — the durable
+            # loop worker and the one-shot ``sync_once`` worker the control
+            # plane's "Sync Now" trigger builds — each with its own
+            # refresher, so both can hit the transport with the same
+            # access token in the same poll. The first to grab the lock
+            # refreshes; the second waits on it and then compares the
+            # vault's access token against the one *it* was rejected on.
+            # If the vault is already ahead (the concurrent refresh
+            # persisted a fresh token), the second skips the exchange —
+            # firing a grant with an already-rotated refresh token is
+            # exactly the ``invalid_grant`` failure this guard exists to
+            # prevent. The lock is released on every path out of the
+            # ``async with`` (success or exception), so a failed refresh
+            # cannot wedge later attempts.
+            async with _refresh_lock(self.connection_id):
+                current = await self._connections.get_secret(
+                    kind="access_token",
+                    owner_kind="connection",
+                    owner_id=self.connection_id,
+                )
+                if (
+                    rejected_access_token is not None
+                    and current is not None
+                    and current != rejected_access_token
+                ):
+                    # A concurrent refresh already rotated the token pair
+                    # while we were waiting on the lock — do not re-grant;
+                    # the caller's retry (which re-resolves credentials)
+                    # picks up the fresh token.
+                    return True
+                await refresher.refresh(
+                    connection_id=self.connection_id,
+                    provider=provider_name,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                )
+        except Exception:  # noqa: BLE001 - a failed refresh is not fatal to the loop
+            return False
+        return True
 
     async def _resolve_credentials(self, conn: Any) -> dict[str, str]:
         """Decrypt the connection's durable secret into transient credential
