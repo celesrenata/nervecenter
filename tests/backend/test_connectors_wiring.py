@@ -387,6 +387,113 @@ class TestTokenExchanger:
         stored = await plane_env.registry.connections.get_connection(row.id)
         assert not (stored.config or {}).get("oauth_state")
 
+    async def test_exchange_is_bound_to_the_matching_flow_across_accounts(
+        self, plane_env
+    ) -> None:
+        """Two same-provider onboarding flows are live at once.
+
+        Completing *account B's* callback must complete B's grant with B's
+        PKCE verifier + redirect URI, and must NOT be confused with
+        account A's flow. A provider-only row lookup would have posted A's
+        verifier — corrupting the PKCE grant for the wrong account.
+        """
+        plane = plane_env.plane
+        acc_a = await plane.create_connection(
+            kind="gmail",
+            config={"account": "a@g.example", "oauth_redirect_uri": "https://cb.example/a"},
+        )
+        acc_b = await plane.create_connection(
+            kind="gmail",
+            config={"account": "b@g.example", "oauth_redirect_uri": "https://cb.example/b"},
+        )
+        flow_a = await plane.start_oauth(acc_a.id)
+        flow_b = await plane.start_oauth(acc_b.id)
+
+        transport = FakeTokenTransport(
+            200, {"access_token": "b-access", "refresh_token": "b-refresh"}
+        )
+        register_token_exchanger(
+            plane,
+            registry=plane_env.registry,
+            transport=transport,
+            env={
+                "NERVE_GOOGLE_CLIENT_ID": "cid",
+                "NERVE_GOOGLE_CLIENT_SECRET": "csecret",
+            },
+        )
+
+        # Complete account B's callback.
+        result = await plane.complete_oauth(acc_b.id, "code-b", flow_b["state"])
+        assert result["ok"] is True
+
+        # The grant must have been bound to B's flow, not A's.
+        url, form = transport.calls[0]
+        assert url == "https://oauth2.googleapis.com/token"
+        assert form["code"] == "code-b"
+        assert form["redirect_uri"] == "https://cb.example/b"
+        assert form["code_verifier"] == flow_b["code_verifier"]
+        assert form["code_verifier"] != flow_a["code_verifier"]
+        assert form["redirect_uri"] != "https://cb.example/a"
+
+        # B's tokens landed on B's row (vault round-trip), not on A's.
+        assert (
+            await plane_env.registry.connections.get_secret(
+                kind=ACCESS_TOKEN, owner_kind="connection", owner_id=acc_b.id
+            )
+            == "b-access"
+        )
+        assert (
+            await plane_env.registry.connections.get_secret(
+                kind=REFRESH_TOKEN, owner_kind="connection", owner_id=acc_b.id
+            )
+            == "b-refresh"
+        )
+        assert (
+            await plane_env.registry.connections.get_secret(
+                kind=ACCESS_TOKEN, owner_kind="connection", owner_id=acc_a.id
+            )
+            is None
+        )
+
+        # A's flow remains live (untouched) — only B's one-shot state was consumed.
+        a_cfg = (await plane_env.registry.connections.get_connection(acc_a.id)).config or {}
+        b_cfg = (await plane_env.registry.connections.get_connection(acc_b.id)).config or {}
+        assert a_cfg.get("oauth_state") == flow_a["state"]
+        assert not b_cfg.get("oauth_state")
+
+    async def test_exchange_wrong_flow_state_is_oauth_incomplete(self, plane_env) -> None:
+        """Completing one account with a *different* account's state is rejected."""
+        plane = plane_env.plane
+        acc_a = await plane.create_connection(kind="gmail", config={"account": "a@g.example"})
+        acc_b = await plane.create_connection(kind="gmail", config={"account": "b@g.example"})
+        flow_a = await plane.start_oauth(acc_a.id)
+        flow_b = await plane.start_oauth(acc_b.id)
+
+        transport = FakeTokenTransport(200, {"access_token": "x"})
+        register_token_exchanger(
+            plane,
+            registry=plane_env.registry,
+            transport=transport,
+            env={
+                "NERVE_GOOGLE_CLIENT_ID": "cid",
+                "NERVE_GOOGLE_CLIENT_SECRET": "csecret",
+            },
+        )
+
+        # A's connection_id with B's callback state → CSRF mismatch.
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await plane.complete_oauth(acc_a.id, "code", flow_b["state"])
+        assert exc.value.code == "oauth_incomplete"
+        # No grant was POSTed.
+        assert transport.calls == []
+        # Both flows remain live (no state consumed).
+        assert (await plane_env.registry.connections.get_connection(acc_a.id)).config.get(
+            "oauth_state"
+        ) == flow_a["state"]
+        assert (await plane_env.registry.connections.get_connection(acc_b.id)).config.get(
+            "oauth_state"
+        ) == flow_b["state"]
+
     async def test_exchange_http_failure_is_oauth_incomplete(self, plane_env) -> None:
         plane = plane_env.plane
         row = await plane.create_connection(kind="gmail", config={"account": "x@g.example"})

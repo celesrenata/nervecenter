@@ -30,6 +30,7 @@ Startup never crashes on this plane.
 from __future__ import annotations
 
 import os
+import secrets
 from typing import Any
 
 import structlog
@@ -212,16 +213,23 @@ def register_connection_probes(
 # -- OAuth token exchanger -------------------------------------------------------
 
 
+def _state_equals(a: str, b: str) -> bool:
+    """Constant-time OAuth state comparison (one-shot CSRF binding)."""
+    return secrets.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
 class RegistryTokenExchanger:
     """Durable code→token exchanger bound to the shared repository registry.
 
     The provider's token endpoint is authoritative (the frozen :mod:`backend
-    .connectors.mail.oauth` presets); the PKCE ``code_verifier`` and redirect
-    URI are re-read from the *row config* (persisted by
-    :meth:`ConnectionControlPlane.start_oauth`) so the exchange is bound to
-    the exact onboarding flow. Client credentials come from the deploy
-    environment — never from connection config (``client_secret`` is a
-    denied config key).
+    .connectors.mail.oauth` presets). The row is resolved by matching the
+    callback ``state`` in constant time against the per-flow state persisted
+    by :meth:`ConnectionControlPlane.start_oauth`, so the PKCE
+    ``code_verifier`` and redirect URI are re-read from the *same row's*
+    non-secret config even when several same-provider onboarding flows are
+    live at once (concurrent multi-account sign-in). Client credentials come
+    from the deploy environment — never from connection config
+    (``client_secret`` is a denied config key).
 
     Failures raise :class:`ConnectionControlPlaneError` with the stable
     ``oauth_incomplete`` code (a provider error body is never echoed — it can
@@ -245,11 +253,12 @@ class RegistryTokenExchanger:
             raise ConnectionControlPlaneError(
                 ERR_OAUTH_INCOMPLETE, "no authorization code to exchange"
             )
-        # The row is resolved per provider: the plane already verified the
-        # callback state against the persisted per-flow state; the exchanger
-        # only re-reads the row's non-secret onboarding config (redirect URI +
-        # PKCE verifier).
-        row = await self._find_oauth_row(provider)
+        # The row is resolved by the *callback state*: the plane already
+        # verified that state against the per-flow state persisted by
+        # start_oauth, so matching it here keeps the PKCE verifier +
+        # redirect URI bound to the same onboarding flow even when several
+        # same-provider flows are live at once.
+        row = await self._find_oauth_row(provider, state)
         config = dict(getattr(row, "config", None) or {})
         env = dict(self._env if self._env is not None else os.environ)
         client_id = str(env.get(_CLIENT_ID_ENV[provider], "") or "").strip()
@@ -289,19 +298,26 @@ class RegistryTokenExchanger:
             "refresh_token": str(body.get("refresh_token") or ""),
         }
 
-    async def _find_oauth_row(self, provider: str) -> Any:
-        """Locate the OAuth connection row whose onboarding flow is live.
+    async def _find_oauth_row(self, provider: str, state: str) -> Any:
+        """Locate the OAuth connection row whose onboarding flow this state
+        belongs to.
 
         Identified by the persisted ``oauth_state`` marker in config (set by
-        :meth:`ConnectionControlPlane.start_oauth`); a stale callback whose
-        state was already consumed finds no row → ``oauth_incomplete``.
+        :meth:`ConnectionControlPlane.start_oauth`). Matching the callback
+        ``state`` in constant time keeps the exchange bound to the exact
+        flow even when several same-provider flows are live at once (the
+        provider-only match would have read the *first* live row's PKCE
+        verifier — a cross-flow binding hole for concurrent sign-in). A
+        stale callback whose state was already consumed finds no matching
+        row → ``oauth_incomplete``.
         """
         rows = await self._registry.connections.list_connections()
         wanted = {k for k, p in OAUTH_PROVIDER_BY_KIND.items() if p == provider}
         for row in rows:
             if str(getattr(row, "kind", "") or "") not in wanted:
                 continue
-            if str((getattr(row, "config", None) or {}).get("oauth_state") or ""):
+            row_state = str((getattr(row, "config", None) or {}).get("oauth_state") or "")
+            if row_state and _state_equals(row_state, state):
                 return row
         raise ConnectionControlPlaneError(
             ERR_OAUTH_INCOMPLETE, "no live onboarding flow for this provider"
