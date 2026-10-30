@@ -22,6 +22,7 @@ contain none of the values.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
@@ -31,7 +32,7 @@ from typing import Any
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import StaticPool
+from sqlalchemy.pool import NullPool, StaticPool
 
 from backend.api.models import MailConnector
 from backend.connectors.mail.mail_transport import (
@@ -708,3 +709,109 @@ class TestWorkerRefreshWiring:
         assert summary["status"] == "ok"
         assert endpoint2.requests == []  # no refresh on the restarted worker
         assert transport2.credential_values[0]["access_token"] == _NEW_ACCESS
+
+
+class _BarrierAuthTransport:
+    """Transport whose *first* call raises :class:`TransportAuthError` only
+    after every registered peer has also made its first call (a two-party
+    barrier), so both concurrent workers observe the same stale access token
+    before any refresh fires — the exact interleaving the single-flight guard
+    exists to absorb."""
+
+    def __init__(self, barrier: dict[str, int]) -> None:
+        self._barrier = barrier
+        self.calls: list[dict[str, str]] = []
+
+    async def run(
+        self,
+        connector: MailConnector,
+        cursor: dict[str, Any],
+        *,
+        credentials: dict[str, str] | None = None,
+    ) -> tuple[list[MailItem], dict[str, Any]]:
+        self.calls.append(dict(credentials or {}))
+        if len(self.calls) == 1:
+            self._barrier["n"] = self._barrier.get("n", 0) + 1
+            while self._barrier["n"] < 2:
+                await asyncio.sleep(0)
+            raise TransportAuthError("LOGIN -> AUTHENTICATIONFAILED (stale token)")
+        # Retry pass after the (single) refresh: nothing new to fetch.
+        return [], dict(cursor)
+
+
+class TestConcurrentRefreshSingleFlight:
+    """GAP 1 race: two live workers for one connection both hit a rejected
+    access token; exactly one token grant may fire.
+
+    Uses its own multi-connection engine (``NullPool`` over file-backed
+    SQLite) because two *concurrent* workers each need their own DBAPI
+    connection — the shared ``harness`` fixture is a single-connection
+    ``StaticPool`` and cannot host two live transactions. Production runs
+    on a Postgres pool, where each worker already gets its own connection.
+    """
+
+    async def test_losing_caller_reads_vault_not_regrants(self, tmp_path: Path) -> None:
+        engine = create_async_engine(
+            f"sqlite+aiosqlite:///{tmp_path / 'race.sqlite'}",
+            poolclass=NullPool,
+            connect_args={"check_same_thread": False, "timeout": 30},
+        )
+        async with engine.begin() as conn:
+            await conn.run_sync(
+                lambda sc: _PERSONAL_TABLES[0].metadata.create_all(
+                    sc, tables=_PERSONAL_TABLES
+                )
+            )
+        vault = FernetVault(generate_key())
+        session_factory = make_session_factory(engine)
+        registry = RepositoryRegistry(session_factory, secret_codec=vault)
+        store = InMemoryObjectStore()
+
+        try:
+            conn = await _gmail_connection(registry)
+            # Exactly one scripted rotation — a second grant would pop a
+            # missing response and fail, which is how this test detects a
+            # re-grant.
+            endpoint = FakeTokenEndpoint(
+                [(200, {"access_token": _NEW_ACCESS, "refresh_token": _NEW_REFRESH})]
+            )
+            # One shared refresher over the fake endpoint, wired into both
+            # workers (each still drives its own single-flight guard; the
+            # shared endpoint counts the grants).
+            refresher = MailOAuthRefresher(
+                connections=registry.connections, transport=endpoint
+            )
+            harness = SimpleNamespace(registry=registry, store=store)
+            barrier: dict[str, int] = {}
+            # Two separate live workers for the SAME connection: the durable
+            # loop worker and the one-shot ``sync_once`` worker.
+            worker_a = _worker(
+                harness, conn, _BarrierAuthTransport(barrier), refresher=refresher
+            )
+            worker_b = _worker(
+                harness, conn, _BarrierAuthTransport(barrier), refresher=refresher
+            )
+            await asyncio.gather(worker_a.poll_once(), worker_b.poll_once())
+
+            # One grant, not two: the losing caller re-read the vault (now
+            # holding the freshly-rotated access token) instead of re-granting
+            # with the already-rotated refresh token (the ``invalid_grant``
+            # race).
+            assert len(endpoint.requests) == 1
+            # Neither worker marked the connection broken.
+            assert worker_a.status()["last"]["status"] == "ok"
+            assert worker_b.status()["last"]["status"] == "ok"
+            conn2 = await registry.connections.get_connection(conn.id)
+            assert conn2.auth_status == "authenticated"
+            assert conn2.operational_status == "healthy"
+            # The rotated refresh token is what the vault now holds.
+            assert (
+                await registry.connections.get_secret(
+                    kind=REFRESH_TOKEN_KIND,
+                    owner_kind="connection",
+                    owner_id=conn.id,
+                )
+                == _NEW_REFRESH
+            )
+        finally:
+            await engine.dispose()

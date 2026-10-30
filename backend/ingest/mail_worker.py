@@ -228,6 +228,38 @@ def _communication_id(connection_id: str, mail_id: str) -> str:
     return f"comm-mail-{digest}"
 
 
+# -- single-flight OAuth refresh (GAP 1 race guard) ---------------------------
+#
+# Two live :class:`MailIngestWorker` instances can exist for the same
+# connection: the durable loop worker (supervisor ``_spawn_for``) and the
+# one-shot ``sync_once`` worker the control-plane "Sync Now" trigger builds
+# (``MailSyncTrigger`` → ``supervisor.sync_once``). Each builds its own
+# ``MailOAuthRefresher``, so without a guard both could read the same stored
+# ``refresh_token`` and fire two concurrent refresh grants. Providers rotate
+# the refresh token on use (GAP 1), so the second grant fails with
+# ``invalid_grant`` and the blanket ``except`` in
+# :meth:`MailIngestWorker._attempt_token_refresh` would then map the
+# connection to ``auth_expired`` even though the *first* refresh persisted a
+# perfectly good rotated token. The lock below makes the refresh
+# refresh+persist rotation single-flight per connection: the concurrent caller
+# waits, then re-reads the vault (which now holds the rotated token) on its
+# next transport pass instead of re-refreshing. Process-wide on purpose —
+# both worker instances share the same event loop; bounded by the (small)
+# number of mail connections, so the registry never grows unbounded.
+
+_REFRESH_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _refresh_lock(connection_id: str) -> asyncio.Lock:
+    """Return (creating on first use) the single-flight refresh lock for one
+    connection. Created on the running loop — see the module note above."""
+    lock = _REFRESH_LOCKS.get(connection_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _REFRESH_LOCKS[connection_id] = lock
+    return lock
+
+
 class MailIngestWorker:
     """Durable ingest loop for one mail connection.
 
@@ -350,6 +382,16 @@ class MailIngestWorker:
         conn = await self._connections.get_connection(self.connection_id)
         if conn is None:
             return dict(base, status="missing")
+        # Capture the access token this poll is about to present, so a failed
+        # OAuth refresh can later tell whether the vault already holds a
+        # fresher one (single-flight guard, see ``_attempt_token_refresh``).
+        access_token: str | None = None
+        if _secret_kind_for(conn) == "access_token":
+            access_token = await self._connections.get_secret(
+                kind="access_token",
+                owner_kind="connection",
+                owner_id=self.connection_id,
+            )
         if not bool(getattr(conn, "enabled", False)):
             return dict(base, status="disabled")
 
@@ -363,7 +405,7 @@ class MailIngestWorker:
             # the rotated ``refresh_token`` is written back to the vault
             # before retrying with the fresh access token.
             retry_ok = False
-            if await self._attempt_token_refresh(conn):
+            if await self._attempt_token_refresh(conn, access_token):
                 try:
                     items, next_cursor = await self._run_transport_once(conn, cursor)
                     retry_ok = True
@@ -574,7 +616,7 @@ class MailIngestWorker:
         connector = self._connector_for(conn)
         return await self._transport.run(connector, cursor, credentials=credentials)
 
-    async def _attempt_token_refresh(self, conn: Any) -> bool:
+    async def _attempt_token_refresh(self, conn: Any, rejected_access_token: str | None) -> bool:
         """One durable OAuth refresh after a credential rejection (GAP 1).
 
         Applies only to OAuth connections (the worker resolves their
@@ -585,7 +627,16 @@ class MailIngestWorker:
         ``refresh_token`` and the fresh ``access_token`` are written back
         through the vault-backed ``upsert_secret`` path *before* this
         returns, so a restarted worker resumes with the current tokens.
-        Returns ``True`` only when a fresh access token was produced.
+        Returns ``True`` only when a fresh access token was produced (either
+        by this call's refresh, or — the single-flight path — when a
+        concurrent refresh already persisted one; see the lock below).
+
+        ``rejected_access_token`` is the access token the *failed* transport
+        call presented, captured before the poll. It lets the single-flight
+        guard distinguish "the vault already holds a newer access token than
+        the one I was rejected on" (a concurrent refresh already ran — use
+        that, do **not** re-grant) from "the vault still holds the stale
+        token" (genuinely expired — refresh).
         """
         if _secret_kind_for(conn) != "access_token":
             return False
@@ -601,12 +652,45 @@ class MailIngestWorker:
             connections=self._connections
         )
         try:
-            await refresher.refresh(
-                connection_id=self.connection_id,
-                provider=provider_name,
-                client_id=client_id,
-                client_secret=client_secret,
-            )
+            # Single-flight per connection (GAP 1 race guard): the refresh
+            # reads the stored refresh token, the provider rotates it on use,
+            # and the rotated value is persisted inside this lock. Two live
+            # worker instances can exist for one connection — the durable
+            # loop worker and the one-shot ``sync_once`` worker the control
+            # plane's "Sync Now" trigger builds — each with its own
+            # refresher, so both can hit the transport with the same
+            # access token in the same poll. The first to grab the lock
+            # refreshes; the second waits on it and then compares the
+            # vault's access token against the one *it* was rejected on.
+            # If the vault is already ahead (the concurrent refresh
+            # persisted a fresh token), the second skips the exchange —
+            # firing a grant with an already-rotated refresh token is
+            # exactly the ``invalid_grant`` failure this guard exists to
+            # prevent. The lock is released on every path out of the
+            # ``async with`` (success or exception), so a failed refresh
+            # cannot wedge later attempts.
+            async with _refresh_lock(self.connection_id):
+                current = await self._connections.get_secret(
+                    kind="access_token",
+                    owner_kind="connection",
+                    owner_id=self.connection_id,
+                )
+                if (
+                    rejected_access_token is not None
+                    and current is not None
+                    and current != rejected_access_token
+                ):
+                    # A concurrent refresh already rotated the token pair
+                    # while we were waiting on the lock — do not re-grant;
+                    # the caller's retry (which re-resolves credentials)
+                    # picks up the fresh token.
+                    return True
+                await refresher.refresh(
+                    connection_id=self.connection_id,
+                    provider=provider_name,
+                    client_id=client_id,
+                    client_secret=client_secret,
+                )
         except Exception:  # noqa: BLE001 - a failed refresh is not fatal to the loop
             return False
         return True
