@@ -93,13 +93,24 @@ The UI is fully responsive and works on:
 - Tablets
 - Mobile devices
 
+## Settings and preferences
+
+The Settings route groups browser-local preferences into four feature-oriented tabs:
+
+- **Appearance** — system/light/dark theme, accent color, font scale, and motion preference.
+- **Workflow** — default briefing kind, default incident severity for new reports, and the home view shown at `/`.
+- **Data & privacy** — default Wellness trend window. Wellness collection state, pause windows, exports, retention, and credentials remain server-owned on the Wellness or Connections screens until a settings API is available.
+- **Connections & apps** — connector registration/verification guidance and iOS/watchOS download and sideload instructions.
+
+The preference record is persisted under the browser's `nerve-settings` local-storage key. Settings are intentionally not presented as server-synchronized account data. Feature screens consume the workflow defaults when they initialize: Briefing uses the selected briefing kind, Wellness uses the selected trend window, incident reporting uses the selected initial severity, and `/` renders the selected home view. See [SETTINGS.md](SETTINGS.md) for the full key table and ownership boundaries.
+
 ## Planned Features
 
 - [ ] Advanced filtering and search
 - [ ] Custom dashboard widgets
 - [ ] Alert notifications
 - [ ] Export functionality
-- [ ] User preferences
+- [ ] Server-synchronized account preferences
 - [ ] Multi-language support
 
 ## Performance

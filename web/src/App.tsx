@@ -3,6 +3,7 @@ import {
   Routes,
   Route,
 } from 'react-router-dom'
+import { useSettings } from './theme/SettingsContext'
 import { AuthProvider } from './auth/AuthContext'
 import { Layout } from './components/Layout'
 import { MessagesView } from './views/MessagesView'
@@ -34,6 +35,14 @@ import { SettingsView } from './views/SettingsView'
 import { LoginView } from './views/LoginView'
 import { AuthCallback } from './auth/AuthCallback'
 
+/** `/` renders the feature selected in Settings → Workflow → Home view. */
+function HomeView() {
+  const { settings } = useSettings()
+  if (settings.landingPage === 'overview') return <OverviewView />
+  if (settings.landingPage === 'now') return <NowView />
+  return <TodayView />
+}
+
 function App() {
   return (
     <BrowserRouter>
@@ -50,7 +59,7 @@ function App() {
               <Layout />
             }
           >
-            <Route path="/" element={<TodayView />} />
+            <Route path="/" element={<HomeView />} />
             <Route path="/overview" element={<OverviewView />} />
             <Route path="/connections" element={<ConnectionsView />} />
             <Route path="/now" element={<NowView />} />

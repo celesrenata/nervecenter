@@ -1,19 +1,20 @@
 import { expect, test } from '@playwright/test'
 
 /**
- * Settings — service settings panel (global attributes, connector usage
- * instructions, app download / sideload instructions).
+ * Settings — browser-local preferences grouped by feature set.
  *
  * Runs against the REAL backend on :8000 via the Vite proxy, with `authToken`
- * seeded in localStorage (mirrors views.spec.ts). The panel makes no live API
- * calls — the appearance controls are local-only and the two instruction
- * sections are static — so the assertions below are deterministic and do not
- * depend on the network.
+ * seeded in localStorage (mirrors views.spec.ts). The settings panel makes no
+ * live API calls — appearance and workflow values are local-only, and the
+ * connections category is static instruction content — so the assertions are
+ * deterministic and do not depend on the network.
  *
  * Coverage:
- *   - The route renders under the auth gate and the nav item is wired.
+ *   - The route renders under the auth gate and the centered category tabs.
+ *   - Workflow, data, and connections categories render their own panels.
  *   - Global attributes (accent, font scale, reduce-motion) apply live to
  *     `<html>` and survive a reload (persistence).
+ *   - The home-view preference changes what `/` renders.
  *   - The connector + download/sideload instruction content renders.
  */
 
@@ -28,7 +29,7 @@ async function visitSettings(page: import('@playwright/test').Page, path = '/set
   await page.goto(path, { waitUntil: 'domcontentloaded' })
 }
 
-test('settings renders under the auth gate with all three sections wired', async ({ page }) => {
+test('settings renders under the auth gate with categorized tabs', async ({ page }) => {
   const errors: string[] = []
   const pageErrors: string[] = []
   const failedRequests: string[] = []
@@ -41,13 +42,25 @@ test('settings renders under the auth gate with all three sections wired', async
   // The auth gate passed (an unauthenticated user would land on /login).
   await expect(page.locator('main h1')).toHaveText('Settings')
 
-  // The sidebar nav item is wired (Layout change).
+  // The sidebar nav item and centered category tabs are wired.
   await expect(page.getByRole('link', { name: 'Settings' })).toBeVisible()
-
-  // Section 1 — appearance / global attributes.
+  await expect(page.getByRole('tab', { name: 'Appearance' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Workflow' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Data & privacy' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Connections & apps' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible()
 
-  // Section 2 — connector usage instructions (static content). The register
+  // Feature defaults are separated into their own categories.
+  await page.getByRole('tab', { name: 'Workflow' }).click()
+  await expect(page.getByRole('heading', { name: 'Workflow defaults' })).toBeVisible()
+  await expect(page.getByText('Default briefing')).toBeVisible()
+  await expect(page.getByText('Home view')).toBeVisible()
+  await page.getByRole('tab', { name: 'Data & privacy' }).click()
+  await expect(page.getByRole('heading', { name: 'Data & privacy' })).toBeVisible()
+  await expect(page.getByText('Wellness trend window')).toBeVisible()
+  await page.getByRole('tab', { name: 'Connections & apps' }).click()
+
+  // Connections & apps — connector usage instructions (static content). The register
   // endpoint is `exact` because the verify endpoint shares the prefix.
   await expect(page.getByRole('heading', { name: 'Connectors' })).toBeVisible()
   await expect(page.getByText('POST /api/mail-connectors', { exact: true })).toBeVisible()
@@ -109,4 +122,13 @@ test('global attributes apply live to <html> and persist across a reload', async
   await expect
     .poll(async () => page.evaluate(() => document.documentElement.getAttribute('data-reduced-motion')))
     .toBe('reduce')
+})
+
+test('home-view preference changes what / renders', async ({ page }) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('authToken', 'e2e-token')
+    localStorage.setItem('nerve-settings', JSON.stringify({ landingPage: 'overview' }))
+  })
+  await page.goto('/', { waitUntil: 'domcontentloaded' })
+  await expect(page.locator('main h1')).toHaveText('Overview')
 })

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import { briefingApi, ApiError, type Briefing, type BriefingKind } from '../api/client'
+import { useSettings } from '../theme/SettingsContext'
 
 /**
  * BriefingView — the Briefing plane (prompt2 §30 — Briefings).
@@ -53,7 +54,8 @@ function capitalize(s: string): string {
 const cardBase = 'bg-elevated rounded-lg border border-line p-5'
 
 export function BriefingView() {
-  const [kind, setKind] = useState<BriefingKind>('morning')
+  const { settings } = useSettings()
+  const [kind, setKind] = useState<BriefingKind>(settings.defaultBriefingKind)
   const [briefing, setBriefing] = useState<Briefing | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)

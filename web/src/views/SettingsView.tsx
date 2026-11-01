@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTheme, type Theme } from '../theme/ThemeContext'
 import {
   useSettings,
@@ -6,27 +6,17 @@ import {
   type AccentId,
   type FontScaleId,
   type ReducedMotion,
+  type BriefingKindSetting,
+  type WellnessTrendDays,
+  type IncidentSeverity,
+  type LandingPage,
 } from '../theme/SettingsContext'
 import { Link } from 'react-router-dom'
 
 /**
- * Settings — the service settings panel.
- *
- * Three sections, matching the requested scope:
- *   1. Appearance & global attributes — the user-visible theme controls
- *      (dark / light / system via :mod:`ThemeContext`) plus the global
- *      attributes owned by :mod:`SettingsContext` (accent color, font scale,
- *      reduce-motion). Every control persists to localStorage and is applied
- *      to the app in an effect, so the whole app re-styles live.
- *   2. Connectors — how connectors work and how to use/verify them (the
- *      mail-connector registry + the macOS Personal Relay that owns the
- *      source-side capture). Instructional; links to the live endpoints.
- *   3. Apps — how to download the self-hosted build and sideload it onto a
- *      paired device, with a link to the live Downloads manifest.
- *
- * The panel renders the same way in mock mode (no `VITE_API_BASE`) and real
- * mode — the appearance controls are local-only and the two instruction
- * sections are static, so there is nothing to fail against the network.
+ * Settings — browser-local preferences grouped by feature set. The categories
+ * reflect documented behavior; server-owned connection and wellness controls
+ * remain on their feature screens until a settings API exists for them.
  */
 
 const THEME_OPTIONS: Array<{ id: Theme; label: string; hint: string }> = [
@@ -55,9 +45,27 @@ const MOTION_OPTIONS: Array<{ id: ReducedMotion; label: string; hint: string }> 
   { id: 'full', label: 'Full', hint: 'Always show full motion' },
 ]
 
+export type SettingsCategory = 'appearance' | 'workflow' | 'data' | 'connections'
+
+const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: string }> = [
+  { id: 'appearance', label: 'Appearance', hint: 'Theme, color, type, and motion' },
+  { id: 'workflow', label: 'Workflow', hint: 'Defaults for briefs and incidents' },
+  { id: 'data', label: 'Data & privacy', hint: 'Wellness and local data boundaries' },
+  { id: 'connections', label: 'Connections & apps', hint: 'Connectors and device builds' },
+]
+
 export function SettingsView() {
   const { theme, setTheme } = useTheme()
   const { settings, update, reset } = useSettings()
+  const [category, setCategory] = useState<SettingsCategory>('appearance')
+  const tabStripRef = useRef<HTMLElement>(null)
+
+  useEffect(() => {
+    // Keep the selected tab visible when the strip overflows (narrow screens).
+    const strip = tabStripRef.current
+    const active = strip?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+    active?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  }, [category])
 
   return (
     <div className="space-y-8">
@@ -73,13 +81,35 @@ export function SettingsView() {
       </div>
 
       <p className="text-sm text-muted max-w-2xl">
-        These preferences are stored locally in this browser and applied to the
-        whole app. They are yours alone — NerveCenter does not sync them to the
-        server.
+        Preferences are grouped by the feature they shape. Browser-local settings
+        apply immediately and are not synced to the server.
       </p>
 
-      {/* ── Section 1 — Appearance & global attributes ───────────────────── */}
-      <section className="bg-elevated rounded-lg shadow-lg p-6 space-y-6" aria-labelledby="settings-appearance">
+      <nav ref={tabStripRef} aria-label="Settings categories" className="flex justify-center overflow-x-auto border-b border-line">
+        <div className="flex min-w-max gap-1" role="tablist">
+          {CATEGORY_OPTIONS.map((item) => (
+            <button
+              key={item.id}
+              id={`settings-tab-${item.id}`}
+              type="button"
+              role="tab"
+              aria-selected={category === item.id}
+              aria-controls={`settings-panel-${item.id}`}
+              title={item.hint}
+              onClick={() => setCategory(item.id)}
+              className={`border-b-2 px-4 py-3 text-sm font-medium transition-colors ${
+                category === item.id
+                  ? 'border-accent text-accent'
+                  : 'border-transparent text-secondary hover:border-line hover:text-primary'
+              }`}
+            >
+              {item.label}
+            </button>
+          ))}
+        </div>
+      </nav>
+
+      {category === 'appearance' && <section id="settings-panel-appearance" role="tabpanel" className="bg-elevated rounded-lg shadow-lg p-6 space-y-6" aria-labelledby="settings-appearance">
         <div>
           <h2 id="settings-appearance" className="text-xl font-semibold text-primary">
             Appearance
@@ -145,7 +175,54 @@ export function SettingsView() {
             onSelect={(id) => update({ reducedMotion: id as ReducedMotion })}
           />
         </OptionGroup>
-      </section>
+      </section>}
+
+      {category === 'workflow' && <section id="settings-panel-workflow" role="tabpanel" className="bg-elevated rounded-lg shadow-lg p-6 space-y-6" aria-labelledby="settings-workflow">
+        <div>
+          <h2 id="settings-workflow" className="text-xl font-semibold text-primary">Workflow defaults</h2>
+          <p className="text-sm text-muted mt-1">Choose the starting view for recurring workflows. The feature screens use these values when they load.</p>
+        </div>
+        <OptionGroup label="Default briefing" hint="The briefing type selected when you open Briefing.">
+          <Segmented
+            options={[{ id: 'morning', label: 'Morning' }, { id: 'midday', label: 'Midday' }, { id: 'evening', label: 'Evening' }]}
+            value={settings.defaultBriefingKind}
+            onSelect={(id) => update({ defaultBriefingKind: id as BriefingKindSetting })}
+          />
+        </OptionGroup>
+        <OptionGroup label="New incident severity" hint="Preselects the severity when reporting an incident.">
+          <Segmented
+            options={[{ id: 'low', label: 'Low' }, { id: 'medium', label: 'Medium' }, { id: 'high', label: 'High' }, { id: 'critical', label: 'Critical' }]}
+            value={settings.defaultIncidentSeverity}
+            onSelect={(id) => update({ defaultIncidentSeverity: id as IncidentSeverity })}
+          />
+        </OptionGroup>
+        <OptionGroup label="Home view" hint="The feature shown at / when you open NerveCenter.">
+          <Segmented
+            options={[{ id: 'today', label: 'Today' }, { id: 'overview', label: 'Overview' }, { id: 'now', label: 'Now' }]}
+            value={settings.landingPage}
+            onSelect={(id) => update({ landingPage: id as LandingPage })}
+          />
+        </OptionGroup>
+      </section>}
+
+      {category === 'data' && <section id="settings-panel-data" role="tabpanel" className="bg-elevated rounded-lg shadow-lg p-6 space-y-6" aria-labelledby="settings-data">
+        <div>
+          <h2 id="settings-data" className="text-xl font-semibold text-primary">Data & privacy</h2>
+          <p className="text-sm text-muted mt-1">Keep local presentation preferences separate from server-owned records and controls.</p>
+        </div>
+        <OptionGroup label="Wellness trend window" hint="The number of days used by Wellness trend charts.">
+          <Segmented
+            options={[{ id: '7', label: '7 days' }, { id: '30', label: '30 days' }, { id: '90', label: '90 days' }]}
+            value={String(settings.wellnessTrendDays)}
+            onSelect={(id) => update({ wellnessTrendDays: Number(id) as WellnessTrendDays })}
+          />
+        </OptionGroup>
+        <div className="rounded-md border border-line bg-hover/40 p-4 text-sm text-secondary leading-relaxed">
+          Wellness collection, pause windows, exports, connector credentials, and retention are server-owned or feature-owned controls. They are intentionally linked to the relevant feature screens rather than duplicated here.
+        </div>
+      </section>}
+
+      {category === 'connections' && <section id="settings-panel-connections" role="tabpanel" className="space-y-8">
 
       {/* ── Section 2 — Connector usage instructions ─────────────────────── */}
       <section className="bg-elevated rounded-lg shadow-lg p-6 space-y-4" aria-labelledby="settings-connectors">
@@ -289,6 +366,7 @@ export function SettingsView() {
           </p>
         </div>
       </section>
+      </section>}
     </div>
   )
 }

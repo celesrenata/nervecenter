@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useSettings } from '../theme/SettingsContext'
 import {
   wellnessApi,
   type CheckInPayload,
@@ -243,10 +244,11 @@ function SleepCard({ sleep, present }: { sleep: SleepConsistency; present: boole
 // ─── main view ─────────────────────────────────────────────────────────────
 
 export default function WellnessView() {
+  const { settings } = useSettings()
   const [status, setStatus] = useState<WellnessStatus | null>(null)
   const [entries, setEntries] = useState<WellnessEntry[]>([])
   const [trends, setTrends] = useState<WellnessTrends | null>(null)
-  const [windowDays, setWindowDays] = useState<7 | 30 | 90>(30)
+  const [windowDays, setWindowDays] = useState<7 | 30 | 90>(settings.wellnessTrendDays)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
 

@@ -1,4 +1,5 @@
 import { useState, useEffect, type FormEvent } from 'react'
+import { useSettings, type IncidentSeverity } from '../theme/SettingsContext'
 import { incidentsApi, apiFetch, apiErrorFromResponse, ApiError } from '../api/client'
 
 /**
@@ -25,13 +26,14 @@ interface Incident {
 }
 
 const IncidentsView = () => {
+  const { settings } = useSettings()
   const [incidents, setIncidents] = useState<Incident[]>([])
   const [loading, setLoading] = useState(true)
   const [fetchError, setFetchError] = useState<{ status: number; detail: string } | null>(null)
   const [showForm, setShowForm] = useState(false)
   const [reportTitle, setReportTitle] = useState('')
   const [reportDescription, setReportDescription] = useState('')
-  const [reportSeverity, setReportSeverity] = useState('high')
+  const [reportSeverity, setReportSeverity] = useState(settings.defaultIncidentSeverity)
   const [formBusy, setFormBusy] = useState(false)
   const [formError, setFormError] = useState<{ status: number; detail: string } | null>(null)
   const [formSuccess, setFormSuccess] = useState(false)
@@ -99,7 +101,7 @@ const IncidentsView = () => {
     setShowForm(false)
     setReportTitle('')
     setReportDescription('')
-    setReportSeverity('high')
+    setReportSeverity(settings.defaultIncidentSeverity)
     setFormError(null)
     setFormSuccess(false)
     setFormBusy(false)
@@ -259,7 +261,7 @@ const IncidentsView = () => {
               id="incident-severity"
               data-testid="incident-form-severity"
               value={reportSeverity}
-              onChange={(e) => setReportSeverity(e.target.value)}
+              onChange={(e) => setReportSeverity(e.target.value as IncidentSeverity)}
               className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
             >
               <option value="low">low</option>

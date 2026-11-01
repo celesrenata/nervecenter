@@ -29,17 +29,29 @@ import { useTheme, type EffectiveTheme } from './ThemeContext'
 export type AccentId = 'blue' | 'emerald' | 'violet' | 'amber' | 'rose'
 export type FontScaleId = 'sm' | 'md' | 'lg'
 export type ReducedMotion = 'system' | 'reduce' | 'full'
+export type BriefingKindSetting = 'morning' | 'midday' | 'evening'
+export type WellnessTrendDays = 7 | 30 | 90
+export type IncidentSeverity = 'low' | 'medium' | 'high' | 'critical'
+export type LandingPage = 'today' | 'overview' | 'now'
 
 export interface Settings {
   accent: AccentId
   fontScale: FontScaleId
   reducedMotion: ReducedMotion
+  defaultBriefingKind: BriefingKindSetting
+  wellnessTrendDays: WellnessTrendDays
+  defaultIncidentSeverity: IncidentSeverity
+  landingPage: LandingPage
 }
 
 export const DEFAULT_SETTINGS: Settings = {
   accent: 'blue',
   fontScale: 'md',
   reducedMotion: 'system',
+  defaultBriefingKind: 'morning',
+  wellnessTrendDays: 30,
+  defaultIncidentSeverity: 'high',
+  landingPage: 'today',
 }
 
 const STORAGE_KEY = 'nerve-settings'
@@ -181,6 +193,18 @@ export function readStoredSettings(): Settings {
           reducedMotion: isReducedMotion(parsed.reducedMotion)
             ? parsed.reducedMotion
             : DEFAULT_SETTINGS.reducedMotion,
+          defaultBriefingKind: parsed.defaultBriefingKind === 'midday' || parsed.defaultBriefingKind === 'evening'
+            ? parsed.defaultBriefingKind
+            : DEFAULT_SETTINGS.defaultBriefingKind,
+          wellnessTrendDays: parsed.wellnessTrendDays === 7 || parsed.wellnessTrendDays === 90
+            ? parsed.wellnessTrendDays
+            : DEFAULT_SETTINGS.wellnessTrendDays,
+          defaultIncidentSeverity: parsed.defaultIncidentSeverity === 'low' || parsed.defaultIncidentSeverity === 'medium' || parsed.defaultIncidentSeverity === 'critical'
+            ? parsed.defaultIncidentSeverity
+            : DEFAULT_SETTINGS.defaultIncidentSeverity,
+          landingPage: parsed.landingPage === 'overview' || parsed.landingPage === 'now'
+            ? parsed.landingPage
+            : DEFAULT_SETTINGS.landingPage,
         }
       }
     }
