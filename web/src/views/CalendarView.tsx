@@ -1,5 +1,12 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, type FormEvent } from 'react'
 import { calendarApi, ApiError } from '../api/client'
+import {
+  calendarAccountsApi,
+  isDegradedWrite,
+  type CalendarAccountRow,
+  type CalendarProvider,
+  type CalendarCreatePayload,
+} from '../api/calendar'
 
 /**
  * CalendarView — the Calendar plane (prompt2 Phase P2).
@@ -59,6 +66,14 @@ function fmtRange(ev: CalEvent): string {
   return `${fmtTime(ev.start)} – ${fmtTime(ev.end)}`
 }
 
+/** Compact "when" for a timestamp (or "Not recorded" when null). */
+function fmtWhen(iso: string | null | undefined): string {
+  if (!iso) return 'Not recorded'
+  const d = new Date(iso)
+  if (Number.isNaN(d.getTime())) return 'Not recorded'
+  return `${d.toLocaleDateString([], { month: 'short', day: 'numeric' })}, ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+}
+
 export function CalendarView() {
   const [events, setEvents] = useState<CalEvent[]>([])
   const [loading, setLoading] = useState(true)
@@ -77,6 +92,121 @@ export function CalendarView() {
     new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString().slice(0, 16),
   )
   const [durationMin, setDurationMin] = useState(60)
+
+  // ── Connected calendar accounts ──────────────────────────────────────────
+  const [accounts, setAccounts] = useState<CalendarAccountRow[]>([])
+  const [accountsLoaded, setAccountsLoaded] = useState(false)
+  const [accountError, setAccountError] = useState<string | null>(null)
+  const [accountBusy, setAccountBusy] = useState<string | null>(null)
+
+  // Connect form
+  const [showConnect, setShowConnect] = useState(false)
+  const [formProvider, setFormProvider] = useState<CalendarProvider>('google')
+  const [formLabel, setFormLabel] = useState('')
+  const [formTimezone, setFormTimezone] = useState('UTC')
+  const [formCredential, setFormCredential] = useState('')
+  const [formCalendarIds, setFormCalendarIds] = useState('')
+  const [formServerUrl, setFormServerUrl] = useState('')
+  const [connectBusy, setConnectBusy] = useState(false)
+  const [connectError, setConnectError] = useState<string | null>(null)
+  const [connectOk, setConnectOk] = useState<string | null>(null)
+
+  const loadAccounts = useCallback(async () => {
+    setAccountError(null)
+    try {
+      const res = await calendarAccountsApi.list()
+      setAccounts(res.data)
+    } catch (err) {
+      setAccountError(err instanceof ApiError ? err.detail : 'Failed to load accounts')
+    } finally {
+      setAccountsLoaded(true)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadAccounts()
+  }, [loadAccounts])
+
+  const submitConnect = useCallback(
+    async (e: FormEvent) => {
+      e.preventDefault()
+      setConnectBusy(true)
+      setConnectError(null)
+      setConnectOk(null)
+      const config: Record<string, unknown> = {}
+      if (formProvider === 'google' && formCalendarIds.trim()) {
+        config.calendarIds = formCalendarIds
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean)
+      }
+      if (formProvider === 'caldav' && formServerUrl.trim()) {
+        config.server_url = formServerUrl.trim()
+      }
+      const payload: CalendarCreatePayload = {
+        provider: formProvider,
+        label: formLabel.trim() || undefined,
+        timezone: formTimezone.trim() || 'UTC',
+        config,
+        enabled: true,
+      }
+      if (formCredential) payload.credential = formCredential
+      try {
+        const body = await calendarAccountsApi.create(payload)
+        if (isDegradedWrite(body)) {
+          // Honest: the durable registry is not configured — not persisted.
+          setConnectError(body.detail || 'Not saved: calendar accounts are not configured on this deployment.')
+        } else {
+          setConnectOk(`Connected ${formLabel.trim() || body.provider}.`)
+          setFormLabel('')
+          setFormCredential('')
+          setFormCalendarIds('')
+          setFormServerUrl('')
+          void loadAccounts()
+        }
+      } catch (err) {
+        setConnectError(err instanceof ApiError ? err.detail : 'Failed to connect account')
+      } finally {
+        setConnectBusy(false)
+      }
+    },
+    [formProvider, formLabel, formTimezone, formCredential, formCalendarIds, formServerUrl, loadAccounts],
+  )
+
+  const runSync = useCallback(
+    async (id: string) => {
+      setAccountBusy(id)
+      setAccountError(null)
+      try {
+        const res = await calendarAccountsApi.sync(id)
+        if (!res.executed) {
+          setAccountError(res.detail || 'Sync not executed: the durable registry is not configured.')
+        }
+        void loadAccounts()
+      } catch (err) {
+        setAccountError(err instanceof ApiError ? err.detail : 'Sync failed')
+      } finally {
+        setAccountBusy(null)
+      }
+    },
+    [loadAccounts],
+  )
+
+  const removeAccount = useCallback(
+    async (id: string) => {
+      setAccountBusy(id)
+      setAccountError(null)
+      try {
+        await calendarAccountsApi.remove(id)
+        void loadAccounts()
+      } catch (err) {
+        setAccountError(err instanceof ApiError ? err.detail : 'Failed to disconnect')
+      } finally {
+        setAccountBusy(null)
+      }
+    },
+    [loadAccounts],
+  )
 
   const load = useCallback(async () => {
     try {
@@ -157,6 +287,193 @@ export function CalendarView() {
           {error}
         </div>
       )}
+
+      {/* Connected calendar accounts */}
+      <section className="space-y-3" data-testid="calendar-accounts">
+        <div className="flex items-center justify-between">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-muted">
+            Connected accounts
+          </h2>
+          <button
+            type="button"
+            onClick={() => setShowConnect((v) => !v)}
+            data-testid="calendar-connect-toggle"
+            className="rounded bg-gray-800 dark:bg-gray-200 px-3 py-1.5 text-sm font-medium text-white dark:text-gray-900"
+          >
+            {showConnect ? 'Close' : 'Connect account'}
+          </button>
+        </div>
+
+        {showConnect && (
+          <form
+            onSubmit={submitConnect}
+            data-testid="calendar-connect-form"
+            className="rounded-lg border border-line p-4"
+          >
+            <p className="mb-3 text-xs text-muted">
+              Credentials are written to the vault and are never shown again.
+            </p>
+            <div className="grid gap-3 sm:grid-cols-2">
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-muted">Provider</span>
+                <select
+                  value={formProvider}
+                  onChange={(e) => setFormProvider(e.target.value as CalendarProvider)}
+                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                >
+                  <option value="google">Google</option>
+                  <option value="caldav">CalDAV</option>
+                  <option value="apple">Apple (relay)</option>
+                </select>
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-muted">Label</span>
+                <input
+                  value={formLabel}
+                  onChange={(e) => setFormLabel(e.target.value)}
+                  placeholder="Work calendar"
+                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-muted">Timezone</span>
+                <input
+                  value={formTimezone}
+                  onChange={(e) => setFormTimezone(e.target.value)}
+                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                />
+              </label>
+              <label className="flex flex-col gap-1 text-sm">
+                <span className="text-muted">
+                  {formProvider === 'caldav' ? 'Server URL' : formProvider === 'google' ? 'OAuth token' : 'Relay token (optional)'}
+                </span>
+                <input
+                  type={formProvider === 'caldav' ? 'url' : 'password'}
+                  value={formProvider === 'caldav' ? formServerUrl : formCredential}
+                  onChange={(e) =>
+                    formProvider === 'caldav'
+                      ? setFormServerUrl(e.target.value)
+                      : setFormCredential(e.target.value)
+                  }
+                  placeholder={formProvider === 'caldav' ? 'https://…' : '••••••••'}
+                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                />
+              </label>
+            </div>
+            {formProvider === 'google' && (
+              <label className="mt-3 flex flex-col gap-1 text-sm">
+                <span className="text-muted">Calendar IDs (comma-separated, optional)</span>
+                <input
+                  value={formCalendarIds}
+                  onChange={(e) => setFormCalendarIds(e.target.value)}
+                  placeholder="primary, work@group.calendar.google.com"
+                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                />
+              </label>
+            )}
+            {formProvider === 'apple' && (
+              <p className="mt-3 text-xs text-muted">
+                Apple events arrive via the authorized relay — NerveCenter holds a
+                read-only copy and makes no outbound network call.
+              </p>
+            )}
+            {connectError && (
+              <p
+                role="alert"
+                data-testid="calendar-connect-error"
+                className="mt-3 text-sm text-red-700 dark:text-red-300"
+              >
+                {connectError}
+              </p>
+            )}
+            {connectOk && (
+              <p className="mt-3 text-sm text-green-700 dark:text-green-300">{connectOk}</p>
+            )}
+            <div className="mt-4 flex gap-2">
+              <button
+                type="submit"
+                disabled={connectBusy}
+                data-testid="calendar-connect-submit"
+                className="rounded bg-gray-800 dark:bg-gray-200 px-3 py-1.5 text-sm font-medium text-white dark:text-gray-900 disabled:opacity-50"
+              >
+                {connectBusy ? 'Connecting…' : 'Connect'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {accountError && (
+          <div
+            role="alert"
+            data-testid="calendar-accounts-error"
+            className="rounded-lg border border-red-300 dark:border-red-700 bg-red-50 dark:bg-red-900/30 px-4 py-2 text-sm text-red-700 dark:text-red-300"
+          >
+            {accountError}
+          </div>
+        )}
+
+        {!accountsLoaded ? (
+          <div className="rounded-lg border border-line p-4 text-sm text-muted">
+            Loading accounts…
+          </div>
+        ) : accounts.length === 0 ? (
+          <div className="rounded-lg border border-line p-4 text-sm text-muted">
+            No calendar accounts connected yet.
+          </div>
+        ) : (
+          <ul className="space-y-2">
+            {accounts.map((a) => (
+              <li
+                key={a.id}
+                className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-line p-3 text-sm"
+                data-testid={`calendar-account-${a.id}`}
+              >
+                <div className="min-w-0">
+                  <p className="font-medium text-primary">
+                    {a.label || a.account_ref || a.provider}
+                    <span className="ml-2 rounded bg-surface px-1.5 py-0.5 text-xs uppercase text-muted">
+                      {a.provider}
+                    </span>
+                  </p>
+                  <p className="mt-0.5 truncate text-xs text-muted">
+                    {a.secret_ref ? 'Credential configured' : 'No credential stored'} ·{' '}
+                    {a.enabled ? 'enabled' : 'disabled'}
+                    {a.operational_status ? ` · ${a.operational_status}` : ''}
+                  </p>
+                  {a.last_error_message && (
+                    <p className="mt-0.5 truncate text-xs text-amber-700 dark:text-amber-300">
+                      Last error: {a.last_error_message}
+                    </p>
+                  )}
+                  <p className="mt-0.5 text-xs text-muted">
+                    Last sync: {fmtWhen(a.last_sync_at)}
+                  </p>
+                </div>
+                <div className="flex shrink-0 items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => void runSync(a.id)}
+                    disabled={accountBusy !== null}
+                    data-testid={`calendar-sync-${a.id}`}
+                    className="rounded border border-line px-2.5 py-1 text-xs font-medium text-primary disabled:opacity-50"
+                  >
+                    {accountBusy === a.id ? 'Syncing…' : 'Sync now'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void removeAccount(a.id)}
+                    disabled={accountBusy !== null}
+                    data-testid={`calendar-disconnect-${a.id}`}
+                    className="rounded border border-red-300 dark:border-red-700 px-2.5 py-1 text-xs font-medium text-red-700 dark:text-red-300 disabled:opacity-50"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
 
       <div className="grid gap-6 lg:grid-cols-2">
         {/* Upcoming events */}

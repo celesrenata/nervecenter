@@ -388,3 +388,48 @@ class AgentService:
         async with factory() as session:
             orm = await self._load(session, agent_id)
             return _agent_to_row(orm)
+
+    async def update(
+        self,
+        agent_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        prompt_template: str | None = None,
+        tools: list[str] | None = None,
+    ) -> dict[str, Any]:
+        """Partially update a persisted agent instance; returns the web row.
+
+        ``None`` values leave the corresponding field unchanged (partial
+        update). ``status`` is lifecycle, not editable metadata, and is
+        deliberately never touched here. Raises
+        :class:`AgentNotFoundError` when the id is unknown and
+        :class:`AgentNameConflictError` when a supplied ``name`` collides with
+        another row (mirrors :meth:`create`).
+        """
+        factory = self._factory()
+        async with factory() as session:
+            orm = await self._load(session, agent_id)
+            if name is not None:
+                orm.name = name
+            if description is not None:
+                orm.description = description
+            if prompt_template is not None:
+                orm.prompt_template = prompt_template
+            if tools is not None:
+                orm.tools = list(tools)
+            orm.updated_at = _utcnow()
+            # Snapshot the name ahead of the commit: after `rollback()` the ORM
+            # is detached, and reading `orm.name` would trigger a lazy DB load
+            # outside the greenlet (MissingGreenlet) instead of raising the
+            # intended conflict error.
+            conflict_name = orm.name
+            try:
+                await session.commit()
+            except IntegrityError as exc:
+                await session.rollback()
+                log.warning("agents.update_conflict", agent_id=agent_id)
+                raise AgentNameConflictError(conflict_name) from exc
+            await session.refresh(orm)
+            log.info("agents.updated", agent_id=str(orm.id))
+            return _agent_to_row(orm)

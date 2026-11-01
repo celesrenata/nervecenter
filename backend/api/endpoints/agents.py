@@ -37,7 +37,11 @@ from pydantic import BaseModel, Field
 from backend.agents.registry import AgentRegistry
 from backend.api.models import ListResponse
 from backend.api.endpoints._helpers import list_response
-from backend.services.incident_agent import AgentNameConflictError, AgentService
+from backend.services.incident_agent import (
+    AgentNameConflictError,
+    AgentNotFoundError,
+    AgentService,
+)
 
 # A single process-wide registry (the native types are static and shared);
 # building it per-request would just repeat the same 14 manifests.
@@ -106,16 +110,24 @@ async def list_agents(request: Request):
 
 
 @router.get("/agents/{agent_id}")
-async def get_agent(agent_id: str):
-    """Get a single agent (native agent type) by id.
+async def get_agent(agent_id: str, request: Request = None):
+    """Get a single agent by id.
 
-    ``agent_id`` is the native agent *type* (e.g. ``planner``); an unknown id
-    returns 404 (not a fabricated fallback).
+    Resolution order: first the native agent *type* registry (e.g. ``planner``);
+    if that misses and a DB-backed agent service is configured, fall back to a
+    persisted agent *instance*. Unknown ids return 404 (not a fabricated
+    fallback); with no DB available a non-native id is an honest 404.
     """
     manifest = _REGISTRY.get(agent_id)
-    if manifest is None:
-        raise HTTPException(status_code=404, detail="Agent not found")
-    return _manifest_to_row(manifest)
+    if manifest is not None:
+        return _manifest_to_row(manifest)
+    svc = _agent_service(request) if request is not None else None
+    if svc is not None:
+        try:
+            return await svc.get(agent_id)
+        except AgentNotFoundError:
+            pass
+    raise HTTPException(status_code=404, detail="Agent not found")
 
 
 # §47 `nerve pause-agents` → POST /api/agents/pause (canonical path).
@@ -181,6 +193,58 @@ async def create_agent(
             prompt_template=payload.prompt_template,
             tools=payload.tools,
         )
+    except AgentNameConflictError:
+        raise HTTPException(
+            status_code=409,
+            detail=f"An agent named '{payload.name}' already exists.",
+        ) from None
+
+
+class AgentUpdateRequest(BaseModel):
+    """Payload for ``PATCH /api/agents/{agent_id}``.
+
+    Every field is optional: a ``None`` value leaves the corresponding attribute
+    unchanged (partial update). ``name`` is unique across the persisted table; a
+    collision with another row surfaces as a ``409``.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    name: str | None = Field(default=None, min_length=1, description="New unique name")
+    description: str | None = Field(default=None, description="What the agent does")
+    prompt_template: str | None = Field(
+        default=None, description="Optional system prompt template"
+    )
+    tools: list[str] | None = Field(default=None, description="Tool names")
+
+
+@router.patch("/api/agents/{agent_id}")
+async def update_agent(
+    request: Request, agent_id: str, payload: AgentUpdateRequest
+) -> dict[str, Any]:
+    """Partially update a persisted agent instance.
+
+    Returns the updated web row (200). Degrades to ``503`` when no DB engine is
+    configured, ``404`` for an unknown id, and ``409`` for a duplicate name.
+    """
+    svc = _agent_service(request)
+    if svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent persistence is not configured; set NERVE_DB_URL.",
+        )
+    try:
+        return await svc.update(
+            agent_id,
+            name=payload.name,
+            description=payload.description,
+            prompt_template=payload.prompt_template,
+            tools=payload.tools,
+        )
+    except AgentNotFoundError:
+        raise HTTPException(
+            status_code=404, detail=f"Agent {agent_id!r} not found"
+        ) from None
     except AgentNameConflictError:
         raise HTTPException(
             status_code=409,

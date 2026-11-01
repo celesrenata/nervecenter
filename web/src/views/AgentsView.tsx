@@ -1,5 +1,6 @@
 import { useState, useEffect, type FormEvent } from 'react'
-import { agentsApi, apiFetch, apiErrorFromResponse, ApiError } from '../api/client'
+import { agentsApi, type AgentUpdatePayload } from '../api/agents'
+import { apiFetch, apiErrorFromResponse, ApiError } from '../api/client'
 
 /**
  * Agents view — round 3 (AG-2, AG-3 resolved).
@@ -21,6 +22,9 @@ interface Agent {
   type: string
   status: string
   description: string | null
+  prompt_template: string | null
+  tools: string[]
+  capabilities: Record<string, unknown> | null
   lastHeartbeat: string | null
   cpuUsage: number | null
   memoryUsage: number | null
@@ -58,6 +62,18 @@ const AgentsView = () => {
   const [formBusy, setFormBusy] = useState(false)
   const [formError, setFormError] = useState<{ status: number; detail: string } | null>(null)
   const [formSuccess, setFormSuccess] = useState(false)
+
+  // Detail / edit for *persisted* agent instances (native types are read-only
+  // manifests and carry no edit affordance).
+  const [editingAgentId, setEditingAgentId] = useState<string | null>(null)
+  const [editAgentName, setEditAgentName] = useState('')
+  const [editAgentDescription, setEditAgentDescription] = useState('')
+  const [editAgentPrompt, setEditAgentPrompt] = useState('')
+  const [editAgentTools, setEditAgentTools] = useState('')
+  const [editBusy, setEditBusy] = useState(false)
+  const [editLoading, setEditLoading] = useState(false)
+  const [editError, setEditError] = useState<{ status: number; detail: string } | null>(null)
+  const [editSuccess, setEditSuccess] = useState(false)
 
   useEffect(() => {
     const fetchAgents = async () => {
@@ -153,6 +169,85 @@ const AgentsView = () => {
       }
     } finally {
       setFormBusy(false)
+    }
+  }
+
+  // Only persisted instances (ids that are not native agent-type strings) are
+  // editable; native types are read-only manifests.
+  const isPersisted = (id: string) => !(NATIVE_AGENT_TYPES as readonly string[]).includes(id)
+
+  const openEdit = async (agentId: string) => {
+    setEditingAgentId(agentId)
+    setEditLoading(true)
+    setEditError(null)
+    setEditSuccess(false)
+    try {
+      // Detail fetch (GET /agents/{id}) now resolves persisted instances too.
+      const res = await agentsApi.get(agentId)
+      const agent = res.data
+      setEditAgentName(agent.name)
+      setEditAgentDescription(agent.description ?? '')
+      setEditAgentPrompt(agent.prompt_template ?? '')
+      setEditAgentTools((agent.tools ?? []).join(', '))
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setEditError({ status: error.status, detail: error.detail })
+      } else {
+        setEditError({ status: 0, detail: 'Request failed (network error)' })
+      }
+    } finally {
+      setEditLoading(false)
+    }
+  }
+
+  const closeEdit = () => {
+    setEditingAgentId(null)
+    setEditAgentName('')
+    setEditAgentDescription('')
+    setEditAgentPrompt('')
+    setEditAgentTools('')
+    setEditError(null)
+    setEditSuccess(false)
+    setEditBusy(false)
+  }
+
+  const submitEdit = async (e: FormEvent) => {
+    e.preventDefault()
+    if (!editingAgentId) return
+    if (!editAgentName.trim()) {
+      setEditError({ status: 0, detail: 'Name is required.' })
+      return
+    }
+    setEditBusy(true)
+    setEditError(null)
+    setEditSuccess(false)
+    try {
+      // PATCH /api/agents/{id}: partial update. A 409 (duplicate name) is
+      // surfaced verbatim, not faked as success.
+      const payload: AgentUpdatePayload = {
+        name: editAgentName.trim(),
+        description: editAgentDescription.trim() || null,
+        prompt_template: editAgentPrompt.trim() || null,
+        tools: editAgentTools
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+      }
+      await agentsApi.update(editingAgentId, payload)
+      setEditSuccess(true)
+      // Refresh the list so the edited row renders its updated values.
+      const list = await agentsApi.list()
+      setAgents(list.data as Agent[])
+      setFetchError(null)
+    } catch (error) {
+      if (error instanceof ApiError) {
+        // 409 name conflict / 503 no-DB are surfaced verbatim.
+        setEditError({ status: error.status, detail: error.detail })
+      } else {
+        setEditError({ status: 0, detail: 'Request failed (network error)' })
+      }
+    } finally {
+      setEditBusy(false)
     }
   }
 
@@ -299,6 +394,141 @@ const AgentsView = () => {
         </form>
       )}
 
+      {editingAgentId && (
+        <form
+          data-testid="agent-edit"
+          onSubmit={submitEdit}
+          className="bg-elevated p-6 rounded-lg shadow-lg space-y-4"
+        >
+          <h3 className="text-xl font-semibold text-primary">
+            Edit agent
+          </h3>
+          <p className="text-sm text-muted">
+            Updates a durable agent instance via the write route (PATCH{' '}
+            <code className="text-xs">/api/agents/{'{'}</code>
+            <code className="text-xs">id</code>
+            <code className="text-xs">{'}'}</code>). A 409 (duplicate name) is
+            shown verbatim.
+          </p>
+
+          {editLoading && (
+            <div className="text-sm text-muted">Loading agent…</div>
+          )}
+
+          {!editLoading && (
+            <>
+              <div>
+                <label
+                  htmlFor="agent-edit-name"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Name
+                </label>
+                <input
+                  id="agent-edit-name"
+                  data-testid="agent-edit-name"
+                  type="text"
+                  required
+                  value={editAgentName}
+                  onChange={(e) => setEditAgentName(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="agent-edit-description"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Description
+                </label>
+                <input
+                  id="agent-edit-description"
+                  data-testid="agent-edit-description"
+                  type="text"
+                  value={editAgentDescription}
+                  onChange={(e) => setEditAgentDescription(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="agent-edit-prompt"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Prompt template
+                </label>
+                <textarea
+                  id="agent-edit-prompt"
+                  data-testid="agent-edit-prompt"
+                  rows={3}
+                  value={editAgentPrompt}
+                  onChange={(e) => setEditAgentPrompt(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                />
+              </div>
+
+              <div>
+                <label
+                  htmlFor="agent-edit-tools"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Tools (comma-separated)
+                </label>
+                <input
+                  id="agent-edit-tools"
+                  data-testid="agent-edit-tools"
+                  type="text"
+                  value={editAgentTools}
+                  onChange={(e) => setEditAgentTools(e.target.value)}
+                  placeholder="e.g. read_file, search"
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                />
+              </div>
+
+              {editError && (
+                <div
+                  role="alert"
+                  data-testid="agent-edit-error"
+                  className="p-3 rounded-md bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 text-sm font-medium"
+                >
+                  {editError.status ? `${editError.status} — ` : ''}
+                  {editError.detail}
+                </div>
+              )}
+              {editSuccess && (
+                <div
+                  role="status"
+                  data-testid="agent-edit-success"
+                  className="p-3 rounded-md bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300 text-sm font-medium"
+                >
+                  Agent updated.
+                </div>
+              )}
+            </>
+          )}
+
+          <div className="flex items-center gap-3">
+            <button
+              type="submit"
+              data-testid="agent-edit-save"
+              disabled={editBusy || editLoading}
+              className="bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white px-4 py-2 rounded-lg"
+            >
+              {editBusy ? 'Saving…' : 'Save changes'}
+            </button>
+            <button
+              type="button"
+              onClick={closeEdit}
+              className="text-muted px-4 py-2"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
       {loading ? (
         <div className="text-center py-12">Loading...</div>
       ) : !fetchError && agents.length === 0 ? (
@@ -332,21 +562,33 @@ const AgentsView = () => {
                   </p>
                 </div>
                 {/* AG-2: text + aria-label, never a bare dot. */}
-                <div
-                  role="status"
-                  aria-label={`Agent ${agent.name} status: ${agent.status}`}
-                  data-testid="agent-status"
-                  className="flex items-center gap-2"
-                >
-                  <span
-                    aria-hidden="true"
-                    className={`w-3 h-3 rounded-full ${getStatusColor(
-                      agent.status
-                    )}`}
-                  />
-                  <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
-                    {agent.status}
-                  </span>
+                <div className="flex items-center gap-3">
+                  {isPersisted(agent.id) && (
+                    <button
+                      type="button"
+                      data-testid="agent-edit"
+                      onClick={() => openEdit(agent.id)}
+                      className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      Detail / Edit
+                    </button>
+                  )}
+                  <div
+                    role="status"
+                    aria-label={`Agent ${agent.name} status: ${agent.status}`}
+                    data-testid="agent-status"
+                    className="flex items-center gap-2"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className={`w-3 h-3 rounded-full ${getStatusColor(
+                        agent.status
+                      )}`}
+                    />
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
+                      {agent.status}
+                    </span>
+                  </div>
                 </div>
               </div>
               <div className="space-y-3">

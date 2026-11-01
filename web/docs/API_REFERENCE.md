@@ -103,6 +103,9 @@ Response:
 GET /api/agents/{agent_id}
 ```
 
+Resolves a native agent *type* first (e.g. `planner`), then a persisted agent
+*instance* (DB-backed). Unknown ids return `404`.
+
 Response:
 ```json
 {
@@ -111,6 +114,32 @@ Response:
   "status": "string"
 }
 ```
+
+### Update Agent (partial)
+
+```
+PATCH /api/agents/{agent_id}
+```
+
+Partially update a persisted agent *instance*. Every field is optional; a
+`null`/omitted value leaves the attribute unchanged. `name` is unique across
+the persisted table.
+
+Request body:
+```json
+{
+  "name": "string (optional)",
+  "description": "string | null (optional)",
+  "prompt_template": "string | null (optional)",
+  "tools": "string[] | null (optional)"
+}
+```
+
+Response (200): the updated agent row (same shape as
+`GET /api/agents/{agent_id}`).
+
+Errors: `404` unknown id; `409` name collides with another row; `503` when no
+DB engine is configured.
 
 ## Goals
 

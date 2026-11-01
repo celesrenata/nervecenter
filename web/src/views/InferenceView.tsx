@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { computeApi, routesApi, modelHistoryApi } from '../api/client'
+import { inferenceApi, type ProviderInfo } from '../api/inference'
 
 interface ComputeNode {
   id: string
@@ -62,6 +63,9 @@ const InferenceView = () => {
   const [routes, setRoutes] = useState<Route[]>([])
   const [history, setHistory] = useState<ModelHistory[]>([])
   const [loading, setLoading] = useState(true)
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [providersLoading, setProvidersLoading] = useState(true)
+  const [providersError, setProvidersError] = useState<string | null>(null)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -83,6 +87,22 @@ const InferenceView = () => {
       }
     }
     fetchData()
+  }, [])
+
+  useEffect(() => {
+    const fetchProviders = async () => {
+      try {
+        const res = await inferenceApi.listProviders()
+        setProviders(res.data ?? [])
+        setProvidersError(null)
+      } catch {
+        // Honest failure state — the section shows an error, not invented rows.
+        setProvidersError('Failed to load providers')
+      } finally {
+        setProvidersLoading(false)
+      }
+    }
+    fetchProviders()
   }, [])
 
   const getNodeColor = (util: number) => {
@@ -110,6 +130,77 @@ const InferenceView = () => {
       <h1 className="text-3xl font-bold text-primary">
         Inference
       </h1>
+
+      {/* Providers Section (NERVE_INFERENCE_PROVIDERS registry) */}
+      <div className="bg-elevated rounded-lg shadow-lg p-6" data-testid="inference-providers">
+        <h3 className="text-xl font-semibold text-primary mb-4">
+          Providers
+        </h3>
+        {providersError ? (
+          <div className="text-center py-8">
+            <p className="text-red-700 dark:text-red-300 font-medium">{providersError}</p>
+            <p className="text-sm text-muted mt-2 max-w-md mx-auto">
+              The provider registry could not be reached. Retry the page; the
+              list reflects only what is configured in the environment.
+            </p>
+          </div>
+        ) : providersLoading ? (
+          <div className="text-center py-12">Loading...</div>
+        ) : providers.length === 0 ? (
+          <EmptyState
+            testId="inference-empty-providers"
+            title="No providers configured."
+            body="Configure the NERVE_INFERENCE_PROVIDERS environment variable with a JSON array of provider entries (provider, model_id, optional base_url, api_key_env, capabilities) and the registered providers will appear here."
+          />
+        ) : (
+          <div className="space-y-3">
+            {providers.map((provider) => (
+              <div key={provider.provider} className="bg-hover p-4 rounded-lg">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center space-x-2">
+                    <span className="font-medium text-primary">{provider.provider}</span>
+                    {provider.default && (
+                      <span className="text-xs px-2 py-1 rounded bg-blue-500 text-white">
+                        default
+                      </span>
+                    )}
+                  </div>
+                  <span
+                    className={`text-xs px-2 py-1 rounded font-medium ${
+                      provider.key_configured
+                        ? 'bg-green-500 text-white'
+                        : 'bg-gray-500 text-white'
+                    }`}
+                  >
+                    {provider.key_configured ? 'key configured' : 'no key'}
+                  </span>
+                </div>
+                <div className="text-sm text-secondary mb-2">
+                  Model: <span className="text-primary">{provider.model_id}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs">
+                  <div className="flex space-x-3">
+                    <span>
+                      <span className="text-muted">Base URL:</span>{' '}
+                      <span className="text-primary">
+                        {provider.base_url ?? '(adapter default)'}
+                      </span>
+                    </span>
+                    <span>
+                      <span className="text-muted">Capabilities:</span>{' '}
+                      <span className="text-primary">
+                        {provider.capabilities.length > 0
+                          ? provider.capabilities.join(', ')
+                          : 'none declared'}
+                      </span>
+                    </span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
 
       {/* Physical Nodes Section */}
       <div className="bg-elevated rounded-lg shadow-lg p-6">
