@@ -27,6 +27,14 @@
 #     HS256 tokens (see backend/api/auth_service.py `verify_token`); a raw
 #     Keycloak RS256 access token is not accepted as-is. Forwarding the identity
 #     token into the API is a separate, explicit follow-up.
+#   - `--approval-prompt=auto` : explicitly asks the IdP to reuse a live SSO
+#     session instead of forcing re-authentication. Left unset, oauth2-proxy
+#     falls back to the legacy `approval_prompt=force`, which Keycloak 26.x
+#     ignores (its authorize endpoint parses only the standard OIDC `prompt`
+#     param, not `approval_prompt`) but which is semantically wrong and would
+#     force the login screen on IdPs that do honor it. A Keycloak sign-in page
+#     still appears on a first visit / a browser without a live SSO session
+#     cookie; that is normal SSO behaviour, not a defect.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -60,6 +68,7 @@ spec:
             - "--pass-host-header=true"
             - "--reverse-proxy=true"
             - "--code-challenge-method=S256"
+            - "--approval-prompt=auto"
             - "--skip-provider-button"
             - "--scope=openid profile email"
             - "--email-domain=*"
