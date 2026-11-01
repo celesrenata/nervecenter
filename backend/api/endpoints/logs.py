@@ -21,6 +21,7 @@ from backend.observability.log_buffer import (
 router = APIRouter(prefix="/api/logs", tags=["logs"])
 
 
+@router.get("", response_model=LogsResponse)
 @router.get("/", response_model=LogsResponse)
 async def list_logs(
     limit: int = Query(default=DEFAULT_LIMIT, ge=1, le=1000),
