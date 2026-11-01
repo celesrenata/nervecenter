@@ -42,7 +42,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, Index, String, func
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, Jsonb, UUIDv4
@@ -129,12 +129,35 @@ class BillRow(Base):
     duplicate_of: Mapped[str | None] = mapped_column(
         String, ForeignKey("bills.id", ondelete="SET NULL"), nullable=True
     )
+    #: Recurring-series identity (P2-B): stable string linking the installments
+    #: of one recurring obligation. ``None`` for one-time bills. Set by the
+    #: bills service when a bill is recognised as the next installment of an
+    #: existing series (payee/amount/currency within drift tolerance + the
+    #: same interval).
+    series_key: Mapped[str | None] = mapped_column(
+        String(255), nullable=True
+    )
+    #: Missing-payment confirmation flag (P2-B): ``True`` when the bill is
+    #: past ``due + 48h`` and still ``pending`` — the user must explicitly
+    #: confirm payment (or mark it unpaid/disputed). This is a *question*,
+    #: never an assumption: no code path flips status from this flag.
+    needs_confirmation: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+    #: Id of the recurring parent bill this bill is an installment of (P2-B),
+    #: or ``None``. Set by the recurrence-linker; ``confirmed_paid``
+    #: installments stay in the series history.
+    recurrence_of: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
 
     __table_args__ = (
         Index("ix_bills_payee", "payee"),
         Index("ix_bills_due_at", "due_at"),
         Index("ix_bills_status", "status"),
         Index("ix_bills_duplicate_of", "duplicate_of"),
+        Index("ix_bills_series_key", "series_key"),
+        Index("ix_bills_recurrence_of", "recurrence_of"),
     )
 
 

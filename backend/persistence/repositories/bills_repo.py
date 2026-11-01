@@ -92,12 +92,16 @@ class BillsRepository:
         status: str = "pending",
         evidence: list[dict[str, Any]] | None = None,
         duplicate_of: str | None = None,
+        series_key: str | None = None,
+        recurrence_of: str | None = None,
     ) -> BillRow:
         """Create a bill. ``status`` is caller-supplied but validated.
 
         A *new* bill is created ``pending`` (the default); writing
         ``confirmed_paid`` here is only valid when the caller is the
-        explicit user confirm action.
+        explicit user confirm action. ``series_key`` / ``recurrence_of``
+        (P2-B) link a recurring installment to its series; ``None`` for
+        one-time bills.
         """
         _require(recurrence, BILL_RECURRENCES, "bill recurrence")
         _require(status, BILL_STATUSES, "bill status")
@@ -112,6 +116,8 @@ class BillsRepository:
                 status=status,
                 evidence=evidence or [],
                 duplicate_of=duplicate_of,
+                series_key=series_key,
+                recurrence_of=recurrence_of,
             )
             session.add(row)
             await session.commit()
@@ -146,6 +152,8 @@ class BillsRepository:
         "status",
         "evidence",
         "duplicate_of",
+        "series_key",
+        "recurrence_of",
     )
 
     async def update_bill(
@@ -197,15 +205,27 @@ class BillsRepository:
                 row.status = "confirmed_paid"
                 row.confirmed_at = _ensure_utc(at) or datetime.now(UTC)
                 row.updated_at = datetime.now(UTC)
+            # Explicit user answer to the missing-payment question: the
+            # needs_confirmation flag clears here and only here.
+            if row.needs_confirmation:
+                row.needs_confirmation = False
+                row.updated_at = datetime.now(UTC)
             await session.commit()
             return row
 
     async def mark_disputed(self, bill_id: str) -> BillRow | None:
+        """Mark a bill ``disputed`` (explicit user action).
+
+        Also clears ``needs_confirmation`` — a dispute is the user's
+        explicit answer to the missing-payment question.
+        """
         async with self._sessions() as session:
             row = await session.get(BillRow, bill_id)
             if row is None:
                 return None
             row.status = "disputed"
+            if row.needs_confirmation:
+                row.needs_confirmation = False
             row.updated_at = datetime.now(UTC)
             await session.commit()
             return row
@@ -489,5 +509,116 @@ class BillsRepository:
     def to_dict(row: Any) -> dict[str, Any]:
         return _to_dict(row)
 
+    # -- P2-B: recurring series / missing-payment confirmation ---------------
+
+    async def find_series_head(
+        self,
+        *,
+        series_key: str,
+        before: datetime | None = None,
+    ) -> BillRow | None:
+        """Newest non-installment bill of a series (the series "head").
+
+        The head is the series member without ``recurrence_of`` — the
+        template the recurrence linker compares new candidates against.
+        When ``before`` is given, only heads with ``due_at`` strictly
+        before it count (so the head never *is* the candidate). Returns
+        ``None`` when the series has no head (first installment).
+        """
+        async with self._sessions() as session:
+            stmt = (
+                select(BillRow)
+                .where(
+                    and_(
+                        BillRow.series_key == series_key,
+                        BillRow.recurrence_of.is_(None),
+                    )
+                )
+                .order_by(BillRow.due_at.desc())
+            )
+            if before is not None:
+                stmt = stmt.where(BillRow.due_at < _ensure_utc(before))
+            result = await session.execute(stmt)
+            return result.scalars().first()
+
+    async def list_series(self, *, series_key: str) -> list[BillRow]:
+        """All bills in one recurring series, ordered by ``due_at`` asc.
+
+        ``confirmed_paid`` installments stay in the series history (the
+        series *is* the payment record).
+        """
+        async with self._sessions() as session:
+            stmt = (
+                select(BillRow)
+                .where(BillRow.series_key == series_key)
+                .order_by(BillRow.due_at.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def list_series_members(
+        self, *, recurrence_of: str
+    ) -> list[BillRow]:
+        """Installments of one parent bill (``recurrence_of == bill_id``)."""
+        async with self._sessions() as session:
+            stmt = (
+                select(BillRow)
+                .where(BillRow.recurrence_of == recurrence_of)
+                .order_by(BillRow.due_at.asc())
+            )
+            result = await session.execute(stmt)
+            return list(result.scalars().all())
+
+    async def sweep_needs_confirmation(
+        self, now: datetime | None = None, *, grace_hours: int = 48
+    ) -> list[BillRow]:
+        """Flag ``pending`` bills past ``due + grace_hours`` as
+        ``needs_confirmation = True`` (P2-B missing-payment reminder).
+
+        This is a *question* ("Did you pay this?"), never an assumption:
+        the sweep sets only the flag — it never flips ``status`` and never
+        writes the paid state (the stale sweep owns ``pending → stale``;
+        ``mark_confirmed_paid`` is the sole paid-state writer). Bills in
+        ``disputed`` / ``confirmed_paid`` states are untouched, as are
+        bills without a due date. Idempotent — re-running the sweep keeps
+        the flags and returns only the bills flagged this run.
+        """
+        now = _ensure_utc(now) or datetime.now(UTC)
+        threshold = now - timedelta(hours=grace_hours)
+        async with self._sessions() as session:
+            stmt = select(BillRow).where(
+                and_(
+                    BillRow.status == "pending",
+                    BillRow.needs_confirmation.is_(False),
+                    BillRow.due_at.is_not(None),
+                    BillRow.due_at < threshold,
+                )
+            )
+            result = await session.execute(stmt)
+            rows = list(result.scalars().all())
+            for row in rows:
+                row.needs_confirmation = True
+                row.updated_at = datetime.now(UTC)
+            if rows:
+                await session.commit()
+            return rows
+
+    async def set_needs_confirmation(
+        self, bill_id: str, value: bool
+    ) -> BillRow | None:
+        """Set / clear the ``needs_confirmation`` flag on one bill.
+
+        The only paths that clear it are explicit user actions (confirm
+        paid, mark disputed) — never the sweep and never time passing.
+        Returns ``None`` when the bill does not exist.
+        """
+        async with self._sessions() as session:
+            row = await session.get(BillRow, bill_id)
+            if row is None:
+                return None
+            row.needs_confirmation = value
+            row.updated_at = datetime.now(UTC)
+            await session.commit()
+            return row
 
 __all__ = ["BillsRepository"]

@@ -47,11 +47,16 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import StaticPool
 
+from backend.bills.service import BillService
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.bills import BillRow
+from backend.persistence.models.obligations import ObligationRow
 from backend.persistence.models.personal import AttentionItemRow
 from backend.persistence.repositories import RepositoryRegistry
 from backend.persistence.repositories.bills_repo import BillsRepository
+from backend.persistence.repositories.obligations_repo import (
+    ObligationsRepository,
+)
 
 # ---------------------------------------------------------------------------
 # Shared harness (pattern: tests/backend/test_wellness.py)
@@ -710,3 +715,395 @@ class TestEscalationLadder:
             {"id": "b2", "status": "pending", "confirmed_at": None, "due_at": None},
             now=now,
         ) is None
+
+
+# ---------------------------------------------------------------------------
+# P2-B — recurring series, missing-payment confirmation, price increases
+# ---------------------------------------------------------------------------
+
+
+async def _make_harness_with_obligations(
+    tmp_path: pathlib.Path,
+) -> tuple[AsyncEngine, RepositoryRegistry]:
+    """Bills harness extended with the obligations plane (for the bridge)."""
+    engine = create_async_engine(
+        f"sqlite+aiosqlite:///{tmp_path / 'bills-p2b.db'}",
+        poolclass=StaticPool,
+        connect_args={"check_same_thread": False},
+    )
+    async with engine.begin() as conn:
+        await conn.run_sync(
+            BillRow.__table__.metadata.create_all,
+            tables=[
+                BillRow.__table__,
+                AttentionItemRow.__table__,
+                ObligationRow.__table__,
+            ],
+        )
+    registry = RepositoryRegistry(make_session_factory(engine))
+    return engine, registry
+
+
+async def _seed_bill_row(
+    registry: RepositoryRegistry,
+    *,
+    payee: str = "Acme Power",
+    amount_cents: str = "14250",
+    currency: str = "USD",
+    due_at: datetime,
+    status: str = "pending",
+    recurrence: str = "one-time",
+    interval: dict[str, Any] | None = None,
+    series_key: str | None = None,
+    recurrence_of: str | None = None,
+) -> BillRow:
+    """A bill with explicit due date + P2-B fields, straight from the repo."""
+    repo = BillsRepository(registry.session_factory)
+    return await repo.create_bill(
+        payee=payee,
+        amount_cents=amount_cents,
+        currency=currency,
+        due_at=due_at,
+        status=status,
+        recurrence=recurrence,
+        interval=interval or {},
+        series_key=series_key,
+        recurrence_of=recurrence_of,
+    )
+
+
+class TestSeriesKey:
+    def test_key_is_stable_and_amount_free(self) -> None:
+        assert BillService.series_key_for("Acme Power", "USD") == (
+            BillService.series_key_for("acme power", "usd")
+        )
+        # Amount is intentionally NOT part of the key — price may drift.
+        assert BillService.series_key_for("ACME POWER") == "acme power::USD"
+
+    def test_advance_due_by_interval_deterministic(self) -> None:
+        now = datetime(2026, 11, 15, 12, 0, tzinfo=UTC)
+        # monthly: same day next month
+        assert BillService.advance_due_by_interval(
+            now, {"months": 1}
+        ) == datetime(2026, 12, 15, 12, 0, tzinfo=UTC)
+        # month-end clamp: Jan 31 + 1 month → Feb 28
+        assert BillService.advance_due_by_interval(
+            datetime(2027, 1, 31, 12, 0, tzinfo=UTC), {"months": 1}
+        ) == datetime(2027, 2, 28, 12, 0, tzinfo=UTC)
+        # Feb 29 + 1 year → Feb 28
+        assert BillService.advance_due_by_interval(
+            datetime(2028, 2, 29, 12, 0, tzinfo=UTC), {"years": 1}
+        ) == datetime(2029, 2, 28, 12, 0, tzinfo=UTC)
+        # weekly
+        assert BillService.advance_due_by_interval(
+            now, {"weeks": 1}
+        ) == now + timedelta(days=7)
+        # no/unknown interval → unchanged
+        assert BillService.advance_due_by_interval(now, {}) == now
+        assert BillService.advance_due_by_interval(now, None) == now
+
+    def test_match_series_head_rules(self) -> None:
+        svc = BillService.__new__(BillService)
+        head = {
+            "payee": "Acme Power",
+            "currency": "USD",
+            "amount_cents": 10000,
+            "due_at": datetime(2026, 11, 1, 12, 0, tzinfo=UTC),
+            "interval": {"months": 1},
+        }
+        # same payee/currency, amount within tolerance, due on schedule
+        ok = dict(head)
+        ok["due_at"] = datetime(2026, 12, 1, 12, 0, tzinfo=UTC)
+        assert svc.match_series_head(ok, head) is True
+        # amount within 10% tolerance still matches
+        near = dict(ok, amount_cents=10500)
+        assert svc.match_series_head(near, head) is True
+        # beyond tolerance → not the same series
+        assert svc.match_series_head(dict(ok, amount_cents=11100), head) is False
+        # different payee → no
+        assert svc.match_series_head(dict(ok, payee="Other"), head) is False
+        # different currency → no
+        assert svc.match_series_head(dict(ok, currency="EUR"), head) is False
+        # due date far off the schedule → no
+        assert svc.match_series_head(
+            dict(ok, due_at=datetime(2027, 5, 1, 12, 0, tzinfo=UTC)), head
+        ) is False
+
+
+class TestSeriesPriceIncreases:
+    async def test_installment_above_tolerance_is_flagged(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        svc = BillService(BillsRepository(registry.session_factory))
+        head = await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="10000",
+            due_at=datetime.now(UTC) - timedelta(days=30),
+            recurrence="monthly",
+            interval={"months": 1},
+            series_key="acme power::USD",
+        )
+        await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="10500",  # within tolerance → NOT a price increase
+            due_at=datetime.now(UTC) - timedelta(days=0),
+            recurrence="monthly",
+            interval={"months": 1},
+            series_key="acme power::USD",
+            recurrence_of=head.id,
+        )
+        await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="12000",  # > 10% over head → price increase
+            due_at=datetime.now(UTC) + timedelta(days=25),
+            recurrence="monthly",
+            interval={"months": 1},
+            series_key="acme power::USD",
+            recurrence_of=head.id,
+        )
+        increases = await svc.series_price_increases()
+        assert len(increases) == 1
+        assert increases[0]["head"]["id"] == head.id
+        assert increases[0]["installment"]["amount_cents"] == "12000"
+        assert increases[0]["drift_ratio"] == 1.2
+        await engine.dispose()
+
+    async def test_no_head_no_increase(self, tmp_path: pathlib.Path) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        svc = BillService(BillsRepository(registry.session_factory))
+        # An installment with no matching head (head deleted) is not compared.
+        await _seed_bill_row(
+            registry,
+            amount_cents="999999",
+            due_at=datetime.now(UTC),
+            series_key="ghost::USD",
+            recurrence_of="does-not-exist",
+        )
+        assert await svc.series_price_increases() == []
+        await engine.dispose()
+
+
+class TestMissingPaymentConfirmation:
+    async def test_service_sweep_flags_only_past_due_pending(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        svc = BillService(BillsRepository(registry.session_factory))
+        old = datetime.now(UTC) - timedelta(hours=72)
+        flagged = await _seed_bill_row(
+            registry,
+            payee="Overdue Payee",
+            due_at=old,
+            status="pending",
+        )
+        # future due → untouched
+        await _seed_bill_row(
+            registry, payee="Future Payee", due_at=datetime.now(UTC) + timedelta(days=5)
+        )
+        # past-due but confirmed → untouched (never re-question)
+        confirmed = await _seed_bill_row(
+            registry,
+            payee="Paid Payee",
+            due_at=old,
+            status="confirmed_paid",
+        )
+
+        out = await svc.sweep_missing_payment()
+        assert [b["id"] for b in out] == [flagged.id]
+        assert out[0]["needs_confirmation"] is True
+        # The sweep is a QUESTION: it never flips status, never writes paid.
+        assert out[0]["status"] == "pending"
+        assert out[0]["confirmed_at"] is None
+        rows = await BillsRepository(registry.session_factory).list_bills()
+        by_id = {r.id: r for r in rows}
+        assert by_id[flagged.id].status == "pending"
+        assert by_id[confirmed.id].needs_confirmation is False
+        await engine.dispose()
+
+    async def test_confirm_paid_clears_confirmation_flag(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        svc = BillService(BillsRepository(registry.session_factory))
+        row = await _seed_bill_row(
+            registry,
+            payee="Overdue Payee",
+            due_at=datetime.now(UTC) - timedelta(hours=72),
+        )
+        await svc.sweep_missing_payment()
+        confirmed = await svc.confirm_paid(row.id)
+        assert confirmed is not None
+        assert confirmed["status"] == "confirmed_paid"
+        assert confirmed["needs_confirmation"] is False
+        # clear_needs_confirmation is the explicit non-paid dismissal path
+        row2 = await _seed_bill_row(
+            registry,
+            payee="Another Payee",
+            due_at=datetime.now(UTC) - timedelta(hours=72),
+        )
+        await svc.sweep_missing_payment()
+        assert await svc.clear_needs_confirmation(row2.id) is True
+        assert await svc.clear_needs_confirmation("nope") is False
+        await engine.dispose()
+
+    async def test_endpoint_lists_flagged_and_stale_coexisting(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        client = TestClient(_wired_app(registry))
+        # Overdue pending bill: asked first, then swept stale — both states.
+        await _seed_bill_row(
+            registry,
+            payee="Overdue Payee",
+            due_at=datetime.now(UTC) - timedelta(hours=72),
+        )
+        r = client.get("/api/bills/")
+        assert r.status_code == 200
+        bill = r.json()["bills"][0]
+        assert bill["needs_confirmation"] is True
+        assert bill["status"] == "stale"
+        # Future bill: neither flag
+        await _seed_bill_row(
+            registry,
+            payee="Future Payee",
+            due_at=datetime.now(UTC) + timedelta(days=3),
+        )
+        r = client.get("/api/bills/")
+        bills = {b["payee"]: b for b in r.json()["bills"]}
+        assert bills["Future Payee"]["needs_confirmation"] is False
+        assert bills["Future Payee"]["status"] == "pending"
+        # Payload always carries the P2-B series fields
+        assert "series_key" in bills["Future Payee"]
+        assert "recurrence_of" in bills["Future Payee"]
+        await engine.dispose()
+
+
+class TestBriefing:
+    async def test_briefing_composes_the_answer(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        client = TestClient(_wired_app(registry))
+        now = datetime.now(UTC)
+        head = await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="10000",
+            due_at=now + timedelta(days=5),
+            recurrence="monthly",
+            interval={"months": 1},
+            series_key="acme power::USD",
+        )
+        await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="10000",
+            due_at=now + timedelta(days=35),  # outside the default 30d window
+            recurrence="monthly",
+            interval={"months": 1},
+            series_key="acme power::USD",
+            recurrence_of=head.id,
+        )
+        paid = await _seed_bill_row(
+            registry,
+            payee="Paid Guy",
+            due_at=now - timedelta(days=20),
+            status="pending",
+        )
+        # Confirm through the service so ``confirmed_at`` is written —
+        # ``paid_recently`` filters on ``confirmed_at >= now - 90d``.
+        svc = BillService(BillsRepository(registry.session_factory))
+        await svc.confirm_paid(paid.id)
+        await _seed_bill_row(
+            registry,
+            payee="Overdue Payee",
+            due_at=now - timedelta(hours=72),
+            status="pending",
+        )
+        r = client.get("/api/bills/briefing")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["durable"] is True
+        assert body["summary"]["total_due_soon"] == 1  # the +5d one
+        assert body["summary"]["total_series"] == 1
+        assert body["summary"]["total_paid_90d"] == 1
+        assert body["summary"]["total_needs_confirmation"] == 1
+        due_soon = {b["payee"] for b in body["due_soon"]}
+        assert due_soon == {"Acme Power"}
+        attention = {b["payee"] for b in body["needs_attention"]}
+        assert attention == {"Overdue Payee"}
+        series = body["series"]
+        assert len(series) == 1
+        assert series[0]["series_key"] == "acme power::USD"
+        assert series[0]["member_count"] == 2
+        assert series[0]["head"]["id"] == head.id
+        await engine.dispose()
+
+    async def test_briefing_degraded_shape(self) -> None:
+        app = _degraded_app()
+        client = TestClient(app)
+        r = client.get("/api/bills/briefing")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["durable"] is False
+        assert body["owing"] == []
+        assert body["summary"] == {}
+
+
+class TestPriceIncreaseBridge:
+    async def test_list_bills_bridges_increase_to_obligations_idempotently(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        client = TestClient(_wired_app(registry))
+        now = datetime.now(UTC)
+        head = await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="10000",
+            due_at=now - timedelta(days=30),
+            recurrence="monthly",
+            interval={"months": 1},
+            series_key="acme power::USD",
+        )
+        await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="15000",  # 50% over head → notice
+            due_at=now + timedelta(days=25),
+            recurrence="monthly",
+            interval={"months": 1},
+            series_key="acme power::USD",
+            recurrence_of=head.id,
+        )
+        obs = ObligationsRepository(registry.session_factory)
+        r = client.get("/api/bills/")
+        assert r.status_code == 200
+        obligations = await obs.list()
+        assert len(obligations) == 1  # exactly one notice
+        obligation = obligations[0]
+        assert obligation.obligation_type == "bill"
+        assert obligation.title.startswith("Bill: Acme Power")
+        # Idempotency: a second read never stacks a duplicate notice.
+        client.get("/api/bills/")
+        obligations = await obs.list()
+        assert len(obligations) == 1
+        await engine.dispose()
+
+    async def test_no_increase_bridges_nothing(self, tmp_path: pathlib.Path) -> None:
+        engine, registry = await _make_harness_with_obligations(tmp_path)
+        client = TestClient(_wired_app(registry))
+        await _seed_bill_row(
+            registry,
+            payee="Acme Power",
+            amount_cents="10000",
+            due_at=datetime.now(UTC) + timedelta(days=3),
+        )
+        assert client.get("/api/bills/").status_code == 200
+        obs = ObligationsRepository(registry.session_factory)
+        assert await obs.list() == []
+        await engine.dispose()

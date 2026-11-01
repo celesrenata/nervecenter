@@ -50,6 +50,14 @@ from backend.persistence.repositories.bills_repo import BillsRepository
 ESCALATION_SOON_DAYS = 7
 ESCALATION_SOON_HOURS = 48
 
+#: P2-B: hours after due before a missing-payment confirmation reminder fires.
+MISSING_PAYMENT_REMINDER_HOURS = 48
+
+#: P2-B: ratio tolerance for amount drift before a price-increase notice fires.
+#: An installment within 1.10× the head's amount is "same price"; beyond that
+#: is a price increase worth flagging.
+PRICE_DRIFT_TOLERANCE = 1.10
+
 
 def bill_escalation_level(bill: Any, now: datetime | None = None) -> int | None:
     """Deterministic escalation level for a bill (contract consumed by K).
@@ -209,6 +217,298 @@ class BillService:
         rows = await self._repo.sweep_stale(now=now)
         return len(rows)
 
+    # -- P2-B: recurring series / missing-payment confirmation -----------------
+    #
+    # **Nothing here ever infers payment from time passing.** The
+    # missing-payment sweep only raises a ``needs_confirmation`` flag (a
+    # question: "Did you pay this?"); the stale sweep owns the
+    # ``pending → stale`` transition, and ``confirm_paid`` remains the
+    # sole writer of the paid state.
+
+    @staticmethod
+    def series_key_for(payee: str, currency: str = "USD") -> str:
+        """Stable series identity: lower-cased payee + currency.
+
+        The amount is intentionally NOT part of the key — a recurring
+        bill's price may drift (see :meth:`series_price_increases`); the
+        key identifies *who*, and the amount is compared with a tolerance
+        at link time.
+        """
+        return f"{(payee or '').strip().lower()}::{(currency or 'USD').strip().upper()}"
+
+    @staticmethod
+    def advance_due_by_interval(
+        due_at: datetime, interval: dict[str, Any]
+    ) -> datetime:
+        """Advance ``due_at`` by one recurrence interval (deterministic).
+
+        ``{"months": 1}`` → next month, same day-of-month (clamped to the
+        month's last day); ``{"weeks": 1}`` → +7 days; ``{"years": 1}`` →
+        same date next year (Feb 29 clamps to Feb 28); no/unknown interval
+        → the date is returned unchanged.
+        """
+        interval = interval or {}
+        months = int(interval.get("months", 0) or 0)
+        years = int(interval.get("years", 0) or 0)
+        weeks = int(interval.get("weeks", 0) or 0)
+        if (years or months) and not weeks:
+            d = due_at
+            if years:
+                try:
+                    d = d.replace(year=d.year + years)
+                except ValueError:  # Feb 29 → Feb 28
+                    d = d.replace(year=d.year + years, day=28)
+            if months:
+                y = d.year + (d.month - 1 + months) // 12
+                m = (d.month - 1 + months) % 12 + 1
+                try:
+                    d = d.replace(year=y, month=m, day=d.day)
+                except ValueError:  # e.g. Jan 31 → Feb 28
+                    import calendar
+
+                    d = d.replace(year=y, month=m, day=calendar.monthrange(y, m)[1])
+            return d
+        if weeks:
+            return due_at + timedelta(weeks=weeks)
+        return due_at
+
+    @staticmethod
+    def _interval_days(interval: dict[str, Any]) -> int | None:
+        """Approximate interval length in days (for drift tolerance)."""
+        interval = interval or {}
+        if interval.get("days"):
+            return int(interval["days"])
+        if interval.get("months"):
+            return int(interval["months"]) * 30
+        if interval.get("weeks"):
+            return int(interval["weeks"]) * 7
+        if interval.get("years"):
+            return int(interval["years"]) * 365
+        return None
+
+    def match_series_head(
+        self,
+        candidate: dict[str, Any],
+        head: dict[str, Any],
+        *,
+        drift_hours: int = 24 * 3,
+    ) -> bool:
+        """P2-B recurring-recognition: does ``candidate`` match ``head``?
+
+        True when the payee (case-insensitive) and currency match, the
+        amount is within :data:`PRICE_DRIFT_TOLERANCE`, and the due date
+        follows the same interval (within ``drift_hours`` of the
+        head's due advanced by one interval).
+        """
+        if (
+            (candidate.get("payee") or "").strip().lower()
+            != (head.get("payee") or "").strip().lower()
+        ):
+            return False
+        if (
+            (candidate.get("currency") or "USD").strip().upper()
+            != (head.get("currency") or "USD").strip().upper()
+        ):
+            return False
+        try:
+            cand_amt = int(candidate.get("amount_cents") or 0)
+            head_amt = int(head.get("amount_cents") or 0)
+        except (TypeError, ValueError):
+            return False
+        if head_amt <= 0:
+            return False
+        if not (
+            head_amt <= cand_amt <= head_amt * PRICE_DRIFT_TOLERANCE
+        ):
+            return False
+        head_due = _ensure_utc(head.get("due_at"))
+        cand_due = _ensure_utc(candidate.get("due_at"))
+        expected = self.advance_due_by_interval(
+            head_due, head.get("interval") or {}
+        )
+        tolerance = timedelta(hours=drift_hours)
+        if abs((cand_due - expected).total_seconds()) > tolerance.total_seconds():
+            return False
+        return True
+
+    async def link_candidate_to_series(
+        self,
+        *,
+        candidate_id: str,
+        series_key: str,
+    ) -> dict[str, Any] | None:
+        """P2-B: link an accepted candidate to an existing series head.
+
+        If the candidate's ``(payee, currency)`` match an existing head
+        (same ``series_key``, no ``recurrence_of``) and its amount falls
+        within :data:`PRICE_DRIFT_TOLERANCE`, the candidate is promoted
+        as an *installment* (``recurrence_of`` set to the head id,
+        ``series_key`` set to the series). Otherwise it becomes the
+        series head itself (``recurrence_of`` = None). Returns the
+        promoted bill dict; ``None`` when the candidate is absent or
+        not a valid proposal.
+        """
+        result = await self._repo.accept_candidate(candidate_id)
+        if result is None:
+            return None
+        candidate, bill = result
+        # Look for an existing head of this series.
+        head = await self._repo.find_series_head(
+            series_key=series_key,
+            before=_ensure_utc(bill.due_at),
+        )
+        if head is not None:
+            cand_dict = self._bill_dict(bill)
+            if self.match_series_head(cand_dict, self._bill_dict(head)):
+                # Link as an installment of the head (no new head created).
+                linked = await self._repo.update_bill(
+                    bill.id,
+                    recurrence_of=head.id,
+                    series_key=series_key,
+                )
+                return self._bill_dict(linked) if linked is not None else None
+        # No matching head: this bill becomes the head of the series.
+        linked = await self._repo.update_bill(
+            bill.id, series_key=series_key
+        )
+        return self._bill_dict(linked) if linked is not None else None
+
+    async def sweep_missing_payment(
+        self, now: datetime | None = None
+    ) -> list[dict[str, Any]]:
+        """P2-B: flag ``pending`` bills past ``due + grace`` for confirmation.
+
+        This is a *question*, never an assumption — the sweep sets only the
+        ``needs_confirmation`` flag; it never flips ``status`` and never
+        writes the paid state. Idempotent (re-running keeps the flags,
+        returns only the bills flagged this run).
+        """
+        now = _ensure_utc(now)
+        rows = await self._repo.sweep_needs_confirmation(now=now)
+        return [self._bill_dict(r) for r in rows]
+
+    async def clear_needs_confirmation(self, bill_id: str) -> bool:
+        """Clear a bill's ``needs_confirmation`` flag (explicit user action)."""
+        row = await self._repo.set_needs_confirmation(bill_id, False)
+        return row is not None
+
+    async def series_price_increases(
+        self,
+        *,
+        tolerance: float | None = None,
+    ) -> list[dict[str, Any]]:
+        """P2-B: recurring bills whose amount drifted above the series head.
+
+        For every series head (``recurrence_of`` is NULL, ``series_key``
+        set), compare each installment's ``amount_cents`` to the head's.
+        Installments above ``head × tolerance`` (default
+        :data:`PRICE_DRIFT_TOLERANCE`) are price increases — surfaced as
+        notice obligations by the caller (the obligations plane owns the
+        notice record; this method only *detects*).
+        """
+        tol = tolerance if tolerance is not None else PRICE_DRIFT_TOLERANCE
+        heads = await self._repo.list_bills()
+        out: list[dict[str, Any]] = []
+        for head in heads:
+            if not getattr(head, "series_key", None):
+                continue
+            if getattr(head, "recurrence_of", None) is not None:
+                continue
+            installments = await self._repo.list_series_members(
+                recurrence_of=head.id
+            )
+            head_amt = int(head.amount_cents or 0)
+            if head_amt <= 0:
+                continue
+            for inst in installments:
+                inst_amt = int(inst.amount_cents or 0)
+                if inst_amt > head_amt * tol:
+                    out.append(
+                        {
+                            "head": self._bill_dict(head),
+                            "installment": self._bill_dict(inst),
+                            "drift_ratio": round(inst_amt / head_amt, 4),
+                        }
+                    )
+        return out
+
+    async def briefing(
+        self,
+        *,
+        days: int = 30,
+        now: datetime | None = None,
+    ) -> dict[str, Any]:
+        """P2-B: "What do I owe / when / what have I paid / what needs
+        attention" — a single composite answer.
+
+        Returns
+        -------
+        ``{"owowing": [...], "due_soon": [...], "paid_recently": [...],
+        "needs_attention": [...], "series": [{...}], "summary": {...}}``
+        """
+        now = _ensure_utc(now)
+        all_bills = await self._repo.list_bills()
+        due_soon = await self._repo.upcoming(days=days, now=now)
+        needs_confirmation = [
+            r for r in all_bills if getattr(r, "needs_confirmation", False)
+        ]
+        paid_recently = [
+            r
+            for r in all_bills
+            if r.status == "confirmed_paid"
+            and (
+                r.confirmed_at is not None
+                and _ensure_utc(r.confirmed_at) >= now - timedelta(days=90)
+            )
+        ]
+        # Series summary: group by series_key.
+        series_map: dict[str, list[dict[str, Any]]] = {}
+        for r in all_bills:
+            sk = getattr(r, "series_key", None)
+            if not sk:
+                continue
+            series_map.setdefault(sk, []).append(self._bill_dict(r))
+        series = []
+        for sk, members in series_map.items():
+            head = next(
+                (m for m in members if m.get("recurrence_of") is None), None
+            )
+            series.append(
+                {
+                    "series_key": sk,
+                    "head": head,
+                    "member_count": len(members),
+                    "members": members,
+                }
+            )
+        owing = [
+            self._bill_dict(r)
+            for r in all_bills
+            if r.status in ("pending", "stale")
+        ]
+        summary = {
+            "total_pending": sum(
+                1 for r in all_bills if r.status == "pending"
+            ),
+            "total_owing": len(owing),
+            "total_due_soon": len(due_soon),
+            "total_needs_confirmation": len(needs_confirmation),
+            "total_paid_90d": len(paid_recently),
+            "total_series": len(series),
+        }
+        # "Owing" = anything not yet settled. ``stale`` bills (overdue, no
+        # confirmation of payment) are still owed — excluding them would let
+        # an overdue bill vanish from "what do I owe". ``disputed`` bills are
+        # contested and belong in needs_attention, not the owing list.
+        return {
+            "owing": owing,
+            "due_soon": [self._bill_dict(r) for r in due_soon],
+            "paid_recently": [self._bill_dict(r) for r in paid_recently],
+            "needs_attention": [self._bill_dict(r) for r in needs_confirmation],
+            "series": series,
+            "summary": summary,
+        }
+
     # -- candidates -------------------------------------------------------------
 
     async def list_candidates(self, *, status: str | None = None) -> list[dict[str, Any]]:
@@ -350,6 +650,11 @@ class BillService:
             ),
             "evidence": list(row.evidence or []),
             "duplicate_of": row.duplicate_of,
+            "series_key": getattr(row, "series_key", None),
+            "recurrence_of": getattr(row, "recurrence_of", None),
+            "needs_confirmation": bool(
+                getattr(row, "needs_confirmation", False)
+            ),
             "created_at": _ensure_utc(row.created_at).isoformat(),
             "updated_at": _ensure_utc(row.updated_at).isoformat(),
         }

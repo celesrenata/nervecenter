@@ -15,12 +15,12 @@ Legend: `[ ]` open · `[x]` done · `[-]` in progress · `[!]` live-verification
 
 ## P2-B — Financial Responsibility Manager
 
-- [ ] Recurring obligation recognition in `bills/service.py` (payee+amount drift tolerance + interval match → `recurrence_of`).
-- [ ] Missing-payment confirmation reminder at due+48h (needs_confirmation flag; never assumes paid).
-- [ ] Price-increase + overdue notices → notice obligations.
-- [ ] Bill → obligation bridging (each bill mirrored as an obligation row with dedup_key; payment confirmation syncs both planes).
-- [ ] "What do I owe / when / paid / needs attention" briefing endpoint.
-- [ ] Tests: synthetic recurring sequence, drift, dup collapse; [!] live-gate: real bill email.
+- [x] Recurring obligation recognition in `bills/service.py` (payee+amount drift tolerance + interval match → `recurrence_of`). *(Landed this session: `BillService.match_series_head`, `link_to_series`, auto-link on `create_bill`, `series_key` helper; migration `013_bill_series`; tests `TestSeriesKey`, `TestSeriesLinkage`.)*
+- [x] Missing-payment confirmation reminder at due+48h (needs_confirmation flag; never assumes paid). *(Landed this session: `BillsRepository.sweep_needs_confirmation`, `BillService.sweep_missing_payment`, `clear_needs_confirmation`; wired on `GET /bills` after the stale sweep; `confirm_paid`/`dispute` clear the flag; tests `TestMissingPaymentConfirmation`.)*
+- [x] Price-increase + overdue notices → notice obligations. *(Price-increase installments auto-bridged to `bill` obligations via `GET /bills` (`_bridge_price_increases`, idempotent by dedup key); overdue bills surface through the existing escalation levels + `needs_attention`/attention items.)*
+- [ ] Bill → obligation bridging (each bill mirrored as an obligation row with dedup_key; payment confirmation syncs both planes). *(Partially done: the P2-B price-increase bridge auto-mirrors affected bills; arbitrary per-bill mirroring is available via the existing manual `POST /api/obligations/bridge` (dedup upsert). Not yet implemented: automatic on-read mirroring of every bill and auto-completing the mirrored obligation when `confirm_paid` runs — deferred as a design decision, since the obligation plane is meant to *reference* rather than duplicate bills (spec §P2-A).)*
+- [x] "What do I owe / when / paid / needs attention" briefing endpoint. *(Landed this session: `BillService.briefing` + `GET /api/bills/briefing?days=` returning owing / due_soon / paid_recently / needs_attention / series / summary, with a `durable` flag; test `TestBriefing`.)*
+- [x] Tests: synthetic recurring sequence, drift, dup collapse. *(Landed this session: recurring recognition, drift tolerance, series price-increase detection + idempotent obligation bridge, missing-payment reminder, briefing composition, series payload.)* [!] live-gate: real bill email — **UNVERIFIED** (requires a live ingestion run against a real bill PDF).
 
 ## P2-C — Appointments and Life Scheduling
 

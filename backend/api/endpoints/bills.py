@@ -47,7 +47,11 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from backend.bills.service import BillService, bill_escalation_level
+from backend.obligations.service import ObligationsService
 from backend.persistence.repositories.bills_repo import BillsRepository
+from backend.persistence.repositories.obligations_repo import (
+    ObligationsRepository,
+)
 
 router = APIRouter(prefix="/api/bills", tags=["bills"])
 
@@ -158,6 +162,43 @@ async def _escalate(request: Request, svc: BillService, bills: list[dict[str, An
                 pass
 
 
+async def _bridge_price_increases(request: Request, svc: BillService) -> None:
+    """P2-B: bridge recurring-series price increases into the obligations plane.
+
+    For every detected price increase (an installment whose amount exceeds
+    its series head's by the drift tolerance), upsert a durable
+    ``bill``-type obligation keyed to the installment. Idempotent — the
+    dedup key (``bill|bills:{id}|{due_day}``) is stable across restarts,
+    so re-running the list never stacks duplicate notices. Silent degrade:
+    a bridge failure never breaks the bill read (best-effort, like
+    ``_escalate``).
+    """
+    registry = _registry(request)
+    if registry is None:
+        return
+    increases = await svc.series_price_increases()
+    if not increases:
+        return
+    obsvc = ObligationsService(ObligationsRepository(registry.session_factory))
+    for inc in increases:
+        inst = inc["installment"]
+        try:
+            await obsvc.upsert_from_source(
+                {
+                    "plane": "bills",
+                    "record": inst,
+                    "price_increase": {
+                        "head_id": inc["head"]["id"],
+                        "series_key": inst.get("series_key"),
+                        "drift_ratio": inc["drift_ratio"],
+                    },
+                },
+                registry=registry,
+            )
+        except Exception:  # noqa: BLE001 — the bridge is best-effort on reads
+            pass
+
+
 def _parse_iso(value: str, *, param: str) -> datetime:
     """Parse an ISO-8601 timestamp, normalizing to a tz-aware UTC datetime."""
     try:
@@ -230,9 +271,14 @@ async def list_bills(request: Request, status: _STATUSES | None = None) -> dict[
     """Bill list, optionally filtered by status.
 
     Runs the stale sweep first (overdue-unconfirmed → ``stale`` — never
-    ``confirmed_paid``), then mirrors any level ≥ 1 escalation into the
-    durable attention plane. Each bill payload carries
-    ``escalation_level`` (``None`` when no escalation applies).
+    ``confirmed_paid``), then the P2-B missing-payment confirmation sweep
+    (past-due-unconfirmed bills → ``needs_confirmation`` — a *question*,
+    never an assumption), then mirrors any level ≥ 1 escalation into the
+    durable attention plane and bridges recurring-series price increases
+    into the obligations plane (idempotent upsert keyed to the bill).
+    Each bill payload carries ``escalation_level`` (``None`` when no
+    escalation applies) and the P2-B series fields (``series_key``,
+    ``recurrence_of``, ``needs_confirmation``).
     """
     registry = _registry(request)
     if registry is None:
@@ -240,8 +286,15 @@ async def list_bills(request: Request, status: _STATUSES | None = None) -> dict[
     svc = _service(request)
     assert svc is not None
     try:
+        # Missing-payment confirmation runs BEFORE the stale sweep: the
+        # confirmation sweep only matches ``pending`` bills, so an overdue
+        # pending bill is first asked ("did you pay?") and then
+        # independently swept to ``stale``. The two states coexist — the
+        # flag is a separate axis, cleared only by confirm/dispute.
+        await svc.sweep_missing_payment()
         await svc.sweep_stale()
-    except Exception:  # noqa: BLE001 — the sweep is best-effort on reads
+        await _bridge_price_increases(request, svc)
+    except Exception:  # noqa: BLE001 — the sweeps are best-effort on reads
         pass
     bills = [_with_level(b) for b in await svc.list_bills(status=status)]
     await _escalate(request, svc, bills)
@@ -296,6 +349,47 @@ async def monthly_calendar(
     assert svc is not None
     result = await svc.monthly_calendar(month)
     result["num_days"] = calendar.monthrange(year, month_num)[1]
+    result["durable"] = True
+    return result
+
+
+@router.get("/briefing")
+async def briefing(
+    request: Request,
+    days: int = Query(default=30, ge=1, le=365, description="Due-within window"),
+) -> dict[str, Any]:
+    """P2-B composite answer: what I owe, what's due soon, what I've paid,
+    what needs attention, and my recurring series.
+
+    Single read that answers "What do I owe / when / what have I paid /
+    what needs attention" in one payload. Runs the stale +
+    missing-payment sweeps first (best-effort) so the ``needs_attention``
+    section is current. Degrades to empty sections when no durable
+    registry is configured.
+    """
+    registry = _registry(request)
+    if registry is None:
+        return {
+            "owing": [],
+            "due_soon": [],
+            "paid_recently": [],
+            "needs_attention": [],
+            "series": [],
+            "summary": {},
+            "durable": False,
+        }
+    svc = _service(request)
+    assert svc is not None
+    try:
+        # Confirmation sweep first (matches ``pending``), then stale — see
+        # the ``GET /`` ordering note.
+        await svc.sweep_missing_payment()
+        await svc.sweep_stale()
+    except Exception:  # noqa: BLE001 — the sweeps are best-effort on reads
+        pass
+    result = await svc.briefing(days=days)
+    for key in ("owing", "due_soon", "paid_recently", "needs_attention"):
+        result[key] = [_with_level(b) for b in result[key]]
     result["durable"] = True
     return result
 
