@@ -17,8 +17,10 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import {
   connectionsApi,
+  isAuthRequiredError,
   isDegradedWrite,
   type Connection,
 } from '../api/connections'
@@ -53,6 +55,11 @@ export function ConnectionsView() {
   const [connections, setConnections] = useState<Connection[]>([])
   const [loading, setLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
+  /** Set when the list load failed with HTTP 401 (missing/expired session
+   *  token). Distinct from a plain load error: it renders the sign-in path
+   *  instead of the raw backend detail. The session is already cleared by the
+   *  shared `apiFetch` 401 handler, so this is purely presentational. */
+  const [authRequired, setAuthRequired] = useState(false)
   const [showWizard, setShowWizard] = useState(false)
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set())
   const [notices, setNotices] = useState<Notices>({})
@@ -69,13 +76,28 @@ export function ConnectionsView() {
     })
   }, [])
 
+  /** Map a failed list load to honest UI state: an HTTP 401 (missing/expired
+   *  session token) becomes the sign-in path — the session is already cleared
+   *  by the shared transport — while any other failure keeps its message.
+   *  Never surfaces a raw backend detail string like "missing bearer token". */
+  const handleLoadError = useCallback((err: unknown): void => {
+    if (isAuthRequiredError(err)) {
+      setAuthRequired(true)
+      setLoadError(null)
+    } else {
+      setAuthRequired(false)
+      setLoadError(errText(err))
+    }
+  }, [])
+
   useEffect(() => {
     let cancelled = false
     setLoading(true)
     setLoadError(null)
+    setAuthRequired(false)
     fetchList()
       .catch((err: unknown) => {
-        if (!cancelled) setLoadError(errText(err))
+        if (!cancelled) handleLoadError(err)
       })
       .finally(() => {
         if (!cancelled) setLoading(false)
@@ -83,7 +105,7 @@ export function ConnectionsView() {
     return () => {
       cancelled = true
     }
-  }, [fetchList])
+  }, [fetchList, handleLoadError])
 
   function setBusy(id: string, busy: boolean) {
     setBusyIds((prev) => {
@@ -227,6 +249,23 @@ export function ConnectionsView() {
         >
           Loading connections…
         </div>
+      ) : authRequired ? (
+        <div
+          className="rounded-md border border-line bg-elevated p-8 text-center"
+          role="alert"
+        >
+          <p className="text-sm font-medium text-primary">You need to sign in to load connections</p>
+          <p className="text-sm text-secondary mt-1">
+            Your session has expired or is missing its access token, so the Connection
+            Center cannot list or manage connections.
+          </p>
+          <Link
+            to="/login"
+            className="mt-4 inline-block rounded-md bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent-hover"
+          >
+            Sign in
+          </Link>
+        </div>
       ) : loadError ? (
         <div
           className="rounded-md border border-[color-mix(in_srgb,var(--danger)_40%,transparent)] bg-[color-mix(in_srgb,var(--danger)_8%,transparent)] p-4 text-sm text-danger"
@@ -238,8 +277,9 @@ export function ConnectionsView() {
             onClick={() => {
               setLoading(true)
               setLoadError(null)
+              setAuthRequired(false)
               fetchList()
-                .catch((err: unknown) => setLoadError(errText(err)))
+                .catch((err: unknown) => handleLoadError(err))
                 .finally(() => setLoading(false))
             }}
             className="mt-3 rounded-md border border-line px-3 py-1.5 text-sm text-secondary hover:bg-hover"

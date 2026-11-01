@@ -57,6 +57,7 @@ from backend.api.endpoints import (
     context,
     decisions,
     drafts,
+    logs,
     entities,
     followups,
     events,
@@ -136,6 +137,7 @@ ALL_ROUTERS = (
     systems.router,
     models_history.router,
     metrics.router,
+    logs.router,
     connections.router,
     relay.router,
     today.router,
@@ -196,6 +198,16 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
     @asynccontextmanager
     async def _lifespan(app: FastAPI):
         async with original(app):
+            # Anchor the in-service log capture. This runs *after* uvicorn's
+            # dictConfig (which runs during server setup, before the lifespan)
+            # so the stdlib handler survives uvicorn's reconfiguration and the
+            # structlog pipeline is re-anchored for this app instance.
+            try:
+                from backend.observability.log_buffer import install_log_capture
+
+                install_log_capture()
+            except Exception as exc:  # noqa: BLE001 - capture must not crash startup
+                log.warning("api.log_capture_install_failed", error=str(exc))
             try:
                 _install_connection_control_plane(app)
             except Exception as exc:  # noqa: BLE001 - startup must not crash

@@ -20,6 +20,7 @@ import { NowView } from './views/NowView'
 import { BriefingView } from './views/BriefingView'
 import { OverviewView } from './views/OverviewView'
 import { SystemsView } from './views/SystemsView'
+import LogsView from './views/LogsView'
 import { TimelineView } from './views/TimelineView'
 import { GoalsView } from './views/GoalsView'
 import { TaskDagView } from './views/TaskDagView'
@@ -75,6 +76,7 @@ function App() {
             <Route path="/bills" element={<BillsView />} />
             <Route path="/routines" element={<RoutinesView />} />
             <Route path="/systems" element={<SystemsView />} />
+            <Route path="/logs" element={<LogsView />} />
             <Route path="/timeline" element={<TimelineView />} />
             <Route path="/goals" element={<GoalsView />} />
             <Route path="/tasks" element={<TaskDagView />} />

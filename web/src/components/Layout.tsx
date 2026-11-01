@@ -27,6 +27,7 @@ import {
   ConnectionsIcon,
   SettingsIcon,
   ShieldCheckIcon,
+  LogsIcon,
   type IconProps,
 } from './icons'
 
@@ -51,6 +52,7 @@ const navItems: NavItem[] = [
   { path: '/bills', label: 'Bills', Icon: WaitingOnIcon },
   { path: '/routines', label: 'Routines', Icon: TimelineIcon },
   { path: '/systems', label: 'Systems', Icon: SystemsIcon },
+  { path: '/logs', label: 'Logs', Icon: LogsIcon },
   { path: '/timeline', label: 'Timeline', Icon: TimelineIcon },
   { path: '/goals', label: 'Goals', Icon: GoalsIcon },
   { path: '/tasks', label: 'Task DAG', Icon: TasksIcon },

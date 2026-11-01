@@ -24,7 +24,7 @@
  * records).
  */
 
-import { apiFetch, apiErrorFromResponse, useMockMode } from './client'
+import { apiFetch, apiErrorFromResponse, useMockMode, ApiError } from './client'
 
 // ─── Frozen state vocabulary (mirrors `backend.connectors.registry`) ─────────
 
@@ -172,6 +172,21 @@ export function isDegradedWrite(result: unknown): result is DegradedWrite {
     result !== null &&
     (result as DegradedWrite).executed === false
   )
+}
+
+/**
+ * True when a rejected real-API call failed with HTTP 401 — the session
+ * access token is missing, expired, or invalid.
+ *
+ * Every method on {@link realConnectionsApi} goes through the shared
+ * `apiFetch` transport, which is the single place the
+ * `Authorization: Bearer <access token>` header is attached (from the
+ * sessionStorage session helper in `client.ts`). So a 401 here means the
+ * presenting session is not usable: the caller must surface a sign-in path,
+ * not the raw backend detail (e.g. "missing bearer token").
+ */
+export function isAuthRequiredError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401
 }
 
 // ─── Real API implementation ─────────────────────────────────────────────────

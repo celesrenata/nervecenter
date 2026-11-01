@@ -168,6 +168,17 @@ export function SystemsIcon({ size = 18, ...rest }: IconProps) {
   )
 }
 
+/** Logs — terminal prompt. */
+export function LogsIcon({ size = 18, ...rest }: IconProps) {
+  return (
+    <svg {...baseProps(size, rest)}>
+      <rect x="2" y="4" width="20" height="16" rx="2" />
+      <polyline points="6 9 9 12 6 15" />
+      <line x1="11" y1="15" x2="17" y2="15" />
+    </svg>
+  )
+}
+
 /** Timeline — clock face. */
 export function TimelineIcon({ size = 18, ...rest }: IconProps) {
   return (

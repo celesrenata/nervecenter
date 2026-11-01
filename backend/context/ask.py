@@ -57,7 +57,7 @@ from backend.inference.omniroute import (
 )
 from backend.policy.pdp import INFER_ROUTE_ACTION, InferRouteDecision, PolicyDecisionPoint
 from schemas.context import ContextPackage
-from schemas.nc_platform import NCPrincipal
+from schemas.nc_platform import NCPrincipal, NCPolicy
 from schemas.routes import InferenceRoute
 
 log = structlog.get_logger(__name__)
@@ -144,6 +144,49 @@ def default_ask_principal() -> NCPrincipal:
         display_name="NerveCenter user",
         namespace="personal",
     )
+
+
+#: Stable id for the built-in ask allow policy (deterministic, not per-request).
+_ASK_ALLOW_POLICY_ID = "pol_" + "0123456789ABCDEFGHJKMNPTWX"
+
+
+def default_ask_pdp() -> PolicyDecisionPoint:
+    """Default-deny PDP pre-seeded with an explicit ALLOW for the ask route.
+
+    The ask pipeline previously ran against a bare :class:`PolicyDecisionPoint`
+    (no policies) — i.e. **default-deny for everything** — so even the
+    benign, public-facing question ``hello world`` (sensitivity
+    ``internal``) was refused with the structured ``policy_denied`` answer.
+
+    This factory wires the explicit, scoped ALLOW policy that restores the
+    intended behavior without lifting the honest-degradation contract:
+
+    - ``public`` / ``internal`` (remote-capable) tiers are now explicitly
+      **allowed** for the ask action, so a benign question is no longer
+      policy-denied. If the route is allowed but the inference transport is
+      not configured/unreachable, the pipeline still returns the honest
+      202 ``unavailable`` shape — never a fabricated answer.
+    - ``confidential`` / ``LOCAL_ONLY`` content is **still denied**: the PDP
+      applies the hard floor at ``sensitivity_class is confidential`` before
+      any policy matching, so this ALLOW policy cannot lift it to a remote
+      tier. Denial precedence and namespace isolation remain intact.
+
+    The ``*`` principal wildcard is safe here: the PDP never expands a
+    wildcard to ``kind:agent`` / ``kind:function`` principals (ADR-0003
+    no-wildcard-privilege), and the ask principal is the stable
+    ``kind=human`` principal above.
+    """
+    allow_policy = NCPolicy(
+        id="row-ask-allow",
+        policy_id=_ASK_ALLOW_POLICY_ID,
+        effect="ALLOW",
+        principal_match="*",
+        action_match=INFER_ROUTE_ACTION,
+        resource_match="*",
+        condition=None,
+        priority=10,
+    )
+    return PolicyDecisionPoint([allow_policy])
 
 
 def context_ref_uri(record_id: str, package_id: str | None = None) -> str:
@@ -257,10 +300,12 @@ class AskService:
         token_budget: int = 8000,
     ) -> None:
         self._compiler = compiler or ContextCompiler()
-        # Default-deny PDP: with no matching ALLOW policy, remote inference
-        # is denied — the structured policy-denied answer is the honest
-        # outcome, not a fabricated response.
-        self._pdp = pdp if pdp is not None else PolicyDecisionPoint([])
+        # Default PDP: explicit ALLOW for benign (public/internal) tiers,
+        # still default-deny for confidential / LOCAL_ONLY content. A denied
+        # route yields the structured policy-denied answer; an allowed route
+        # with an unavailable transport yields the honest 202 — never a
+        # fabricated answer.
+        self._pdp = pdp if pdp is not None else default_ask_pdp()
         self._principal = principal or default_ask_principal()
         self._transport = transport
         self._remote_provider_allowed = remote_provider_allowed
@@ -599,7 +644,15 @@ def get_ask_service() -> AskService:
     global _ask_service
     with _ask_service_lock:
         if _ask_service is None:
-            _ask_service = AskService()
+            # The default service carries the explicit benign-tier ALLOW policy
+            # (:func:`default_ask_pdp`) and opens the ``remote_provider_allowed``
+            # transport gate so that the *policy* — not the transport gate — is
+            # what decides routing. Confidential / LOCAL_ONLY content is still
+            # denied by the PDP hard floor before policy matching. When the
+            # route is allowed but no transport is configured, the pipeline
+            # degrades to the honest 202 ``unavailable`` shape (transport
+            # unavailability), never a fabricated answer.
+            _ask_service = AskService(remote_provider_allowed=True)
         return _ask_service
 
 

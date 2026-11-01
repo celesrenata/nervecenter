@@ -128,6 +128,31 @@ class ListResponse(BaseModel):
     meta: ApiResponseMeta
 
 
+class LogEntry(BaseModel):
+    """A single captured log row for ``GET /api/logs``.
+
+    ``level`` is the normalized level name (``debug``…``critical``),
+    ``timestamp`` is ISO-8601 UTC, and ``message`` is scrubbed of
+    credential-looking values before it reaches the buffer.
+    """
+    level: str
+    timestamp: str
+    logger: str
+    message: str
+
+
+class LogsResponse(BaseModel):
+    """Envelope for ``GET /api/logs``.
+
+    ``secrets_scrubbed`` is always ``True`` — the capture pipeline redacts
+    credential-looking patterns before a record is stored, so this flag is
+    a documented guarantee rather than a per-request state.
+    """
+    data: list[LogEntry]
+    secrets_scrubbed: bool = True
+    meta: ApiResponseMeta
+
+
 class EntityCreateRequest(BaseModel):
     """Request body for creating a new Entity."""
     entity_type: str

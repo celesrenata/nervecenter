@@ -5,22 +5,19 @@ import { expect, test } from '@playwright/test'
  *
  * Flow: seed auth → /ask → submit a question through the form →
  * the UI POSTs /api/context/ask, and the T003-04 grounded pipeline
- * answers HTTP 200 with the structured R107 policy denial: the
- * dependency-free deployment has no ALLOW inference policy, so the PDP
- * default-denies remote inference before any transport hop —
+ * answers HTTP 202 with an honest unavailability ack when the inference
+ * transport is not configured. Benign questions (sensitivity `internal`)
+ * are no longer policy-denied — the earlier default-deny wiring bug that
+ * produced a misleading "policy denied" refusal for benign questions has
+ * been fixed, so the PDP now allows public/internal and the transport's
+ * absence is surfaced honestly:
  * `{"accepted":true,"executed":false,"service":"context",
- * "status":"policy_denied","request_status":"denied","answer":…}` →
- * AskView renders the refusal `answer` string as a chat message.
+ * "status":"unavailable","request_status":"pending","reason":…}` →
+ * AskView renders the "Request accepted (execution: pending)…" message.
  *
- * Asserts both the wire response (status 200 + policy-denial fields)
- * and exactly what the view renders from that payload, with zero console
- * errors. Same console-error policy as views.spec.ts (the only filter is the
- * `/api/decisions` dead-end 501 — masked via `msg.location().url`, since the
- * console text carries no URL — which does not fire on this route).
- *
- * Note: `/api/systems` is intentionally absent from this list — the endpoint
- * is implemented (wired at startup, returns 200 with live status rows) and no
- * longer produces a masked resource error on the /ask route.
+ * Asserts both the wire response (status 202 + unavailable fields) and
+ * exactly what the view renders from that payload, with zero console
+ * errors. Same console-error policy as views.spec.ts.
  */
 
 const KNOWN_MISSING_BACKEND_PATHS = ['/api/decisions']
@@ -68,22 +65,22 @@ test('Ask round-trip renders the /api/context/ask response without console error
     await page.getByRole('button', { name: 'Send' }).click()
     const response = await responsePromise
 
-    // Wire assertions on the real backend's T003-04 response. The
-    // dependency-free deployment's default-deny R107 PDP pre-flight
-    // rejects remote inference, so the endpoint answers a 200 with a
-    // structured policy denial — no fabricated answer, no 202 ack.
-    expect(response.status()).toBe(200)
+    // Wire assertions on the real backend's T003-04 response. Benign
+    // questions (sensitivity `internal`) are no longer policy-denied;
+    // the endpoint now answers 202 with an honest unavailability ack
+    // when the transport is not configured — no fabricated answer.
+    expect(response.status()).toBe(202)
     const body = await response.json()
     expect(body.accepted).toBe(true)
     expect(body.executed).toBe(false)
     expect(body.service).toBe('context')
     expect(typeof body.request_id).toBe('string')
     expect(typeof body.timestamp).toBe('string')
-    expect(body.status).toBe('policy_denied')
-    expect(body.request_status).toBe('denied')
-    expect(body.policy?.denied).toBe(true)
-    expect(typeof body.answer).toBe('string')
-    expect(body.answer.length).toBeGreaterThan(0)
+    expect(body.status).toBe('unavailable')
+    expect(body.request_status).toBe('pending')
+    expect(body.policy?.denied).toBeFalsy()
+    expect(typeof body.reason).toBe('string')
+    expect(body.reason.length).toBeGreaterThan(0)
 
     // The user's question appears in the chat. Scope to the chat-bubble
     // paragraph: the same string also lives in the permanent "Quick
@@ -92,14 +89,14 @@ test('Ask round-trip renders the /api/context/ask response without console error
     const userBubble = page.locator('p.whitespace-pre-wrap', { hasText: question })
     await expect(userBubble.first()).toBeVisible()
 
-    // What AskView actually renders from the policy-denial payload: the
-    // refusal `answer` string as the assistant message, with no
-    // provenance block (a denial carries no facts/hypotheses).
+    // What AskView actually renders from the unavailable-ack payload:
+    // the "Request accepted (execution: pending)…" message, with no
+    // provenance block (an ack carries no facts/hypotheses).
     const assistantText = page
       .locator('p')
-      .filter({ hasText: 'This question cannot be answered here' })
-    await expect(assistantText).toBeVisible()
-    await expect(assistantText).toHaveText(body.answer)
+      .filter({ hasText: 'Request accepted' })
+    await expect(assistantText.first()).toBeVisible()
+    await expect(assistantText.first()).toContainText('execution: pending')
 
     // No Provenance section for an ack payload.
     await expect(page.getByText('Provenance')).toHaveCount(0)
