@@ -36,7 +36,9 @@
   --text-muted: #9ca3af;      /* metadata / captions  (dark:text-gray-400) */
 
   /* Interactive + status */
-  --accent: #3b82f6;      /* interactive fill (dark:bg-blue-500) */
+  --accent: #2563eb;      /* interactive fill (blue-600) — white labels need ≥4.5:1,
+                             so the dark theme shares the light theme's blue-600
+                             (white on blue-500 is only ~3.6:1) */
   --accent-hover: #60a5fa; /* hover / emphasis (dark:text-blue-400) */
   --accent-soft: rgba(59, 130, 246, 0.25);  /* active/tinted fills (dark:bg-blue-900/40) */
   --accent-contrast: #bfdbfe; /* text on accent-soft (dark:text-blue-200) */
