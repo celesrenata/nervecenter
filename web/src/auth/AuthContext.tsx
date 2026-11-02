@@ -6,6 +6,7 @@ import {
   clearSessionTokens,
   getAccessToken,
   getAuthorizationUrl,
+  getSsoIdentity,
   setAccessToken,
 } from '../api/client'
 
@@ -58,16 +59,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setLoading(false)
       return
     }
-    // Introspect the presenting token. A 401 here clears the stale session
-    // (handled inside apiFetch); anything else just leaves the user unset.
+
+    // SSO sessions store the resolved identity (verified id_token) at
+    // exchange time — the realm *access* token carries no display claims,
+    // so /api/auth/me alone would show an anonymous placeholder.  Prefer
+    // the stored identity; only fall back to /api/auth/me for break-glass
+    // (HS256) tokens, which do carry a sub claim.
+    const stored = getSsoIdentity()
+    if (stored?.username || stored?.sub || stored?.email) {
+      setUserState({
+        username:
+          stored.username ??
+          stored.sub ??
+          (stored.email ? stored.email.split('@')[0] : 'sso-user'),
+        roles: [],
+      })
+      setLoading(false)
+      return
+    }
+
     apiFetch('/auth/me')
       .then((res) => {
         if (!res.ok) return
-        return res.json() as Promise<{ sub?: string; roles?: string[] }>
+        return res.json() as Promise<{
+          sub?: string
+          username?: string
+          roles?: string[]
+        }>
       })
       .then((data) => {
-        if (data && data.sub) {
-          setUserState({ username: data.sub, roles: data.roles ?? [] })
+        // The backend resolves the display username (sub for break-glass).
+        // Prefer it over the raw sub.
+        if (data && (data.username || data.sub)) {
+          setUserState({
+            username: data.username ?? data.sub ?? 'sso-user',
+            roles: data.roles ?? [],
+          })
         }
       })
       .catch(() => {

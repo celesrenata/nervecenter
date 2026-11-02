@@ -253,11 +253,29 @@ async def sso_token_exchange(
         )
     except auth_service.TokenError as exc:
         raise HTTPException(status_code=401, detail=exc.detail) from exc
+
+    # The realm-minted *access* token carries no identity claims (only
+    # exp/iat/jti/iss/typ/azp/sid/scope), so ``/api/auth/me`` would fall back to
+    # the anonymous "sso-user" placeholder.  The authoritative identity lives in
+    # the ``id_token`` from the OIDC token response, which is verified against
+    # the issuer JWKS (signature + issuer) and surfaced to the UI.  When the
+    # id_token is absent or fails verification, the helper degrades gracefully
+    # to the access token's claims, then to an empty identity.
+    identity = await ctx.resolve_sso_identity(tokens)
+    auth_service.log.info(
+        "auth.sso_identity_resolved",
+        sub=str(identity.get("sub") or "")[:80],
+        username=str(identity.get("username") or "")[:80],
+        email=str(identity.get("email") or "")[:80],
+    )
+
     return {
         "access_token": tokens.get("access_token", ""),
         "token_type": tokens.get("token_type", "Bearer"),
         "refresh_token": tokens.get("refresh_token"),
         "expires_in": tokens.get("expires_in"),
+        "id_token": tokens.get("id_token", ""),
+        "identity": identity,
     }
 
 
@@ -313,9 +331,22 @@ async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
 
 @router.get("/me")
 async def me(claims: dict[str, Any] = Depends(current_access)) -> dict[str, Any]:
-    """Introspect the presenting access token."""
+    """Introspect the presenting access token.
+
+    ``username`` is the best-effort display identity: for locally-minted
+    (HS256) tokens it is the subject, while for issuer-minted (RS256) tokens —
+    which may carry no ``sub`` — it falls back to the OIDC identity claims
+    (``preferred_username`` then ``email``).  ``email`` is surfaced so the UI
+    can display the signed-in user instead of an anonymous placeholder.
+    """
+    sub = claims.get("sub")
+    preferred = claims.get("preferred_username")
+    email = claims.get("email")
+    username = sub or preferred or (email.split("@")[0] if email else None)
     return {
-        "sub": claims.get("sub"),
+        "sub": sub,
+        "username": username,
+        "email": email,
         "roles": claims.get("roles", []),
         "device_id": claims.get("device_id"),
         "exp": claims.get("exp"),

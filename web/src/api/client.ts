@@ -418,6 +418,11 @@ const REFRESH_TOKEN_KEY = 'nc.refreshToken'
 /** Code-verifier + state for the in-flight PKCE authorization-code exchange. */
 const PKCE_VERIFIER_KEY = 'nc.pkce.codeVerifier'
 const PKCE_STATE_KEY = 'nc.pkce.state'
+/** The signed-in user's identity, resolved server-side from the verified
+ *  OIDC id_token at exchange time.  Persisted session-scoped because the
+ *  realm *access* token carries no display claims, so /api/auth/me alone
+ *  would show an anonymous placeholder on refresh. */
+const IDENTITY_KEY = 'nc.identity'
 
 function safeGetSession(key: string): string | null {
   try {
@@ -461,12 +466,49 @@ export function clearSessionTokens(): void {
   safeRemoveSession(REFRESH_TOKEN_KEY)
   safeRemoveSession(PKCE_VERIFIER_KEY)
   safeRemoveSession(PKCE_STATE_KEY)
+  safeRemoveSession(IDENTITY_KEY)
 }
 
 /** The in-flight refresh token, if any (kept for the session; unused while
  * the backend exposes no refresh route — see apiFetch 401 handling). */
 export function getRefreshToken(): string | null {
   return safeGetSession(REFRESH_TOKEN_KEY)
+}
+
+/**
+ * The signed-in user's identity, resolved server-side at SSO exchange time
+ * from the verified OIDC id_token.  The realm *access* token carries no
+ * display claims (no sub / preferred_username / email), so this is the
+ * source of truth the UI reads on refresh.
+ */
+export interface SsoIdentity {
+  sub: string | null
+  username: string | null
+  email: string | null
+}
+
+export function getSsoIdentity(): SsoIdentity | null {
+  const raw = safeGetSession(IDENTITY_KEY)
+  if (!raw) return null
+  try {
+    const parsed = JSON.parse(raw) as Partial<SsoIdentity>
+    return {
+      sub: typeof parsed.sub === 'string' ? parsed.sub : null,
+      username: typeof parsed.username === 'string' ? parsed.username : null,
+      email: typeof parsed.email === 'string' ? parsed.email : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Persist (or clear, when `null`) the resolved SSO identity. */
+export function setSsoIdentity(identity: SsoIdentity | null): void {
+  if (!identity) {
+    safeRemoveSession(IDENTITY_KEY)
+    return
+  }
+  safeSetSession(IDENTITY_KEY, JSON.stringify(identity))
 }
 
 /**
@@ -667,7 +709,7 @@ export async function getAuthorizationUrl(): Promise<string | null> {
     response_type: 'code',
     client_id: cfg.client_id,
     redirect_uri: window.location.origin + '/auth/callback',
-    scope: 'openid profile',
+    scope: 'openid profile email',
     code_challenge: challenge,
     code_challenge_method: 'S256',
     state,
@@ -694,7 +736,11 @@ export async function getAuthorizationUrl(): Promise<string | null> {
 export async function exchangeAuthCode(
   code: string,
   state: string | null,
-): Promise<{ accessToken: string; refreshToken: string | null }> {
+): Promise<{
+  accessToken: string
+  refreshToken: string | null
+  identity: SsoIdentity | null
+}> {
   const expectedState = getPkceState()
   if (!expectedState || expectedState !== state) {
     clearSessionTokens()
@@ -718,13 +764,23 @@ export async function exchangeAuthCode(
   const body = (await res.json()) as {
     access_token?: string
     refresh_token?: string | null
+    identity?: SsoIdentity | null
   }
   if (!body.access_token) {
     clearSessionTokens()
     throw new ApiError(res.status, 'SSO token exchange returned no access_token')
   }
   setAccessToken(body.access_token, body.refresh_token ?? null)
-  return { accessToken: body.access_token, refreshToken: body.refresh_token ?? null }
+
+  // Persist the server-resolved identity (verified id_token).  The realm
+  // access token has no display claims, so this is what the UI shows.
+  const identity = body.identity ?? null
+  setSsoIdentity(identity)
+  return {
+    accessToken: body.access_token,
+    refreshToken: body.refresh_token ?? null,
+    identity,
+  }
 }
 
 const realApi = {

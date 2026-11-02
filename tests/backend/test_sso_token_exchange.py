@@ -65,27 +65,41 @@ def _rsa_private_key():
 def _keycloak_access_token(
     private_key,
     *,
-    aud: str = "nervecenter",
+    aud: str | None = "nervecenter",
     iss: str = KEYCLOAK_ISSUER,
-    sub: str = SUB,
+    sub: str | None = SUB,
     include_iat: bool = False,
     delta: int = 300,
+    preferred_username: str | None = None,
+    email: str | None = None,
 ) -> str:
     """Mint an RS256 token shaped like a Keycloak access token.
 
     Deliberately omits the ``typ`` claim (Keycloak access tokens carry none) and,
     by default, the ``iat`` claim, to exercise the relaxed ``require`` set.
+
+    ``aud`` and ``sub`` are optional — passing ``None`` omits the claim entirely,
+    which mirrors the live realm's tokens (minted for a confidential client with
+    no audience restriction).  ``preferred_username`` / ``email`` mirror the
+    OIDC identity claims Keycloak exposes in the access token when the
+    ``profile`` / ``email`` scopes are requested.
     """
     now = int(time.time())
     claims: dict = {
         "iss": iss,
-        "aud": aud,
-        "sub": sub,
         "exp": now + delta,
         "jti": "kc-jti-1",
     }
+    if aud is not None:
+        claims["aud"] = aud
+    if sub is not None:
+        claims["sub"] = sub
     if include_iat:
         claims["iat"] = now
+    if preferred_username is not None:
+        claims["preferred_username"] = preferred_username
+    if email is not None:
+        claims["email"] = email
     return jwt.encode(claims, private_key, algorithm="RS256", headers={"kid": KID})
 
 
@@ -126,8 +140,47 @@ async def test_keycloak_rs256_wrong_audience_rejected(jwks):
     """A token addressed to another client id is rejected."""
     ctx = _ctx()
     token = _keycloak_access_token(jwks, aud="some-other-client")
-    with pytest.raises(TokenError, match="Audience"):
+    with pytest.raises(TokenError, match="audience"):
         await ctx.verify_token(token)
+
+
+async def test_keycloak_rs256_no_aud_no_sub_accepted(jwks):
+    """A realm token with no ``aud`` and no ``sub`` is accepted.
+
+    This is the shape the live realm mints for a confidential client: the
+    access token carries neither an audience nor a subject, only identity
+    claims.  The JWKS signature + issuer + expiry are what establish trust.
+    """
+    ctx = _ctx()
+    token = _keycloak_access_token(
+        jwks,
+        aud=None,
+        sub=None,
+        preferred_username="admin",
+        email="admin@celestium.life",
+    )
+    claims = await ctx.verify_token(token, expected_typ=TYP_ACCESS)
+    assert claims["iss"] == KEYCLOAK_ISSUER
+    assert claims["preferred_username"] == "admin"
+    assert "sub" not in claims
+
+
+async def test_keycloak_rs256_aud_client_accepted(jwks):
+    """A token whose ``aud`` is the client id (the common OIDC shape) is accepted."""
+    ctx = _ctx()
+    token = _keycloak_access_token(jwks, aud="nervecenter", sub=SUB)
+    claims = await ctx.verify_token(token)
+    assert claims["aud"] == "nervecenter"
+
+
+async def test_keycloak_rs256_no_aud_with_preferred_username(jwks):
+    """No-``aud`` token with identity claims resolves the display username."""
+    ctx = _ctx()
+    token = _keycloak_access_token(
+        jwks, aud=None, sub=None, preferred_username="admin"
+    )
+    claims = await ctx.verify_token(token)
+    assert claims["preferred_username"] == "admin"
 
 
 async def test_keycloak_rs256_wrong_issuer_rejected(jwks):
@@ -154,6 +207,80 @@ async def test_keycloak_rs256_unsigned_client_id_skips_aud(jwks):
     token = _keycloak_access_token(jwks, aud="whatever")
     claims = await ctx.verify_token(token)
     assert claims["sub"] == SUB
+
+
+# ─── SSO identity resolution (id_token) ───────────────────────────────────────
+
+
+async def test_resolve_sso_identity_from_id_token(jwks):
+    """The id_token's identity claims win over an empty access token."""
+    ctx = _ctx()
+    # Access token: realm shape, no sub / preferred_username / email.
+    access = _keycloak_access_token(jwks, sub=None, aud=None)
+    # id_token: full OIDC identity.
+    id_token = _keycloak_access_token(
+        jwks,
+        aud="nervecenter",
+        sub=SUB,
+        preferred_username="celes",
+        email="celes@celestium.life",
+    )
+    identity = await ctx.resolve_sso_identity(
+        {"access_token": access, "id_token": id_token}
+    )
+    assert identity["sub"] == SUB
+    assert identity["username"] == "celes"
+    assert identity["email"] == "celes@celestium.life"
+
+
+async def test_resolve_sso_identity_username_prefers_preferred_username(jwks):
+    """username is the display name (preferred_username), not the raw sub UUID."""
+    ctx = _ctx()
+    id_token = _keycloak_access_token(
+        jwks,
+        aud="nervecenter",
+        sub=SUB,
+        preferred_username="admin",
+    )
+    identity = await ctx.resolve_sso_identity({"id_token": id_token})
+    assert identity["username"] == "admin"
+    assert identity["sub"] == SUB
+
+
+async def test_resolve_sso_identity_no_id_token_empty(jwks):
+    """Without an id_token or access token, the identity is empty."""
+    ctx = _ctx()
+    identity = await ctx.resolve_sso_identity({})
+    assert identity == {"sub": None, "username": None, "email": None}
+
+
+async def test_resolve_sso_identity_malformed_access_token_no_raise():
+    """A placeholder / malformed access token must not break the exchange
+    (mirrors the endpoint test's 'AT' fake token)."""
+    ctx = _ctx()
+    identity = await ctx.resolve_sso_identity({"access_token": "AT"})
+    assert identity == {"sub": None, "username": None, "email": None}
+
+
+async def test_resolve_sso_identity_id_token_rejected_falls_back(jwks):
+    """A foreign-issuer id_token is rejected; identity falls back to the
+    access token's claims (here, only the raw sub)."""
+    ctx = _ctx()
+    access = _keycloak_access_token(jwks, sub=SUB)
+    id_token = _keycloak_access_token(
+        jwks,
+        aud="nervecenter",
+        sub=SUB,
+        iss="https://evil.example/realms/other",
+        preferred_username="evil",
+    )
+    identity = await ctx.resolve_sso_identity(
+        {"access_token": access, "id_token": id_token}
+    )
+    # The foreign id_token is dropped; the access token's sub is used and the
+    # attacker's preferred_username never surfaces.
+    assert identity["username"] == SUB
+    assert identity.get("username") != "evil"
 
 
 # ─── Endpoint / config resolution ─────────────────────────────────────────────

@@ -46,31 +46,20 @@ export function AuthCallback() {
       return
     }
 
-    // Introspect the freshly minted access token for the real identity.
-    // Best-effort: if /auth/me is unreachable the session still stands (the
-    // tokens are stored), so we still redirect to the post-login route.
-    const introspect = async (): Promise<{ username: string; roles: string[] }> => {
-      try {
-        const res = await fetch('/api/auth/me', {
-          headers: { Authorization: `Bearer ${sessionStorage.getItem('nc.accessToken') ?? ''}` },
-        })
-        if (res.ok) {
-          const data = (await res.json()) as { sub?: string; roles?: string[] }
-          if (data.sub) return { username: data.sub, roles: data.roles ?? [] }
-        }
-      } catch {
-        /* fall through — redirect anyway */
-      }
-      return { username: 'sso-user', roles: [] }
-    }
-
     exchangeAuthCode(code, state)
-      .then(async () => {
+      .then(({ identity }) => {
         setPhase('done')
-        const authed = await introspect()
-        // Refresh the auth context so isAuthenticated flips true immediately,
-        // then leave the callback (default post-login route: '/').
-        setUser(authed)
+        // The backend resolves the identity from the verified id_token (RS256
+        // signature + issuer).  The realm access token carries no display
+        // claims, so a /api/auth/me call on it would return an anonymous
+        // placeholder — use the exchange result directly.
+        setUser({
+          username:
+            identity?.username ??
+            identity?.sub ??
+            (identity?.email ? identity.email.split('@')[0] : 'sso-user'),
+          roles: [],
+        })
         navigate('/', { replace: true })
       })
       .catch((err: unknown) => {

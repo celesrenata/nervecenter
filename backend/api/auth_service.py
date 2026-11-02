@@ -405,6 +405,67 @@ class AuthContext:
         )
         return data
 
+    async def resolve_sso_identity(self, token_response: dict[str, Any]) -> dict[str, Any]:
+        """Resolve the signed-in user's identity from an OIDC token response.
+
+        The realm-minted **access** token carries no identity claims — only
+        ``exp``/``iat``/``jti``/``iss``/``typ``/``azp``/``sid``/``scope`` — so
+        ``/api/auth/me`` on the access token would fall back to the anonymous
+        placeholder.  The authoritative identity (``sub`` / ``preferred_username``
+        / ``email``) lives in the ``id_token`` returned alongside it (present
+        because the authorization request requests the ``openid profile email``
+        scope).
+
+        We verify the ``id_token`` against the issuer JWKS (RS256 signature +
+        issuer) so the returned identity is trusted, then return ``{"sub",
+        "username", "email"}``.  ``username`` prefers ``preferred_username`` over
+        the raw ``sub`` (the Keycloak ``sub`` is a UUID, not a display name).
+
+        Degrades gracefully: when the ``id_token`` is absent or fails
+        verification, fall back to the access token's claims (usually empty),
+        then to an empty identity (the UI shows the anonymous placeholder).
+        Never raises — a missing identity must not break a valid login.
+        """
+        access_claims: dict[str, Any] = {}
+        access_token = token_response.get("access_token", "")
+        if isinstance(access_token, str) and access_token:
+            try:
+                access_claims = await self.verify_token(
+                    access_token, require_session=False
+                )
+            except Exception:
+                # A malformed access token (e.g. a placeholder in tests) raises
+                # PyJWTError from get_unverified_header() before verify_token's
+                # own handlers — treat it as "no identity" rather than breaking
+                # the exchange.
+                access_claims = {}
+
+        id_claims: dict[str, Any] = {}
+        id_token = token_response.get("id_token", "")
+        if isinstance(id_token, str) and id_token:
+            try:
+                id_claims = await self.verify_token(id_token, require_session=False)
+            except Exception as exc:
+                log.warning(
+                    "auth.sso_id_token_rejected",
+                    reason=getattr(exc, "detail", None) or str(exc),
+                )
+                id_claims = {}
+
+        id_sub = id_claims.get("sub")
+        id_pref = id_claims.get("preferred_username")
+        id_email = id_claims.get("email")
+        access_sub = access_claims.get("sub")
+        access_pref = access_claims.get("preferred_username")
+        access_email = access_claims.get("email")
+
+        sub = id_sub or access_sub
+        preferred = id_pref or access_pref
+        email = id_email or access_email
+        username = preferred or sub or (email.split("@")[0] if email else None)
+
+        return {"sub": sub, "username": username, "email": email}
+
     # -- token minting ---------------------------------------------------------
 
     def _mint(
@@ -522,28 +583,37 @@ class AuthContext:
                 raise TokenError("token audience mismatch")
         elif alg in ("RS256", "RS384", "RS512"):
             key = await self._jwks_provider().resolve_key(token)
-            # An issuer-minted token is addressed to the *client id* (not the
-            # NerveCenter app audience), so the ``aud`` check targets the client
-            # id.  PyJWT validates ``aud`` whenever ``audience`` is supplied,
-            # which also satisfies the OIDC ``aud`` requirement; when no client
-            # id is configured (local dev / tests) the check is disabled.
-            audience = self.client_id or None
-            if audience is None:
-                options = {"require": ["exp", "sub"], "verify_aud": False}
-            else:
-                options = {"require": ["exp", "sub"]}
+            # Issuer-minted tokens are verified against the issuer's JWKS, so a
+            # valid signature already proves the token came from this issuer.
+            # ``aud`` is enforced only when the token actually carries it:
+            # PyJWT *rejects* a token that has no ``aud`` at all whenever an
+            # audience was expected, but a Keycloak access token minted for a
+            # confidential client may omit ``aud`` (and ``sub``) entirely, so
+            # decoding must not demand either and the claim is checked by
+            # hand — if present, it must target the client id (or the app
+            # audience as a fallback).  ``sub`` is likewise optional: the
+            # endpoint layer falls back to ``preferred_username`` / ``email``
+            # for the identity.
             try:
                 claims = jwt.decode(
                     token,
                     key,
                     algorithms=["RS256", "RS384", "RS512"],
-                    audience=audience,
-                    options=options,
+                    options={"verify_aud": False},
                 )
             except jwt.ExpiredSignatureError as exc:
                 raise TokenError("token has expired") from exc
             except jwt.PyJWTError as exc:
                 raise TokenError(f"issuer token rejected: {exc}") from exc
+            aud = claims.get("aud")
+            if aud is not None and self.client_id:
+                # An unconfigured client id means "no audience to match" —
+                # skip the check rather than rejecting (e.g. local dev /
+                # tests where SSO is wired up without a confidential client).
+                aud_values = set(aud) if isinstance(aud, list) else {aud}
+                allowed = {self.client_id, AUDIENCE}
+                if not (aud_values & allowed):
+                    raise TokenError("token audience mismatch")
             # Issuer: an issuer-minted token's ``iss`` is the issuer/realm base.
             # Tolerate a trailing slash on either side.
             if str(claims.get("iss") or "").rstrip("/") != self.issuer_base.rstrip("/"):
