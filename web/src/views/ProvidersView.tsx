@@ -40,10 +40,23 @@ interface ErrorState {
   detail: string
 }
 
-/** Convert a thrown error (ApiError or network) to an ErrorState. */
+/**
+ * Convert a thrown error (ApiError or network) to an ErrorState.
+ *
+ * 401/403 responses are surfaced with the backend's verbatim detail plus an
+ * actionable note: every mutation on this page requires a session token, and
+ * the app is reached through the SSO gate whose browser cookie alone does NOT
+ * authorize the API. A bare "401: missing bearer token" left users staring at
+ * a red banner with no way out, so we tell them the fix (sign in / retry the
+ * SSO exchange) right where the error appears.
+ */
 function errToState(err: unknown): ErrorState {
   if (err instanceof ApiError) {
-    return { status: err.status, detail: err.detail }
+    const detail =
+      err.status === 401 || err.status === 403
+        ? `${err.detail} — your session isn't signed in to the API. Sign in on the Login page (or reload the app to retry SSO), then try again.`
+        : err.detail
+    return { status: err.status, detail }
   }
   return { status: 0, detail: err instanceof Error ? err.message : 'Request failed (network error)' }
 }

@@ -5,6 +5,7 @@ import {
   apiFetch,
   clearSessionTokens,
   getAccessToken,
+  getAuthorizationUrl,
   setAccessToken,
 } from '../api/client'
 
@@ -75,6 +76,53 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       .finally(() => setLoading(false))
   }, [])
 
+  /**
+   * SSO session bootstrap (gap-closure SSO-GAP).
+   *
+   * The cluster's SSO gate (oauth2-proxy) authenticates the browser against
+   * the issuer but deliberately does NOT forward that identity token to the
+   * API (no `--pass-access-token`) — the API requires a token minted through
+   * the app's own SSO flow, and `apiFetch` only attaches one when
+   * `nc.accessToken` is in sessionStorage. Until now that mint only happened
+   * via the *manual* SSO button on `/login`, so a gate-authenticated user
+   * landed in the app with no app session: every auth-gated mutation
+   * (e.g. `POST /api/inference/durable/providers`) failed with 401
+   * "missing bearer token".
+   *
+   * Bridge the gate session into the app session: when SSO is enabled, there
+   * is no token yet, and we are not already on the callback, redirect to the
+   * issuer's authorization endpoint (PKCE). The issuer short-circuits the
+   * redirect when its session cookie is valid, then the provider lands on
+   * `/auth/callback`, which exchanges the code for tokens and returns the
+   * user to `/`. The `nc.sso.bootstrapAt` sessionStorage marker guarantees
+   * the redirect happens at most once per tab session, so a broken callback
+   * cannot turn into a redirect loop.
+   */
+  useEffect(() => {
+    if (getAccessToken()) return
+    // Never auto-redirect from the sign-in screen or the callback itself:
+    // /login is the explicit break-glass path the user chose (the bootstrap
+    // would bounce them straight back into SSO and remove the escape hatch),
+    // and /auth/callback is where the redirect *lands* (auto-bouncing there
+    // would be a redirect loop).
+    if (window.location.pathname === '/auth/callback') return
+    if (window.location.pathname === '/login') return
+    if (window.sessionStorage.getItem('nc.sso.bootstrapAt')) return
+    getAuthorizationUrl()
+      .then((url) => {
+        if (!url) return // SSO not enabled (dev / mock) — stay on the page
+        try {
+          window.sessionStorage.setItem('nc.sso.bootstrapAt', new Date().toISOString())
+        } catch {
+          /* sessionStorage unavailable — the guard is best-effort */
+        }
+        window.location.assign(url)
+      })
+      .catch(() => {
+        /* config fetch failed — user stays on the page, token unset */
+      })
+  }, [])
+
   const login = async (username: string, password: string): Promise<User> => {
     const res = await apiFetch('/auth/login', {
       method: 'POST',
@@ -117,6 +165,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const logout = () => {
     clearSessionTokens()
+    // Drop the one-shot SSO bootstrap guard too, so signing back in from this
+    // tab can re-run the gate→session bootstrap (see the bootstrap effect).
+    try {
+      window.sessionStorage.removeItem('nc.sso.bootstrapAt')
+    } catch {
+      /* sessionStorage unavailable — ignore */
+    }
     setUserState(null)
     navigate('/login')
   }

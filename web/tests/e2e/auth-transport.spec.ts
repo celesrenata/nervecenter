@@ -247,3 +247,78 @@ test.describe('auth transport (S102)', () => {
     expect(stored.state).toBeNull()
   })
 })
+
+/**
+ * SSO-GAP: the app auto-bridges the SSO-gate session into an app session.
+ * The SSO gate (oauth2-proxy) authenticates the browser but does NOT forward
+ * its identity token to the API, so without a bridge a gate-authenticated
+ * visitor lands in the app with no session and every auth-gated mutation
+ * 401s. On first load (SSO enabled, no token, not on /login or the callback)
+ * the app redirects to the issuer's authorization endpoint; the loop guard
+ * (`nc.sso.bootstrapAt`) makes the redirect happen at most once per tab
+ * session, and SSO-disabled deployments (dev / e2e mock) never redirect.
+ */
+const SSO_AUTH_ENDPOINT = 'https://sso.example.test/authorize'
+
+function ssoConfigBody(enabled: boolean) {
+  return {
+    enabled,
+    issuer: 'https://sso.example.test',
+    client_id: 'nc-web-client',
+    authorization_endpoint: SSO_AUTH_ENDPOINT,
+    token_endpoint: 'https://sso.example.test/token',
+    userinfo_endpoint: null,
+    jwks_uri: null,
+    end_session_endpoint: null,
+  }
+}
+
+test.describe('SSO session bootstrap (SSO-GAP)', () => {
+  test('no redirect when SSO is disabled (dev / mock) — stay on the page', async ({ page }) => {
+    await page.route('**/api/auth/sso/config', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ssoConfigBody(false)) }),
+    )
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    // The bootstrap consults the SSO config before deciding; once that
+    // round-trips, a disabled SSO must leave the user where they landed.
+    await page.waitForRequest('**/api/auth/sso/config')
+    await page.waitForTimeout(50)
+    expect(page.url()).toBe('http://localhost:3000/')
+    expect(await page.evaluate(() => sessionStorage.getItem('nc.sso.bootstrapAt'))).toBeNull()
+  })
+
+  test('redirects to the issuer authorization endpoint when SSO is enabled + no token', async ({ page }) => {
+    await page.route('**/api/auth/sso/config', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ssoConfigBody(true)) }),
+    )
+    // Capture the redirect URL the app issues (window.location.assign) and
+    // fulfill it in the handler — sso.example.test is not a real host, so we
+    // must not let the browser actually try to load it.
+    await page.route('**/sso.example.test/**', (route) =>
+      route.fulfill({ status: 200, contentType: 'text/html', body: '<html>sso-target</html>' }),
+    )
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    // The bootstrap's redirect is a network request to the authorize URL.
+    const req = await page.waitForRequest('**/sso.example.test/authorize**')
+    const url = new URL(req.url())
+    expect(url.origin + url.pathname).toBe('https://sso.example.test/authorize')
+    expect(url.searchParams.get('client_id')).toBe('nc-web-client')
+    expect(url.searchParams.get('response_type')).toBe('code')
+    expect(url.searchParams.get('code_challenge_method')).toBe('S256')
+    expect(url.searchParams.get('redirect_uri')).toBe('http://localhost:3000/auth/callback')
+  })
+
+  test('does not re-redirect once the bootstrap guard is set', async ({ page }) => {
+    // Seed the guard BEFORE load: the effect must see it and skip.
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await page.evaluate(() => {
+      sessionStorage.setItem('nc.sso.bootstrapAt', new Date().toISOString())
+    })
+    await page.route('**/api/auth/sso/config', (route) =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ssoConfigBody(true)) }),
+    )
+    await page.goto('/', { waitUntil: 'domcontentloaded' })
+    await page.waitForTimeout(50)
+    expect(page.url()).toBe('http://localhost:3000/')
+  })
+})
