@@ -101,7 +101,21 @@ http {
 
     location / {
       # SPA: deep links fall back to index.html and the router resolves.
+      # The shell must always revalidate (no-cache) so a redeploy's new
+      # index.html — referencing new content-hashed /assets/ files — is picked
+      # up without a hard refresh. Hashed assets under /assets/ are immutable
+      # (see below) and are NOT matched by this location, so they are served
+      # with strong caching, not no-cache.
+      add_header Cache-Control "no-cache";
       try_files $uri $uri/ /index.html;
+    }
+
+    # Content-hashed build artifacts (Vite output /assets/xxx-[hash].js|.css):
+    # the filename changes whenever the content changes, so cache
+    # aggressively. Longest-prefix match, so this wins over location /.
+    location /assets/ {
+      add_header Cache-Control "public, max-age=31536000, immutable";
+      try_files $uri =404;
     }
   }
 }
