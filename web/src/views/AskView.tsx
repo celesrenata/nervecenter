@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import { askApi } from '../api/client'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import { agentsApi, type Agent } from '../api/agents'
+import { useSettings } from '../theme/SettingsContext'
 
 interface EvidenceItem {
   statement: string
@@ -31,6 +32,7 @@ interface ChatMessage {
 }
 
 const AskView = () => {
+  const { settings, update } = useSettings()
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
@@ -47,8 +49,10 @@ const AskView = () => {
   const [pickerLoading, setPickerLoading] = useState(false)
   const [pickerError, setPickerError] = useState<string | null>(null)
   const [askAgent, setAskAgent] = useState('')
-  const [askModel, setAskModel] = useState('')
-  const [askProvider, setAskProvider] = useState('')
+  // Prefill from the Settings → Inference defaults (browser-local); empty keeps
+  // the service default. Changing a select here also syncs the default back.
+  const [askModel, setAskModel] = useState(settings.askModel)
+  const [askProvider, setAskProvider] = useState(settings.askProvider)
 
   const loadPickerOptions = async () => {
     setPickerLoading(true)
@@ -303,7 +307,11 @@ const AskView = () => {
                       id="ask-model-select"
                       data-testid="ask-model-select"
                       value={askModel}
-                      onChange={(e) => setAskModel(e.target.value)}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setAskModel(v)
+                        update({ askModel: v })
+                      }}
                       disabled={pickerLoading}
                       className="w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs text-primary"
                     >
@@ -331,7 +339,11 @@ const AskView = () => {
                       id="ask-provider-select"
                       data-testid="ask-provider-select"
                       value={askProvider}
-                      onChange={(e) => setAskProvider(e.target.value)}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setAskProvider(v)
+                        update({ askProvider: v })
+                      }}
                       disabled={pickerLoading}
                       className="w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs text-primary"
                     >

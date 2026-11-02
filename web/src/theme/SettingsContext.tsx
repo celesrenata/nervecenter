@@ -42,6 +42,14 @@ export interface Settings {
   wellnessTrendDays: WellnessTrendDays
   defaultIncidentSeverity: IncidentSeverity
   landingPage: LandingPage
+  /**
+   * Ask default model (browser-local). Empty string = no per-request model
+   * override (the service default applies). Set from the Settings → Inference
+   * tab; the Ask advanced picker initializes from it and syncs changes back.
+   */
+  askModel: string
+  /** Ask default provider (browser-local). Empty = no override. */
+  askProvider: string
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -52,6 +60,8 @@ export const DEFAULT_SETTINGS: Settings = {
   wellnessTrendDays: 30,
   defaultIncidentSeverity: 'high',
   landingPage: 'today',
+  askModel: '',
+  askProvider: '',
 }
 
 const STORAGE_KEY = 'nerve-settings'
@@ -205,6 +215,13 @@ export function readStoredSettings(): Settings {
           landingPage: parsed.landingPage === 'overview' || parsed.landingPage === 'now'
             ? parsed.landingPage
             : DEFAULT_SETTINGS.landingPage,
+          // Ask default model / provider (browser-local; empty = service default).
+          askModel:
+            typeof parsed.askModel === 'string' ? parsed.askModel : DEFAULT_SETTINGS.askModel,
+          askProvider:
+            typeof parsed.askProvider === 'string'
+              ? parsed.askProvider
+              : DEFAULT_SETTINGS.askProvider,
         }
       }
     }

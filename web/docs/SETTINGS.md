@@ -22,6 +22,8 @@ The Settings route (`/settings`) exposes browser-local preferences grouped by th
 | Workflow | New incident severity | `low`, `medium`, `high`, `critical` | `high` | `IncidentsView` seeds and resets the report form with this value. |
 | Workflow | Home view | `today`, `overview`, `now` | `today` | `HomeView` in `App.tsx` renders the selected feature at `/` without changing the URL. |
 | Data & privacy | Wellness trend window | `7`, `30`, `90` days | `30` | `WellnessView` seeds its trends window and re-fetches on change. |
+| Inference | Ask default model | `""` (service default) or a model id from `GET /api/inference/available` | `""` | `AskView` prefills its advanced model picker from this value and syncs changes back. |
+| Inference | Ask default provider | `""` (service default) or a provider id from `GET /api/inference/available` | `""` | `AskView` prefills its advanced provider picker from this value and syncs changes back. |
 
 Theme is owned by `ThemeContext`; the other keys are owned by `SettingsContext`. Both providers are mounted in `main.tsx` before the app renders.
 
@@ -53,4 +55,4 @@ npm run e2e -- tests/e2e/settings.spec.ts
 npm run e2e
 ```
 
-The settings e2e test checks the auth gate, the four category tabs, per-category panels, live application of appearance attributes to `<html>`, and persistence across reload. The full e2e suite covers the feature screens that consume the workflow defaults.
+The settings e2e test checks the auth gate, the five category tabs, per-category panels, live application of appearance attributes to `<html>`, and persistence across reload. The full e2e suite covers the feature screens that consume the workflow defaults. The Inference tab lazily fetches `GET /api/inference/available` only when active, so other categories never trigger that request.

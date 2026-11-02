@@ -12,6 +12,7 @@ import {
   type LandingPage,
 } from '../theme/SettingsContext'
 import { Link } from 'react-router-dom'
+import { inferenceApi, type AvailableInference } from '../api/inference'
 
 /**
  * Settings — browser-local preferences grouped by feature set. The categories
@@ -45,13 +46,19 @@ const MOTION_OPTIONS: Array<{ id: ReducedMotion; label: string; hint: string }> 
   { id: 'full', label: 'Full', hint: 'Always show full motion' },
 ]
 
-export type SettingsCategory = 'appearance' | 'workflow' | 'data' | 'connections'
+export type SettingsCategory =
+  | 'appearance'
+  | 'workflow'
+  | 'data'
+  | 'connections'
+  | 'inference'
 
 const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: string }> = [
   { id: 'appearance', label: 'Appearance', hint: 'Theme, color, type, and motion' },
   { id: 'workflow', label: 'Workflow', hint: 'Defaults for briefs and incidents' },
   { id: 'data', label: 'Data & privacy', hint: 'Wellness and local data boundaries' },
   { id: 'connections', label: 'Connections & apps', hint: 'Connectors and device builds' },
+  { id: 'inference', label: 'Inference', hint: 'Default model & provider for Ask' },
 ]
 
 export function SettingsView() {
@@ -59,6 +66,43 @@ export function SettingsView() {
   const { settings, update, reset } = useSettings()
   const [category, setCategory] = useState<SettingsCategory>('appearance')
   const tabStripRef = useRef<HTMLElement>(null)
+
+  // Inference tab — lazy fetch of the selectable surface. Only fires when the
+  // Inference tab is active and options are not yet loaded, so other categories
+  // (which assert no failed requests in settings.spec.ts) never trigger it.
+  const [inferOptions, setInferOptions] = useState<AvailableInference | null>(null)
+  const [inferLoading, setInferLoading] = useState(false)
+  const [inferError, setInferError] = useState<string | null>(null)
+  // Guards the in-flight fetch. The effect deliberately excludes `inferLoading`
+  // from its deps: putting it there (while also setting it in the body) made the
+  // state flip re-run the effect, whose cleanup cancelled the request before it
+  // settled, so the tab froze at "Loading…". The ref preserves the fire-once
+  // semantics without that self-cancel.
+  const inferFetchingRef = useRef(false)
+
+  useEffect(() => {
+    if (category !== 'inference' || inferOptions !== null || inferError !== null) return
+    if (inferFetchingRef.current) return
+    inferFetchingRef.current = true
+    let cancelled = false
+    setInferLoading(true)
+    inferenceApi
+      .getAvailable()
+      .then((available) => {
+        if (!cancelled) setInferOptions(available)
+      })
+      .catch(() => {
+        if (!cancelled) setInferError('Could not load the available models and providers.')
+      })
+      .finally(() => {
+        inferFetchingRef.current = false
+        if (!cancelled) setInferLoading(false)
+      })
+    return () => {
+      cancelled = true
+      inferFetchingRef.current = false
+    }
+  }, [category, inferOptions, inferError])
 
   useEffect(() => {
     // Keep the selected tab visible when the strip overflows (narrow screens).
@@ -367,6 +411,110 @@ export function SettingsView() {
         </div>
       </section>
       </section>}
+
+      {category === 'inference' && (
+        <section
+          id="settings-panel-inference"
+          role="tabpanel"
+          className="bg-elevated rounded-lg shadow-lg p-6 space-y-6"
+          aria-labelledby="settings-inference"
+        >
+          <div>
+            <h2 id="settings-inference" className="text-xl font-semibold text-primary">
+              Inference defaults
+            </h2>
+            <p className="text-sm text-muted mt-1">
+              The default model and provider the Ask screen sends when you don't override
+              them per-request. Leave either on the service default to inherit it.
+            </p>
+          </div>
+
+          {inferError ? (
+            <div
+              role="alert"
+              className="rounded-md border border-line bg-hover/40 p-4 text-sm text-secondary"
+            >
+              {inferError}
+              <div className="mt-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setInferError(null)
+                    setInferOptions(null)
+                  }}
+                  className="text-sm text-accent hover:underline"
+                >
+                  Retry
+                </button>
+              </div>
+            </div>
+          ) : inferLoading ? (
+            <p className="text-sm text-muted">Loading available models and providers…</p>
+          ) : inferOptions ? (
+            <div className="space-y-6">
+              <OptionGroup
+                label="Default provider"
+                hint="Which inference backend Ask uses by default."
+              >
+                <select
+                  id="settings-infer-provider"
+                  data-testid="settings-infer-provider"
+                  value={settings.askProvider}
+                  onChange={(e) => update({ askProvider: e.target.value })}
+                  className="w-full max-w-xs px-3 py-2 rounded-lg border border-line bg-hover/40 text-sm text-primary"
+                >
+                  <option value="">Service default</option>
+                  {inferOptions.providers.map((p) => (
+                    <option key={p.provider} value={p.provider}>
+                      {p.provider}
+                      {p.default ? ' (live default)' : ''}
+                    </option>
+                  ))}
+                  {settings.askProvider &&
+                    !inferOptions.providers.some(
+                      (p) => p.provider === settings.askProvider,
+                    ) && (
+                      <option value={settings.askProvider}>
+                        {settings.askProvider} (no longer available)
+                      </option>
+                    )}
+                </select>
+              </OptionGroup>
+
+              <OptionGroup
+                label="Default model"
+                hint="Which model Ask sends to the provider."
+              >
+                <select
+                  id="settings-infer-model"
+                  data-testid="settings-infer-model"
+                  value={settings.askModel}
+                  onChange={(e) => update({ askModel: e.target.value })}
+                  className="w-full max-w-xs px-3 py-2 rounded-lg border border-line bg-hover/40 text-sm text-primary"
+                >
+                  <option value="">Service default</option>
+                  {inferOptions.models.map((m) => (
+                    <option key={m} value={m}>
+                      {m}
+                    </option>
+                  ))}
+                  {settings.askModel &&
+                    !inferOptions.models.includes(settings.askModel) && (
+                      <option value={settings.askModel}>
+                        {settings.askModel} (no longer available)
+                      </option>
+                    )}
+                </select>
+              </OptionGroup>
+            </div>
+          ) : null}
+
+          <p className="text-xs text-muted">
+            These defaults are stored in this browser and prefill the Ask screen's advanced
+            model / agent picker. They do not change the backend's service-level default.
+          </p>
+        </section>
+      )}
     </div>
   )
 }
