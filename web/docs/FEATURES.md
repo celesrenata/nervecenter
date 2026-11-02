@@ -66,6 +66,18 @@ The NerveCenter Web UI provides a comprehensive interface for managing and monit
   `source` (`default` | `agent` | `request`).
 - Native agent types cannot be persisted, so they use the service default; the
   Agents view says so instead of silently failing.
+- Durable provider registry (write path): the **Providers** page (`/providers`)
+  manages persistent providers and combos under `/api/inference/durable`.
+  Providers are editable rows (type, base URL, models) whose API key is stored
+  in-band and **masked on every read** — only an authenticated principal sees
+  it, and a freshly typed key is the only value ever written. Per-row
+  **Test** and **Recall models** actions exercise the live provider.
+- Combo binding: a **combo** pairs one provider with one model and is the unit
+  an agent binds to (`agents.combo_id`). Resolution runs at ask time — combo
+  shadows the per-agent `{provider, model}`, which shadows the service default;
+  re-pointing a combo re-binds every agent pointing at it with no write.
+  The Agents inference editor exposes a combo picker and a per-agent `combo:`
+  badge.
 
 ### 8. Incident Management
 

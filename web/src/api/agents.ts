@@ -49,6 +49,12 @@ export interface Agent {
   tasksFailed: number | null
   /** Inference binding (`null` = use service default). Absent pre-Batch-4 rows. */
   inference?: InferenceBinding | null
+  /**
+   * Durable combo binding (providers feature). When set, the agent resolves
+   * its provider/model through the combo at ask time (lazy) and shadows the
+   * per-agent `inference` jsonb. `null`/absent = no combo binding.
+   */
+  combo_id?: string | null
 }
 
 /**
@@ -62,6 +68,8 @@ export interface AgentCreatePayload {
   prompt_template?: string | null
   tools?: string[] | null
   inference?: InferenceBinding | null
+  /** Optional durable combo binding (id of an inference combo). */
+  combo_id?: string | null
 }
 
 /**
@@ -75,6 +83,11 @@ export interface AgentUpdatePayload {
   prompt_template?: string | null
   tools?: string[] | null
   inference?: InferenceBinding | null
+  /**
+   * Durable combo binding. A non-empty string rebinds the agent to that
+   * combo; an empty string ``""`` clears it; omitted leaves it unchanged.
+   */
+  combo_id?: string | null
 }
 
 export { ApiError }

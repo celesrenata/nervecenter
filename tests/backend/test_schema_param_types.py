@@ -159,6 +159,10 @@ TABLES_WITH_ID = frozenset(
         "sleep_records",
         # Unified obligation plane, Alembic 012 (P2-A — Personal Reliability).
         "obligations",
+        # Inference-provider plane, Alembic 015 (providers feature — durable
+        # provider + combo registry; keys stored in-band and masked on read).
+        "inference_providers",
+        "inference_combos",
     }
 )
 

@@ -31,6 +31,7 @@ from .events import Event
 from .evidence import Evidence
 from .goals import AgentResult, Goal
 from .incidents_agents import Agent, Incident
+from .inference import InferenceCombo, InferenceProvider
 from .obligations import (
     OBLIGATION_ORIGINS,
     OBLIGATION_STATUSES,
@@ -61,6 +62,8 @@ __all__ = [
     "PlannedChange",
     "Incident",
     "Agent",
+    "InferenceProvider",
+    "InferenceCombo",
     "AuthSession",
     "AuthDevice",
     "PairingChallenge",

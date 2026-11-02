@@ -47,6 +47,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from backend.agents.registry import AgentRegistry
 from backend.persistence.models import Agent as AgentORM
+from backend.persistence.models import InferenceCombo as InferenceComboORM
+from backend.persistence.models import InferenceProvider as InferenceProviderORM
 from backend.persistence.models import Incident as IncidentORM
 
 log = structlog.get_logger(__name__)
@@ -274,6 +276,7 @@ def _agent_to_row(orm: AgentORM) -> dict[str, Any]:
         "tasksCompleted": None,
         "tasksFailed": None,
         "inference": orm.inference,
+        "combo_id": orm.combo_id,
     }
 
 
@@ -356,12 +359,16 @@ class AgentService:
         prompt_template: str | None = None,
         tools: list[str] | None = None,
         inference: dict[str, Any] | None = None,
+        combo_id: str | None = None,
     ) -> dict[str, Any]:
         """Create and persist a new agent instance. Returns the web row (201).
 
         ``inference`` is the per-agent binding (contract §3); ``None`` means
-        "unbound → default". Raises :class:`AgentNameConflictError` when
-        ``name`` collides with an existing row (unique constraint).
+        "unbound → default". ``combo_id`` is an optional durable combo binding
+        (providers feature) — when set, the agent resolves its binding
+        through the combo at ask time (lazy, see :meth:`get_inference`).
+        Raises :class:`AgentNameConflictError` when ``name`` collides with an
+        existing row (unique constraint).
         """
         factory = self._factory()
         async with factory() as session:
@@ -373,6 +380,7 @@ class AgentService:
                 prompt_template=prompt_template,
                 tools=list(tools or []),
                 inference=inference,
+                combo_id=combo_id,
                 updated_at=_utcnow(),
             )
             session.add(orm)
@@ -396,6 +404,12 @@ class AgentService:
     async def get_inference(self, agent_id: str) -> dict[str, Any] | None:
         """Return a persisted agent's inference binding (or ``None``).
 
+        Resolution order: (1) a durable :class:`InferenceCombo` bound via
+        ``combo_id`` — the combo's ``(provider.provider_type, combo.model_id)``
+        is resolved lazily so re-pointing a combo re-binds every bound agent
+        on the next ask (no cascade write); (2) the per-agent ``inference``
+        jsonb binding (contract §3); (3) ``None``.
+
         Returns ``None`` both when the agent has no binding and when the id is
         not a persisted instance (e.g. a native type or an unknown id), so the
         ask endpoint can silently fall through to native-type / default
@@ -406,6 +420,24 @@ class AgentService:
             orm = await session.get(AgentORM, agent_id)
             if orm is None:
                 return None
+            # (1) Combo binding — wins over the per-agent ``inference`` jsonb.
+            if orm.combo_id is not None:
+                combo = await session.get(InferenceComboORM, orm.combo_id)
+                if combo is not None:
+                    provider = await session.get(InferenceProviderORM, combo.provider_id)
+                    if provider is not None:
+                        return {
+                            "provider": provider.provider_type,
+                            "model": combo.model_id,
+                        }
+                # Dangling combo/provider reference — fall through to the
+                # per-agent jsonb rather than silently using a dead binding.
+                log.warning(
+                    "agents.dangling_combo",
+                    agent_id=agent_id,
+                    combo_id=orm.combo_id,
+                )
+            # (2) Per-agent jsonb binding.
             return orm.inference
 
     async def update(
@@ -417,6 +449,7 @@ class AgentService:
         prompt_template: str | None = None,
         tools: list[str] | None = None,
         inference: dict[str, Any] | None = None,
+        combo_id: str | None = None,
     ) -> dict[str, Any]:
         """Partially update a persisted agent instance; returns the web row.
 
@@ -443,6 +476,11 @@ class AgentService:
                 orm.tools = list(tools)
             if inference is not None:
                 orm.inference = inference
+            if combo_id is not None:
+                # A supplied id rebinds the agent; an empty string clears the
+                # combo binding (back to the per-agent jsonb / default). Omitted
+                # (``None``) leaves the existing binding unchanged.
+                orm.combo_id = combo_id if combo_id else None
             orm.updated_at = _utcnow()
             # Snapshot the name ahead of the commit: after `rollback()` the ORM
             # is detached, and reading `orm.name` would trigger a lazy DB load

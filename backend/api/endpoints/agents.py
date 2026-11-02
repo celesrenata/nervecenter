@@ -157,6 +157,14 @@ class AgentCreateRequest(BaseModel):
             "Both keys are optional; null means 'use the default' (contract §3)."
         ),
     )
+    combo_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional durable combo binding (id of an inference combo). "
+            "When set, the agent resolves its provider/model through the "
+            "combo at ask time; re-pointing the combo re-binds the agent."
+        ),
+    )
 
 
 def _agent_service(request: Request) -> AgentService | None:
@@ -205,6 +213,7 @@ async def create_agent(
             prompt_template=payload.prompt_template,
             tools=payload.tools,
             inference=payload.inference,
+            combo_id=payload.combo_id or None,
         )
     except AgentNameConflictError:
         raise HTTPException(
@@ -236,6 +245,15 @@ class AgentUpdateRequest(BaseModel):
             "Absent/null leaves the existing binding unchanged (contract §4)."
         ),
     )
+    combo_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional durable combo binding; setting it binds the agent to "
+            "the combo, setting it to a null/omitted value leaves the "
+            "existing binding unchanged. (A clear is handled by the web UI "
+            "by passing an empty string.)"
+        ),
+    )
 
 
 @router.patch("/api/agents/{agent_id}")
@@ -261,6 +279,7 @@ async def update_agent(
             prompt_template=payload.prompt_template,
             tools=payload.tools,
             inference=payload.inference,
+            combo_id=payload.combo_id,
         )
     except AgentNotFoundError:
         raise HTTPException(

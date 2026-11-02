@@ -1,6 +1,10 @@
 import { useState, useEffect, type FormEvent } from 'react'
 import { agentsApi, type AgentUpdatePayload } from '../api/agents'
 import { inferenceApi, type AvailableInference } from '../api/inference'
+import {
+  durableInferenceApi,
+  type DurableCombo,
+} from '../api/inferenceDurable'
 import { apiFetch, apiErrorFromResponse, ApiError } from '../api/client'
 
 /**
@@ -33,6 +37,8 @@ interface Agent {
   tasksFailed: number | null
   /** Inference binding (`null`/absent = use service default). */
   inference?: { provider?: string | null; model?: string | null } | null
+  /** Durable combo binding (`null`/absent = no combo; shadows per-agent inference). */
+  combo_id?: string | null
 }
 
 // The 14 native agent types (spec §26), from backend/agents/registry.py.
@@ -91,6 +97,11 @@ const AgentsView = () => {
   const [inferSuccess, setInferSuccess] = useState(false)
   const [inferOptions, setInferOptions] = useState<AvailableInference | null>(null)
   const [inferOptionsLoading, setInferOptionsLoading] = useState(false)
+  // Durable combo binding (providers feature): a combo shadows the per-agent
+  // provider/model. Loaded lazily with the rest of the inference editor.
+  const [inferCombo, setInferCombo] = useState('')
+  const [inferCombos, setInferCombos] = useState<DurableCombo[]>([])
+  const [inferCombosLoading, setInferCombosLoading] = useState(false)
 
   const openInference = async (agentId: string) => {
     setInferenceAgentId(agentId)
@@ -99,6 +110,7 @@ const AgentsView = () => {
     const agent = agents.find((a) => a.id === agentId)
     setInferProvider(agent?.inference?.provider ?? '')
     setInferModel(agent?.inference?.model ?? '')
+    setInferCombo(agent?.combo_id ?? '')
     if (inferOptions === null && !inferOptionsLoading) {
       setInferOptionsLoading(true)
       try {
@@ -110,12 +122,24 @@ const AgentsView = () => {
         setInferOptionsLoading(false)
       }
     }
+    if (inferCombos.length === 0 && !inferCombosLoading) {
+      setInferCombosLoading(true)
+      try {
+        setInferCombos(await durableInferenceApi.listCombos())
+      } catch {
+        // Honest: no combos surfaced; the picker just shows the default.
+        setInferCombos([])
+      } finally {
+        setInferCombosLoading(false)
+      }
+    }
   }
 
   const closeInference = () => {
     setInferenceAgentId(null)
     setInferProvider('')
     setInferModel('')
+    setInferCombo('')
     setInferError(null)
     setInferSuccess(false)
     setInferBusy(false)
@@ -127,8 +151,9 @@ const AgentsView = () => {
     setInferError(null)
     setInferSuccess(false)
     try {
-      // PATCH /api/agents/{id}: partial update carrying only the binding.
-      // A null/empty binding clears to the service default.
+      // PATCH /api/agents/{id}: partial update carrying the binding(s).
+      // A null/empty binding clears to the service default. A non-empty combo
+      // shadows the per-agent inference (resolved at ask time).
       const payload: AgentUpdatePayload = {
         inference:
           inferProvider || inferModel
@@ -137,6 +162,7 @@ const AgentsView = () => {
                 model: inferModel || null,
               }
             : null,
+        combo_id: inferCombo,
       }
       await agentsApi.update(inferenceAgentId, payload)
       setInferSuccess(true)
@@ -626,7 +652,37 @@ const AgentsView = () => {
               Leave both blank to use the service default.
             </p>
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div>
+              <label
+                htmlFor="agent-infer-combo"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+              >
+                Combo
+              </label>
+              <select
+                id="agent-infer-combo"
+                data-testid="agent-infer-combo"
+                value={inferCombo}
+                onChange={(e) => setInferCombo(e.target.value)}
+                disabled={inferBusy}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+              >
+                <option value="">None (per-agent default)</option>
+                {(inferCombos.length === 0 && inferCombosLoading) && (
+                  <option value="">Loading…</option>
+                )}
+                {inferCombos.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name} ({c.provider_name} / {c.model_id})
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-muted">
+                A combo shadows the provider/model below and is resolved at
+                ask time; re-pointing it re-binds this agent with no write.
+              </p>
+            </div>
             <div>
               <label
                 htmlFor="agent-infer-provider"
@@ -780,6 +836,17 @@ const AgentsView = () => {
                       >
                         {agent.inference?.model ?? agent.inference?.provider ?? 'default'}
                       </span>
+                      {/* Durable combo binding (providers feature): a bound
+                          combo shadows the per-agent inference at ask time. */}
+                      {agent.combo_id && (
+                        <span
+                          data-testid="agent-combo-badge"
+                          aria-label={`Agent ${agent.name} combo binding: ${agent.combo_id}`}
+                          className="text-xs font-mono px-1.5 py-0.5 rounded bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300"
+                        >
+                          combo:{agent.combo_id}
+                        </span>
+                      )}
                       <button
                         type="button"
                         data-testid="agent-inference"

@@ -58,6 +58,7 @@ const navItems: NavItem[] = [
   { path: '/tasks', label: 'Task DAG', Icon: TasksIcon },
   { path: '/agents', label: 'Agents', Icon: AgentsIcon },
   { path: '/inference', label: 'Inference', Icon: InferenceIcon },
+  { path: '/providers', label: 'Providers', Icon: InferenceIcon },
   { path: '/incidents', label: 'Incidents', Icon: IncidentsIcon },
   { path: '/decisions', label: 'Decisions', Icon: DecisionsIcon },
   { path: '/ask', label: 'Ask', Icon: AskIcon },

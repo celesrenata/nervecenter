@@ -111,6 +111,12 @@ class Agent(Base):
     #: "model": str}`` (either key optional) or ``None`` (use the default).
     #: NULL-allowed jsonb — a NULL column means "unbound → default".
     inference: Mapped[dict[str, Any] | None] = mapped_column(Jsonb, default=None, nullable=True)
+    #: Optional durable combo binding (providers feature): the ``id`` of an
+    #: ``inference_combos`` row the agent binds to. ``None`` means "use the
+    #: per-agent ``inference`` binding or the service default." Resolved in
+    #: the ask pipeline by mirroring the combo's ``(provider, model)`` into the
+    #: ``inference`` column before the standard resolution order.
+    combo_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
 
     def __repr__(self) -> str:
         return f"<Agent id={self.id!r} name={self.name!r} status={self.status!r}>"
