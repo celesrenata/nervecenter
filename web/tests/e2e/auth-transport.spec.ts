@@ -163,19 +163,21 @@ test.describe('auth transport (S102)', () => {
       sessionStorage.setItem('nc.pkce.state', 'state-e2e-ok')
     })
 
-    let tokenPost: Record<string, string> | null = null
-    // SSO provider token endpoint (intercepted: no live provider in e2e). Only
-    // the provider host is intercepted, never the app's own module/HTML loads.
-    await page.route('https://sso.example.test/token/**', (route) => {
-      tokenPost = Object.fromEntries(
-        new URLSearchParams(route.request().postData() ?? ''),
-      )
+    // The code→token exchange is now *server-side* (the OIDC client is
+    // confidential), so the browser POSTs to the backend route, not the
+    // provider's token endpoint. Intercept the backend route (no live backend
+    // or provider in e2e); only that route is stubbed, never app loads.
+    const tokenPosts: Array<Record<string, string>> = []
+    await page.route('**/api/auth/sso/token', (route) => {
+      tokenPosts.push(JSON.parse(route.request().postData() ?? '{}'))
       return route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
           access_token: 'sso-access-1',
           refresh_token: 'sso-refresh-1',
+          token_type: 'Bearer',
+          expires_in: 300,
         }),
       })
     })
@@ -211,12 +213,14 @@ test.describe('auth transport (S102)', () => {
     expect(stored.verifier).toBeNull()
 
     // The token request carried the PKCE code + verifier (S256 round-trip).
-    expect(tokenPost).not.toBeNull()
-    expect(tokenPost?.grant_type).toBe('authorization_code')
-    expect(tokenPost?.code).toBe('code-e2e-xyz')
-    expect(tokenPost?.code_verifier).toBe('verifier-e2e')
-    expect(tokenPost?.client_id).toBe('nervecenter-e2e')
-    expect(tokenPost?.redirect_uri).toBe('http://localhost:3000/auth/callback')
+    // The client id / grant type are added by the backend (confidential
+    // client), so the browser request omits them.
+    expect(tokenPosts).toHaveLength(1)
+    const tokenPost = tokenPosts[0]
+    expect(tokenPost.code).toBe('code-e2e-xyz')
+    expect(tokenPost.code_verifier).toBe('verifier-e2e')
+    expect(tokenPost.redirect_uri).toBe('http://localhost:3000/auth/callback')
+    expect(tokenPost.client_id).toBeUndefined()
   })
 
   test('/auth/callback rejects a state mismatch (CSRF) without storing tokens', async ({

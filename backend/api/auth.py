@@ -59,6 +59,27 @@ class LoginRequest(BaseModel):
     )
 
 
+class SsoTokenRequest(BaseModel):
+    """Body for ``POST /api/auth/sso/token`` (server-side PKCE token exchange).
+
+    The authorization-code → token exchange happens *server-side* because the
+    ``nervecenter`` OIDC client is confidential (its token endpoint requires the
+    client secret, which never reaches the browser).  ``code`` and
+    ``code_verifier`` are exactly the values the browser captured from the
+    issuer's redirect; ``redirect_uri`` must match the authorization request.
+    """
+
+    code: str = Field(min_length=1, description="Authorization code from the issuer redirect.")
+    code_verifier: str = Field(
+        min_length=1,
+        description="PKCE ``code_verifier`` (S256) matching the authorization request.",
+    )
+    redirect_uri: str = Field(
+        default="",
+        description="The exact ``redirect_uri`` used in the authorization request.",
+    )
+
+
 class PairingInitiateRequest(BaseModel):
     """Body for ``POST /api/auth/pairing/initiate`` (requires a valid access token)."""
 
@@ -197,6 +218,47 @@ async def sso_config(request: Request) -> dict[str, Any]:
     ctx = _get_ctx(request)
     ok, discovery = await auth_service.probe_provider(ctx.issuer)
     return auth_service.sso_config(ctx, discovery if ok else None)
+
+
+@router.post("/sso/token")
+async def sso_token_exchange(
+    body: SsoTokenRequest, request: Request
+) -> dict[str, Any]:
+    """Server-side PKCE authorization-code → token exchange.
+
+    The ``nervecenter`` OIDC client is **confidential** (its token endpoint
+    requires the client secret, which never reaches the browser), so the
+    code→token exchange cannot run client-side.  This endpoint performs it
+    server-side: it POSTs the captured ``code`` + ``code_verifier`` (+ the exact
+    ``redirect_uri`` from the authorization request) to the issuer's token
+    endpoint with the client secret (Basic auth) and returns the token response.
+
+    The returned ``access_token`` is a standard Keycloak RS256 access token that
+    :func:`current_access` verifies statelessly against the issuer JWKS.  The
+    issuer's raw error body is never echoed to the caller.
+
+    Raises ``501`` when the exchange is not configured (no client secret), and
+    ``401`` for a bad / expired / already-used authorization code, a mismatched
+    PKCE verifier, or an unreachable issuer token endpoint.
+    """
+    ctx = _get_ctx(request)
+    if not ctx.client_secret:
+        raise HTTPException(
+            status_code=501,
+            detail="SSO token exchange is not configured",
+        )
+    try:
+        tokens = await ctx.exchange_sso_code(
+            body.code, body.code_verifier, body.redirect_uri
+        )
+    except auth_service.TokenError as exc:
+        raise HTTPException(status_code=401, detail=exc.detail) from exc
+    return {
+        "access_token": tokens.get("access_token", ""),
+        "token_type": tokens.get("token_type", "Bearer"),
+        "refresh_token": tokens.get("refresh_token"),
+        "expires_in": tokens.get("expires_in"),
+    }
 
 
 # ─── Break-glass local admin (AC-S03) ─────────────────────────────────────────

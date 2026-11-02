@@ -71,6 +71,9 @@ log = structlog.get_logger(__name__)
 ENV_JWT_SECRET = "NERVE_JWT_SECRET"
 ENV_SSO_ISSUER = "NERVE_SSO_ISSUER"
 ENV_SSO_CLIENT_ID = "NERVE_SSO_CLIENT_ID"
+ENV_SSO_CLIENT_SECRET = "NERVE_SSO_CLIENT_SECRET"
+ENV_SSO_JWKS_URI = "NERVE_SSO_JWKS_URI"
+ENV_SSO_TOKEN_ENDPOINT = "NERVE_SSO_TOKEN_ENDPOINT"
 ENV_LOCAL_ADMIN = "NERVE_LOCAL_ADMIN"
 ENV_LOCAL_ADMIN_PASSWORD = "NERVE_LOCAL_ADMIN_PASSWORD"
 
@@ -236,6 +239,14 @@ class AuthContext:
     local_admin_password: str | None
     session_factory: async_sessionmaker[AsyncSession] | None = None
 
+    #: Confidential-client secret for the server-side PKCE token exchange.  When
+    #: set, the authorization-code exchange happens *server-side* (the secret
+    #: never reaches the browser).  Empty for public-client / test contexts.
+    client_secret: str = ""
+    #: Optional explicit overrides for endpoint discovery.
+    jwks_uri_override: str = ""
+    token_endpoint_override: str = ""
+
     _jwks: JwksProvider | None = field(default=None, repr=False)
 
     @classmethod
@@ -260,6 +271,9 @@ class AuthContext:
             local_admin_enabled=_parse_falsy(os.environ.get(ENV_LOCAL_ADMIN)),
             local_admin_password=os.environ.get(ENV_LOCAL_ADMIN_PASSWORD),
             session_factory=session_factory,
+            client_secret=os.environ.get(ENV_SSO_CLIENT_SECRET, "").strip(),
+            jwks_uri_override=os.environ.get(ENV_SSO_JWKS_URI, "").strip(),
+            token_endpoint_override=os.environ.get(ENV_SSO_TOKEN_ENDPOINT, "").strip(),
         )
 
     @property
@@ -271,15 +285,124 @@ class AuthContext:
         return self.issuer
 
     @property
+    def _is_keycloak(self) -> bool:
+        """True when the issuer is a Keycloak realm base URL.
+
+        Keycloak exposes its OIDC endpoints under
+        ``<realm>/protocol/openid-connect/`` (JWKS at ``certs``, token at
+        ``token``), unlike Authentik which serves them under the realm root.
+        """
+        return "/realms/" in self.issuer
+
+    @property
     def jwks_uri(self) -> str:
-        """Default JWKS location (Authentik serves ``<issuer base>/jwks/``)."""
-        base = self.issuer_base
-        return base if base.endswith("/jwks/") else f"{base.rstrip('/')}/jwks/"
+        """Resolve the issuer's JWKS location.
+
+        An explicit ``jwks_uri_override`` (``NERVE_SSO_JWKS_URI``) wins.  For a
+        Keycloak realm, use ``<base>/protocol/openid-connect/certs``; otherwise
+        fall back to the Authentik convention ``<base>/jwks/``.
+        """
+        if self.jwks_uri_override:
+            return self.jwks_uri_override
+        base = self.issuer_base.rstrip("/")
+        if self._is_keycloak:
+            return f"{base}/protocol/openid-connect/certs"
+        return base if base.endswith("/jwks/") else f"{base}/jwks/"
+
+    @property
+    def token_endpoint(self) -> str:
+        """Resolve the issuer's token endpoint (for the server-side exchange).
+
+        An explicit ``token_endpoint_override`` (``NERVE_SSO_TOKEN_ENDPOINT``)
+        wins; otherwise the Keycloak realm path or the Authentik root.
+        """
+        if self.token_endpoint_override:
+            return self.token_endpoint_override
+        base = self.issuer_base.rstrip("/")
+        if self._is_keycloak:
+            return f"{base}/protocol/openid-connect/token"
+        return f"{base}/token/"
 
     def _jwks_provider(self) -> JwksProvider:
         if self._jwks is None:
             self._jwks = JwksProvider(self.jwks_uri)
         return self._jwks
+
+    async def exchange_sso_code(
+        self,
+        code: str,
+        code_verifier: str,
+        redirect_uri: str,
+    ) -> dict[str, Any]:
+        """Exchange an authorization code for OIDC tokens *server-side*.
+
+        The ``nervecenter`` client is a **confidential** client (its token
+        endpoint rejects requests without the client secret — verified live), so
+        the code→token exchange cannot happen in the browser.  This method POSTs
+        to the issuer's token endpoint with the client secret (Basic auth), the
+        ``code_verifier`` (PKCE), and the exact ``redirect_uri`` that was used in
+        the authorization request, and returns the token response
+        (``access_token`` / ``refresh_token`` / ``expires_in`` /
+        ``token_type``).  The raw issuer error body is never returned to callers
+        (see :class:`TokenError`).
+        """
+        if not self.client_secret:
+            raise TokenError(
+                "SSO token exchange is not configured (NERVE_SSO_CLIENT_SECRET)"
+            )
+        if not code or not code_verifier:
+            raise TokenError("code and code_verifier are required")
+
+        form: dict[str, str] = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": code_verifier,
+            "client_id": self.client_id,
+        }
+        if redirect_uri:
+            form["redirect_uri"] = redirect_uri
+
+        try:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(10.0)
+            ) as client:
+                response = await client.post(
+                    self.token_endpoint,
+                    data=form,
+                    headers={"Authorization":
+                             f"Basic {base64.b64encode(f'{self.client_id}:{self.client_secret}'.encode()).decode()}"},
+                )
+        except httpx.HTTPError as exc:
+            raise TokenError(
+                "could not reach the SSO token endpoint "
+                "(SSO token exchange unavailable)"
+            ) from exc
+
+        if response.status_code != 200:
+            # A 4xx is a client-side failure (bad/expired code, wrong
+            # redirect_uri, bad PKCE verifier).  Do NOT surface the issuer's
+            # error body — it can echo secrets.
+            status = response.status_code
+            if 400 <= status < 500:
+                raise TokenError(
+                    "SSO authorization code is invalid, expired, or was "
+                    "already used"
+                )
+            raise TokenError("SSO token exchange failed; please try again")
+
+        try:
+            data = response.json()
+        except ValueError as exc:
+            raise TokenError("SSO token endpoint returned a non-JSON response") from exc
+        if not isinstance(data, dict) or not data.get("access_token"):
+            raise TokenError("SSO token exchange returned no access token")
+
+        log.info(
+            "auth.sso_code_exchanged",
+            sub=str(data.get("sub", ""))[:120],
+            token_type=str(data.get("token_type", "")),
+        )
+        return data
 
     # -- token minting ---------------------------------------------------------
 
@@ -398,23 +521,39 @@ class AuthContext:
                 raise TokenError("token audience mismatch")
         elif alg in ("RS256", "RS384", "RS512"):
             key = await self._jwks_provider().resolve_key(token)
+            # An issuer-minted token is addressed to the *client id* (not the
+            # NerveCenter app audience), so the ``aud`` check targets the client
+            # id.  PyJWT validates ``aud`` whenever ``audience`` is supplied,
+            # which also satisfies the OIDC ``aud`` requirement; when no client
+            # id is configured (local dev / tests) the check is disabled.
+            audience = self.client_id or None
+            if audience is None:
+                options = {"require": ["exp", "sub"], "verify_aud": False}
+            else:
+                options = {"require": ["exp", "sub"]}
             try:
                 claims = jwt.decode(
                     token,
                     key,
                     algorithms=["RS256", "RS384", "RS512"],
-                    audience=AUDIENCE,
-                    issuer=self.issuer_base,
-                    options={"require": ["exp", "iat", "sub", "typ"]},
+                    audience=audience,
+                    options=options,
                 )
             except jwt.ExpiredSignatureError as exc:
                 raise TokenError("token has expired") from exc
             except jwt.PyJWTError as exc:
                 raise TokenError(f"issuer token rejected: {exc}") from exc
+            # Issuer: an issuer-minted token's ``iss`` is the issuer/realm base.
+            # Tolerate a trailing slash on either side.
+            if str(claims.get("iss") or "").rstrip("/") != self.issuer_base.rstrip("/"):
+                raise TokenError("token issuer mismatch")
         else:
             raise TokenError(f"unsupported token algorithm: {alg!r}")
 
-        if expected_typ is not None:
+        # The ``typ`` claim is minted only by NerveCenter itself (HS256).  An
+        # issuer-minted (RS256) token carries no ``typ``, so the type check
+        # applies only to locally-minted tokens.
+        if expected_typ is not None and alg == "HS256":
             self._validate_typ(claims, expected_typ)
 
         if require_session and alg == "HS256":

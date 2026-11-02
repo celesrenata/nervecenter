@@ -518,7 +518,11 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   }
   const res = await fetch(url, { ...init, headers })
   if (res.status === 401) {
-    if (!path.startsWith('/auth/login')) {
+    // /auth/login and /auth/sso/token are credential/exchange errors the caller
+    // should surface (form error / callback error UI), not session-loss events:
+    // no session exists yet, so a forced /login redirect would skip the
+    // caller's error presentation.
+    if (!path.startsWith('/auth/login') && !path.startsWith('/auth/sso/token')) {
       clearSessionTokens()
       if (unauthorizedHandler) unauthorizedHandler()
     }
@@ -672,13 +676,18 @@ export async function getAuthorizationUrl(): Promise<string | null> {
 }
 
 /**
- * Exchange the PKCE authorization code for tokens at the SSO provider's
- * token endpoint (the "backend token route" per AC-S01) and store the
- * session tokens (nc.accessToken / nc.refreshToken).
+ * Exchange the PKCE authorization code for tokens and store the session
+ * tokens (nc.accessToken / nc.refreshToken).
+ *
+ * The code→token exchange happens **server-side** at
+ * `POST /api/auth/sso/token` (the "backend token route" per AC-S01): the
+ * SSO client is confidential, so its provider token endpoint requires the
+ * client secret, which never reaches the browser. The backend holds the
+ * secret and performs the exchange, returning the OIDC token response.
  *
  * Steps: validate the round-tripped `state` against the stored
- * `nc.pkce.state`, consume the code verifier, POST the code exchange,
- * store the returned access + refresh tokens in sessionStorage.
+ * `nc.pkce.state`, consume the code verifier, POST the exchange to the
+ * backend, store the returned access + refresh tokens in sessionStorage.
  * Rejects with ApiError on a state mismatch, a missing verifier, a
  * failed token exchange, or a response without an access token.
  */
@@ -696,22 +705,14 @@ export async function exchangeAuthCode(
     clearSessionTokens()
     throw new ApiError(400, 'missing PKCE code verifier')
   }
-  const cfg = await getSsoConfig()
-  if (!cfg?.token_endpoint) {
-    clearSessionTokens()
-    throw new ApiError(500, 'no SSO token_endpoint configured')
-  }
-  const params = new URLSearchParams({
-    grant_type: 'authorization_code',
-    code,
-    code_verifier: verifier,
-    redirect_uri: window.location.origin + '/auth/callback',
-    client_id: cfg.client_id,
-  })
-  const res = await fetch(cfg.token_endpoint, {
+  const res = await apiFetch('/auth/sso/token', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: params.toString(),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      code,
+      code_verifier: verifier,
+      redirect_uri: window.location.origin + '/auth/callback',
+    }),
   })
   if (!res.ok) throw await apiErrorFromResponse(res)
   const body = (await res.json()) as {
