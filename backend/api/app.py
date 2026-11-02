@@ -302,6 +302,48 @@ def _configure(target: FastAPI) -> None:
         return get_version_info()
 
 
+def _install_ask_wiring(target: FastAPI) -> None:
+    """Bind the grounded-ask service with the deployed OmniRoute transport.
+
+    The ask pipeline (T003.AC9) needs a real transport to answer live. The
+    lazy singleton (:func:`get_ask_service`) opens with *no* transport, so a
+    live ``POST /api/context/ask`` degrades to the honest 202 "no transport
+    configured" even when ``NERVE_OMNIROUTE_URL`` is set. We construct the
+    service here from the deployed ``NERVE_OMNIROUTE_*`` environment so that:
+
+    - ``NERVE_OMNIROUTE_URL`` set → live chat-completions routing.
+    - ``NERVE_OMNIROUTE_FIXTURE`` set → deterministic offline fixture replay.
+    - neither → the transport carries no base_url, so
+      ``AskService.transport_available`` is False and asks stay in the honest
+      202 shape.
+
+    The default model/provider come from :func:`default_inference` (the
+    catalog default, e.g. ``auto/best-chat``) rather than the constructor's
+    virtual ``nerve-ask`` placeholder, so live asks route to a real catalog
+    model. Best-effort: a wiring failure leaves the singleton in place rather
+    than crashing startup.
+    """
+    try:
+        from backend.context.ask import AskService
+        from backend.inference import OmniRouteTransport
+        from backend.inference.providers import default_inference
+
+        default = default_inference()
+        target.state.ask_service = AskService(
+            transport=OmniRouteTransport.from_env(),
+            remote_provider_allowed=True,
+            provider=default.get("provider", "omniroute"),
+            model=default.get("model", "nerve-ask"),
+        )
+        log.info(
+            "api.ask_wiring_ok",
+            provider=default.get("provider"),
+            model=default.get("model"),
+        )
+    except Exception as exc:  # noqa: BLE001 - startup must not crash
+        log.warning("api.ask_wiring_failed", error=str(exc))
+
+
 def create_app() -> FastAPI:
     """Factory function for creating and configuring the FastAPI application.
 
@@ -344,6 +386,7 @@ def create_app() -> FastAPI:
     _configure(target)
     install_dependency_wiring(target)
     _install_control_plane_wiring(target)
+    _install_ask_wiring(target)
 
     # Attention engine (prompt2 P0): an in-process, engine-independent
     # store that is always available, so bind the singleton explicitly.

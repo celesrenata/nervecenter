@@ -262,10 +262,17 @@ class OmniRouteTransport:
     ) -> dict[str, Any]:
         """Run one inference call against the configured deployment.
 
+        The network path POSTs an OpenAI-compatible chat-completions body
+        (``{"model", "messages": [{"role": "user", "content": prompt}]}``) to
+        ``<base>/v1/chat/completions`` and normalizes the response through
+        :func:`_parse_envelope`, which accepts both the legacy custom envelope
+        (``content``) and the OpenAI ``choices``/``usage`` shape.
+
         Args:
             model: Model identifier for this hop.
             prompt: Input prompt.
-            parameters: Model generation parameters.
+            parameters: Model generation parameters (NerveCenter-internal
+                grounding metadata; not forwarded to the wire body).
             timeout: Per-request timeout in milliseconds.
 
         Returns:
@@ -323,17 +330,22 @@ class OmniRouteTransport:
                 [(model, model)], {(model, model): "NERVE_OMNIROUTE_URL not configured"}
             )
 
+        # OpenAI-compatible request body. ``NERVE_OMNIROUTE_URL`` points at the
+        # gateway root, so the path is ``/v1/chat/completions`` — the
+        # deployment's live route (the legacy custom ``/v1/inference`` envelope
+        # was never served). ``parameters`` is NerveCenter-internal grounding
+        # metadata, not an OpenAI generation field, so it is intentionally NOT
+        # forwarded into the body; ``timeout_ms`` is a transport-level concern
+        # applied to the HTTP client, not a body field.
         request_body = {
             "model": model,
-            "prompt": prompt,
-            "parameters": dict(parameters or {}),
-            "timeout_ms": timeout_ms,
+            "messages": [{"role": "user", "content": prompt}],
         }
         started = time.monotonic()
         try:
             response = self._http_request(
                 method="POST",
-                path="/v1/inference",
+                path="/v1/chat/completions",
                 body=request_body,
                 timeout_s=timeout_ms / 1000.0,
             )

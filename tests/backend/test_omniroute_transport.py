@@ -444,16 +444,40 @@ class TestWireFormat:
 
         captured = transport._captured  # type: ignore[attr-defined]
         assert captured["method"] == "POST"
-        assert captured["url"] == "http://omni.example/v1/inference"
+        assert captured["url"] == "http://omni.example/v1/chat/completions"
+        # OpenAI-compatible chat-completions body: the prompt becomes a single
+        # user message; NerveCenter-internal ``parameters`` grounding metadata
+        # and the transport-level ``timeout_ms`` are NOT part of the wire body.
         assert captured["json"] == {
             "model": "deepseek-v4",
-            "prompt": "hi",
-            "parameters": {"n": 2},
-            "timeout_ms": 1234,
+            "messages": [{"role": "user", "content": "hi"}],
         }
         assert captured["headers"]["Authorization"] == f"Bearer {_API_KEY}"
         assert result["content"] == "ok"
         assert result["input_tokens"] == 0
+
+    def test_openai_request_body_is_chat_messages(self, fixture_dir: Path) -> None:
+        """The wire body is an OpenAI chat-completions request, not the legacy
+        custom ``{model, prompt, parameters, timeout_ms}`` envelope."""
+        transport = TestUnavailableError._transport_with_fake_client(
+            fixture_dir, status=200, body={"content": "ok"}
+        )
+        transport.generate(
+            model="auto/best-chat",
+            prompt="what is the capital of France?",
+            parameters={"grounded": True},
+            timeout=4200,
+        )
+        captured = transport._captured  # type: ignore[attr-defined]
+        body = captured["json"]
+        assert body["model"] == "auto/best-chat"
+        assert body["messages"] == [
+            {"role": "user", "content": "what is the capital of France?"}
+        ]
+        # No NerveCenter-internal fields leak onto the wire.
+        assert "prompt" not in body
+        assert "parameters" not in body
+        assert "timeout_ms" not in body
 
     def test_openai_style_envelope(self, fixture_dir: Path) -> None:
         transport = TestUnavailableError._transport_with_fake_client(
