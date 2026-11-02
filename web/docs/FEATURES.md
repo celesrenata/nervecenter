@@ -49,10 +49,23 @@ The NerveCenter Web UI provides a comprehensive interface for managing and monit
 
 ### 7. Inference Management
 
-- Query the inference engine
-- Model selection (Claude 3.5 Sonnet, Opus, Sonnet, Haiku)
-- Request history
-- Latency metrics
+- Query the inference provider registry and the selectable model surface
+  (`GET /api/inference/available` → providers, models, default; honest empty
+  states — never fabricated providers/models)
+- Per-request inference control: an optional, collapsed Advanced picker on the
+  Ask composer lets you override the model, provider, and the seeding agent for
+  a single ask. Omission stays valid — the default path sends a bare
+  `{question}` body.
+- Per-agent inference binding: each persisted agent carries an optional
+  `{provider, model}` binding (`POST/PATCH /api/agents`). Agent binding
+  resolution runs at the API layer (never inside the pure `AskService`); a
+  request-level override wins over the agent binding, which wins over the
+  service default.
+- Audit echo: every ask response (`answered` / `policy_denied` /
+  `unavailable`) reports the provider/model actually used and its
+  `source` (`default` | `agent` | `request`).
+- Native agent types cannot be persisted, so they use the service default; the
+  Agents view says so instead of silently failing.
 
 ### 8. Incident Management
 

@@ -55,6 +55,7 @@ from backend.inference.omniroute import (
     OmniRouteTransport,
     OmniRouteUnavailableError,
 )
+from backend.agents.registry import get_agent_registry
 from backend.policy.pdp import INFER_ROUTE_ACTION, InferRouteDecision, PolicyDecisionPoint
 from schemas.context import ContextPackage
 from schemas.nc_platform import NCPrincipal, NCPolicy
@@ -112,6 +113,26 @@ class AskContext(BaseModel):
     )
 
 
+class AskInference(BaseModel):
+    """Explicit per-request inference override (contract §2).
+
+    Both keys are optional; a ``None`` value means "use the value resolved from
+    the agent binding (or the service default) for that dimension". An empty
+    ``AskInference`` object therefore resolves fully from the agent/default.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    provider: str | None = Field(
+        default=None,
+        description="Override the inference provider for this request.",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Override the inference model for this request.",
+    )
+
+
 class AskRequest(BaseModel):
     """Body of ``POST /api/context/ask``.
 
@@ -132,6 +153,14 @@ class AskRequest(BaseModel):
     context: AskContext | None = Field(
         default=None,
         description="Optional grounding context (partition / sensitivity / fixture refs).",
+    )
+    agent: str | None = Field(
+        default=None,
+        description="Optional agent id whose inference binding seeds provider/model (contract §2).",
+    )
+    inference: AskInference | None = Field(
+        default=None,
+        description="Explicit per-request inference override; highest priority (contract §2).",
     )
 
 
@@ -312,6 +341,52 @@ class AskService:
         self._model = model
         self._provider = provider
         self._budget = BudgetConfig(total_tokens=token_budget)
+
+    # -- inference resolution ------------------------------------------------
+
+    def _resolve_inference(
+        self,
+        agent: str | None,
+        inference: AskInference | None,
+    ) -> dict[str, str]:
+        """Resolve the primary provider/model for one ask (contract §2 order).
+
+        Order: (1) the service-level default; (2) the binding for ``agent``
+        (native registry type store, else the persisted-instance binding the
+        API layer mirrored into the registry); (3) the request ``inference``
+        override (applied last and wins). A partial override keeps the other
+        dimension from the winning step. Returns the audit echo:
+        ``{"provider", "model", "source"}`` where ``source`` is
+        ``"default" | "agent" | "request"`` (request only when the request
+        override supplied at least one dimension).
+        """
+        provider: str = self._provider
+        model: str = self._model
+        source = "default"
+
+        if agent is not None and agent != "":
+            # Persisted-instance binding first (mirrored from the ``inference``
+            # jsonb column by the API layer); fall back to the native-type
+            # manifest binding (set via ``AgentRegistry.set_inference``).
+            binding = get_agent_registry().agent_binding(agent)
+            if binding is None:
+                binding = get_agent_registry().inference(agent)
+            if binding:
+                if binding.get("provider"):
+                    provider = binding["provider"]
+                if binding.get("model"):
+                    model = binding["model"]
+                source = "agent"
+
+        if inference is not None:
+            if inference.provider is not None and inference.provider != "":
+                provider = inference.provider
+            if inference.model is not None and inference.model != "":
+                model = inference.model
+            if inference.provider is not None or inference.model is not None:
+                source = "request"
+
+        return {"provider": provider, "model": model, "source": source}
 
     # -- transport ---------------------------------------------------------
 
@@ -508,26 +583,40 @@ class AskService:
                     "request_id": str(uuid4()),
                     "timestamp": datetime.now(UTC).isoformat(),
                     "status": "invalid_request",
+                    "inference": self._resolve_inference(
+                        request.agent, request.inference
+                    ),
                     "detail": "'question' is required and must be non-empty.",
                     "answer": None,
                 },
             )
         request_id = str(uuid4())
         ctx = request.context
+        # Contract §2: resolve the primary provider/model *before* any inference.
+        # The audit echo is injected into every response shape (answered /
+        # policy_denied / unavailable / invalid_request) — "source" records which
+        # level won (default | agent | request).
+        audit = self._resolve_inference(request.agent, request.inference)
+        provider = audit["provider"]
+        model = audit["model"]
         package = self._compile(question, ctx, request_id)
         decision = self._preflight(ctx)
 
         # R107 pre-flight: a denial is a structured policy-denied answer —
         # no inference is ever attempted, nothing is fabricated.
         if not decision.remote_allowed:
-            return self._denial_body(request_id, decision, package)
+            outcome = self._denial_body(request_id, decision, package)
+            outcome.body["inference"] = audit
+            return outcome
 
         if not self.transport_available:
             exc = OmniRouteUnavailableError(
-                [(self._provider, self._model)],
-                {(self._provider, self._model): "no transport configured"},
+                [(provider, model)],
+                {(provider, model): "no transport configured"},
             )
-            return self._unavailable_body(request_id, exc, package)
+            outcome = self._unavailable_body(request_id, exc, package)
+            outcome.body["inference"] = audit
+            return outcome
 
         evidence = _package_refs(package)
         payload = self._remote_payload(question, ctx, evidence)
@@ -536,8 +625,8 @@ class AskService:
         route = InferenceRoute(
             id=f"route-{request_id}",
             request_key=f"ask-{request_id}",
-            primary_model=self._model,
-            primary_provider=self._provider,
+            primary_model=model,
+            primary_provider=provider,
             strategy="policy",
         )
         req = InferenceRequest(
@@ -548,12 +637,14 @@ class AskService:
 
         adapter = OmniRouteAdapter()
         if self._transport is not None:
-            adapter.add_provider(self._provider, self._transport)
+            adapter.add_provider(provider, self._transport)
 
         try:
             response = adapter.route(route, req)
         except OmniRouteUnavailableError as exc:
-            return self._unavailable_body(request_id, exc, package)
+            outcome = self._unavailable_body(request_id, exc, package)
+            outcome.body["inference"] = audit
+            return outcome
 
         citations, ungrounded, grounded = _grounded_citations(response.content, package)
         fixture = bool(self._transport and self._transport.fixture_mode)
@@ -571,6 +662,7 @@ class AskService:
             "ungrounded_claims": ungrounded,
             "model": response.model,
             "provider": response.provider,
+            "inference": audit,
             "route": {
                 "model": self._model,
                 "provider": self._provider,

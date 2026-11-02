@@ -42,6 +42,7 @@ from backend.services.incident_agent import (
     AgentNotFoundError,
     AgentService,
 )
+from backend.inference.providers import _sanitize_binding
 
 # A single process-wide registry (the native types are static and shared);
 # building it per-request would just repeat the same 14 manifests.
@@ -84,6 +85,9 @@ def _manifest_to_row(manifest) -> dict[str, Any]:
             if capabilities is not None
             else None
         ),
+        # Per-agent inference binding (contract §3); native types carry it on
+        # the manifest (set via ``AgentRegistry.set_inference``), else ``None``.
+        "inference": _sanitize_binding(getattr(manifest, "inference", None)),
         # No backing store yet — do not fabricate live telemetry.
         "lastHeartbeat": None,
         "cpuUsage": None,
@@ -145,6 +149,14 @@ class AgentCreateRequest(BaseModel):
         default=None, description="Optional system prompt template"
     )
     tools: list[str] = Field(default_factory=list, description="Tool names")
+    inference: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional per-agent inference binding, e.g. "
+            '{"provider": "omniroute", "model": "claude-sonnet-4"}. '
+            "Both keys are optional; null means 'use the default' (contract §3)."
+        ),
+    )
 
 
 def _agent_service(request: Request) -> AgentService | None:
@@ -192,6 +204,7 @@ async def create_agent(
             description=payload.description,
             prompt_template=payload.prompt_template,
             tools=payload.tools,
+            inference=payload.inference,
         )
     except AgentNameConflictError:
         raise HTTPException(
@@ -216,6 +229,13 @@ class AgentUpdateRequest(BaseModel):
         default=None, description="Optional system prompt template"
     )
     tools: list[str] | None = Field(default=None, description="Tool names")
+    inference: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Optional per-agent inference binding; a supplied dict sets it. "
+            "Absent/null leaves the existing binding unchanged (contract §4)."
+        ),
+    )
 
 
 @router.patch("/api/agents/{agent_id}")
@@ -240,6 +260,7 @@ async def update_agent(
             description=payload.description,
             prompt_template=payload.prompt_template,
             tools=payload.tools,
+            inference=payload.inference,
         )
     except AgentNotFoundError:
         raise HTTPException(

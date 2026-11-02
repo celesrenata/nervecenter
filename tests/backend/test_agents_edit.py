@@ -236,3 +236,96 @@ class TestGetResolvesPersisted:
         with TestClient(app_no_db) as client:
             resp = client.get("/agents/not-a-native-type")
             assert resp.status_code == 404, resp.text
+
+
+# ─── Per-agent inference binding round-trip (INFER CONTROL CONTRACT §3/§4) ───
+
+
+class TestInferenceBindingRoundTrip:
+    """The ``inference`` binding persists, projects, and partially updates.
+
+    ``POST`` sets it; the row projects it; ``PATCH`` overwrites it; an absent
+    ``inference`` on ``PATCH`` leaves the column unchanged (contract §4
+    "absent/null leaves unchanged").
+    """
+
+    async def test_create_sets_and_projects_inference(self, agent_service):
+        row = await _seed(
+            agent_service,
+            inference={"provider": "openai", "model": "gpt-4o-mini"},
+        )
+        assert row["inference"] == {"provider": "openai", "model": "gpt-4o-mini"}
+        # Re-fetch → still present.
+        again = await agent_service.get(row["id"])
+        assert again["inference"] == {"provider": "openai", "model": "gpt-4o-mini"}
+
+    async def test_create_without_inference_is_none(self, agent_service):
+        row = await _seed(agent_service)
+        assert row["inference"] is None
+
+    async def test_update_overwrites_inference(self, agent_service):
+        row = await _seed(
+            agent_service,
+            inference={"provider": "openai", "model": "gpt-4o-mini"},
+        )
+        updated = await agent_service.update(
+            row["id"], inference={"model": "claude-sonnet-4"}
+        )
+        assert updated["inference"] == {"model": "claude-sonnet-4"}
+
+    async def test_update_omitted_inference_leaves_binding(self, agent_service):
+        # Contract §4: absent inference → column unchanged (no clear via PATCH).
+        row = await _seed(agent_service, inference={"model": "bound-model"})
+        updated = await agent_service.update(row["id"], description="new desc")
+        assert updated["inference"] == {"model": "bound-model"}
+
+    async def test_get_inference_returns_binding(self, agent_service):
+        row = await _seed(agent_service, inference={"model": "q"})
+        assert await agent_service.get_inference(row["id"]) == {"model": "q"}
+        assert await agent_service.get_inference(
+            "00000000-0000-4000-8000-000000000000"
+        ) is None
+
+    async def test_endpoint_create_and_get_round_trip(self, app_with_db):
+        # Write routes are registered at the full ``/api/agents`` path; the
+        # read route (and its legacy variant) lives at ``/agents/{id}``.
+        with TestClient(app_with_db) as client:
+            created = client.post(
+                "/api/agents",
+                json={
+                    "name": "infer-agent",
+                    "type": "planner",
+                    "inference": {"provider": "anthropic", "model": "claude-haiku"},
+                },
+            )
+            assert created.status_code == 201, created.text
+            agent_id = created.json()["id"]
+            assert created.json()["inference"] == {
+                "provider": "anthropic",
+                "model": "claude-haiku",
+            }
+
+            fetched = client.get(f"/agents/{agent_id}")
+            assert fetched.status_code == 200, fetched.text
+            assert fetched.json()["inference"] == {
+                "provider": "anthropic",
+                "model": "claude-haiku",
+            }
+
+    async def test_endpoint_patch_overwrites_inference(self, app_with_db):
+        with TestClient(app_with_db) as client:
+            created = client.post(
+                "/api/agents",
+                json={
+                    "name": "infer-agent-2",
+                    "type": "planner",
+                    "inference": {"model": "before"},
+                },
+            )
+            agent_id = created.json()["id"]
+            patched = client.patch(
+                f"/api/agents/{agent_id}",
+                json={"inference": {"model": "after"}},
+            )
+            assert patched.status_code == 200, patched.text
+            assert patched.json()["inference"] == {"model": "after"}

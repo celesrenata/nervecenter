@@ -50,6 +50,7 @@ write and created agents show up in ``GET /agents``.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, Index, String, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -106,6 +107,10 @@ class Agent(Base):
     description: Mapped[str | None] = mapped_column(String, nullable=True)
     prompt_template: Mapped[str | None] = mapped_column(String, nullable=True)
     tools: Mapped[list[str]] = mapped_column(Jsonb, default=list, nullable=False)
+    #: Optional per-agent inference binding (contract §3): ``{"provider": str,
+    #: "model": str}`` (either key optional) or ``None`` (use the default).
+    #: NULL-allowed jsonb — a NULL column means "unbound → default".
+    inference: Mapped[dict[str, Any] | None] = mapped_column(Jsonb, default=None, nullable=True)
 
     def __repr__(self) -> str:
         return f"<Agent id={self.id!r} name={self.name!r} status={self.status!r}>"

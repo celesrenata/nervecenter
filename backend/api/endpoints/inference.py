@@ -9,13 +9,21 @@ the endpoint never fabricates providers.
 """
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from backend.api.endpoints._helpers import list_response
 from backend.api.models import ListResponse
-from backend.inference.providers import build_provider_pool, omniroute_default_info
+from backend.inference.providers import (
+    available_models,
+    build_provider_pool,
+    default_inference,
+    omniroute_default_info,
+)
 
 router = APIRouter(prefix="/api/inference", tags=["inference"])
 
@@ -30,9 +38,43 @@ async def list_providers() -> ListResponse:
     extra entry (``provider: "omniroute"``, ``default: true``) is
     appended after the env-configured ones.
     """
+    return list_response(_provider_rows())
+
+
+def _provider_rows() -> list[dict[str, Any]]:
+    """The sanitized provider rows shared by ``/providers`` and ``/available``."""
     _, providers = build_provider_pool()
     data: list[dict[str, Any]] = [dict(entry) for entry in providers]
     omniroute_info = omniroute_default_info()
     if omniroute_info is not None:
         data.append(dict(omniroute_info))
-    return list_response(data)
+    return data
+
+
+@router.get("/available")
+@router.get("/available/")
+async def list_available() -> JSONResponse:
+    """Return the selectable provider/model surface for inference (contract §1).
+
+    Result: ``{"providers": [...], "models": [...], "default": {"provider",
+    "model"}}``. ``providers`` are the sanitized ``NERVE_INFERENCE_PROVIDERS``
+    entries plus the OmniRoute default; ``models`` is ``NERVE_INFER_MODELS``
+    (else the configured provider ``model_id``s, else ``[]``); ``default`` is the
+    ``NERVE_INFER_DEFAULT_*`` env (else ``omniroute`` / ``nerve-ask``). All honest
+    — never a fabricated provider or model.
+    """
+    return JSONResponse(
+        status_code=200,
+        content={
+            "accepted": True,
+            "executed": True,
+            "service": "inference",
+            "request_id": str(uuid4()),
+            "timestamp": datetime.now(UTC).isoformat(),
+            "result": {
+                "providers": _provider_rows(),
+                "models": available_models(),
+                "default": default_inference(),
+            },
+        },
+    )

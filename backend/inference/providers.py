@@ -52,6 +52,16 @@ import os
 from typing import Any
 
 import structlog
+
+#: Env var holding the JSON array of available model ids (contract §1).
+INFER_MODELS_ENV_VAR = "NERVE_INFER_MODELS"
+#: Env var holding the default inference provider name.
+DEFAULT_PROVIDER_ENV_VAR = "NERVE_INFER_DEFAULT_PROVIDER"
+#: Env var holding the default inference model name.
+DEFAULT_MODEL_ENV_VAR = "NERVE_INFER_DEFAULT_MODEL"
+#: AskService constructor defaults, used when the env vars are absent.
+_DEFAULT_PROVIDER = "omniroute"
+_DEFAULT_MODEL = "nerve-ask"
 from pydantic import BaseModel, Field
 
 from backend.inference.adapter import (
@@ -283,3 +293,65 @@ def omniroute_default_info() -> dict[str, Any] | None:
         "capabilities": ["generation"],
         "default": True,
     }
+
+
+def available_models() -> list[str]:
+    """Return the list of selectable model ids, honestly (contract §1).
+
+    Resolution order:
+    1. ``NERVE_INFER_MODELS`` (a JSON array of strings) when set and valid.
+    2. The ``model_id`` values of the configured provider entries (in
+       config order, de-duplicated) when there is no explicit list.
+    3. ``[]`` — never a fabricated model list.
+    """
+    raw = (os.environ.get(INFER_MODELS_ENV_VAR) or "").strip()
+    if raw:
+        try:
+            parsed = json.loads(raw)
+        except (json.JSONDecodeError, TypeError) as exc:
+            log.warning("infer_models_env_invalid", detail=str(exc))
+            parsed = None
+        if isinstance(parsed, list):
+            return [str(m) for m in parsed if m]
+    _, providers = build_provider_pool()
+    seen: list[str] = []
+    for entry in providers:
+        model_id = entry.get("model_id")
+        if model_id and model_id not in seen:
+            seen.append(str(model_id))
+    return seen
+
+
+def default_inference() -> dict[str, str]:
+    """Return the default ``{"provider", "model"}`` inference binding (contract §1).
+
+    ``NERVE_INFER_DEFAULT_PROVIDER`` / ``NERVE_INFER_DEFAULT_MODEL`` win when set;
+    otherwise the AskService constructor defaults (``omniroute`` / ``nerve-ask``).
+    """
+    provider = (os.environ.get(DEFAULT_PROVIDER_ENV_VAR) or "").strip()
+    model = (os.environ.get(DEFAULT_MODEL_ENV_VAR) or "").strip()
+    return {
+        "provider": provider or _DEFAULT_PROVIDER,
+        "model": model or _DEFAULT_MODEL,
+    }
+
+
+def _sanitize_binding(raw: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Project a raw ``{"provider", "model"}`` binding into its clean wire shape.
+
+    Drops any keys other than ``provider`` / ``model`` (unknown keys are not
+    part of the contract §3 wire shape), strips and coerces the two string
+    values, and returns ``None`` when the result would be empty — an empty
+    binding means "unbound → use the default" (contract §3 "null means
+    'unbound'").
+    """
+    if raw is None:
+        return None
+    provider = str(raw.get("provider") or "").strip()
+    model = str(raw.get("model") or "").strip()
+    out: dict[str, Any] = {}
+    if provider:
+        out["provider"] = provider
+    if model:
+        out["model"] = model
+    return out or None

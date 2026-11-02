@@ -48,6 +48,32 @@ export interface ProvidersResponse {
   }
 }
 
+// ─── GET /api/inference/available (INFER_CONTROL_CONTRACT.md §1) ────────────
+
+/**
+ * Result of `GET /api/inference/available` — the selectable inference
+ * surface: configured providers, the model list, and the service-level
+ * default.
+ */
+export interface AvailableInference {
+  /** Exact rows of `GET /api/inference/providers` (sanitized). */
+  providers: ProviderInfo[]
+  /** `NERVE_INFER_MODELS` when set, else provider `model_id`s, else `[]`. */
+  models: string[]
+  /** Service-level default; `omniroute` / `nerve-ask` when unset. */
+  default: { provider: string; model: string }
+}
+
+/** Outer envelope of the response; the payload lives under `result`. */
+export interface AvailableEnvelope {
+  accepted: boolean
+  executed: boolean
+  service: string
+  request_id: string
+  timestamp: string
+  result: AvailableInference
+}
+
 // ─── Real API implementation ─────────────────────────────────────────────────
 
 export const realInferenceApi = {
@@ -55,6 +81,12 @@ export const realInferenceApi = {
     const res = await apiFetch('/api/inference/providers')
     if (!res.ok) throw await apiErrorFromResponse(res)
     return (await res.json()) as ProvidersResponse
+  },
+  getAvailable: async (): Promise<AvailableInference> => {
+    const res = await apiFetch('/api/inference/available')
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    const body = (await res.json()) as AvailableEnvelope
+    return body.result
   },
 }
 
@@ -68,6 +100,12 @@ export const mockInferenceApi = {
       request_id: 'mock',
       timestamp: new Date().toISOString(),
     },
+  }),
+  getAvailable: async (): Promise<AvailableInference> => ({
+    providers: [],
+    models: [],
+    // The AskService constructor defaults — honest, not fabricated providers.
+    default: { provider: 'omniroute', model: 'nerve-ask' },
   }),
 }
 

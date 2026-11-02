@@ -18,8 +18,8 @@ from backend.api.app import create_app
 from backend.context.ask import (
     AskRequest,
     AskService,
-    set_ask_service,
     reset_ask_service,
+    set_ask_service,
 )
 from backend.inference.omniroute import (
     OmniRouteTransport,
@@ -27,7 +27,6 @@ from backend.inference.omniroute import (
 )
 from backend.policy.pdp import INFER_ROUTE_ACTION, PolicyDecisionPoint
 from schemas.nc_platform import NCPolicy
-
 
 _ULID_BODY = "0123456789ABCDEFGHJKMNPTWX"
 assert len(_ULID_BODY) == 26
@@ -242,7 +241,11 @@ class TestAskPipeline:
         assert body["executed"] is False
 
         # Should be a clear denial, not a fabricated response
-        assert "answer" not in body or body["answer"] is None or "cannot be answered" in body["answer"]
+        assert (
+            "answer" not in body
+            or body["answer"] is None
+            or "cannot be answered" in body["answer"]
+        )
         assert body["policy"]["denied"] is True
 
         # Check that no evidence was generated
@@ -408,6 +411,154 @@ class TestAskPipeline:
                     "required" in body["detail"].lower()
                     or "non-empty" in body["detail"].lower()
                 )
+
+
+# ─── Inference binding resolution (INFER CONTROL CONTRACT §2) ─────────────────
+
+
+@pytest.fixture(autouse=True)
+def _clean_agent_bindings():
+    """Isolate the process-wide registry binding store per test."""
+    from backend.agents.registry import reset_agent_registry
+
+    reset_agent_registry()
+    yield
+    reset_agent_registry()
+
+
+class TestInferenceResolution:
+    """Resolution order + audit echo for the ask pipeline (contract §2).
+
+    Order: service default → agent binding (persisted-instance mirror first,
+    then the native-type manifest binding) → request override (wins). Every
+    response shape echoes the winner under ``body["inference"]`` as
+    ``{"provider", "model", "source"}``.
+    """
+
+    def test_default_when_no_agent_or_override(self, dummy_transport):
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(AskRequest(question="status check"))
+        assert outcome.status_code == 200
+        audit = outcome.body["inference"]
+        assert audit == {"provider": "omniroute", "model": "nerve-ask", "source": "default"}
+
+    def test_request_override_wins(self, dummy_transport):
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(
+            AskRequest(
+                question="status check",
+                inference={"model": "custom-model"},
+            )
+        )
+        assert outcome.status_code == 200
+        audit = outcome.body["inference"]
+        assert audit["provider"] == "omniroute"  # untouched dimension kept from default
+        assert audit["model"] == "custom-model"
+        assert audit["source"] == "request"
+
+    def test_agent_binding_native_type(self, dummy_transport):
+        from backend.agents.registry import AGENT_PLANNER, get_agent_registry
+
+        registry = get_agent_registry()
+        registry.set_inference(
+            AGENT_PLANNER, {"provider": "anthropic", "model": "claude-sonnet-4"}
+        )
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(AskRequest(question="status check", agent="planner"))
+        assert outcome.status_code == 200
+        assert outcome.body["inference"] == {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4",
+            "source": "agent",
+        }
+
+    def test_agent_binding_persisted_instance(self, dummy_transport):
+        from backend.agents.registry import get_agent_registry
+
+        get_agent_registry().set_agent_binding(
+            "agent-123", {"model": "persisted-bound-model"}
+        )
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(AskRequest(question="status check", agent="agent-123"))
+        assert outcome.status_code == 200
+        audit = outcome.body["inference"]
+        assert audit["model"] == "persisted-bound-model"
+        assert audit["provider"] == "omniroute"  # from default (binding had no provider)
+        assert audit["source"] == "agent"
+
+    def test_persisted_binding_beats_native_type(self, dummy_transport):
+        from backend.agents.registry import AGENT_PLANNER, get_agent_registry
+
+        registry = get_agent_registry()
+        registry.set_inference(AGENT_PLANNER, {"model": "native-model"})
+        registry.set_agent_binding("planner", {"model": "persisted-model"})
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(AskRequest(question="status check", agent="planner"))
+        assert outcome.body["inference"]["model"] == "persisted-model"
+
+    def test_request_override_beats_agent_binding(self, dummy_transport):
+        from backend.agents.registry import get_agent_registry
+
+        get_agent_registry().set_agent_binding("agent-1", {"model": "agent-model"})
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(
+            AskRequest(
+                question="status check",
+                agent="agent-1",
+                inference={"model": "request-model"},
+            )
+        )
+        audit = outcome.body["inference"]
+        assert audit["model"] == "request-model"
+        assert audit["source"] == "request"
+
+    def test_partial_request_keeps_agent_dimension(self, dummy_transport):
+        from backend.agents.registry import get_agent_registry
+
+        get_agent_registry().set_agent_binding(
+            "agent-1", {"provider": "openai", "model": "agent-model"}
+        )
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(
+            AskRequest(
+                question="status check",
+                agent="agent-1",
+                inference={"provider": "anthropic"},
+            )
+        )
+        audit = outcome.body["inference"]
+        assert audit["provider"] == "anthropic"  # request dimension
+        assert audit["model"] == "agent-model"  # agent dimension kept
+        assert audit["source"] == "request"
+
+    def test_unbound_agent_falls_back_to_default(self, dummy_transport):
+        service = _answered_service(dummy_transport)
+        outcome = service.ask(AskRequest(question="status check", agent="no-such-agent"))
+        assert outcome.status_code == 200
+        assert outcome.body["inference"] == {
+            "provider": "omniroute",
+            "model": "nerve-ask",
+            "source": "default",
+        }
+
+
+class TestInvalidRequestInferenceEcho:
+    """The 422 invalid_request shape echoes the resolved inference audit (contract §2)."""
+
+    def test_empty_question_echoes_agent_binding(self, app_with_service):
+        from backend.agents.registry import get_agent_registry
+
+        get_agent_registry().set_agent_binding("agent-1", {"model": "agent-model"})
+        with TestClient(app_with_service) as client:
+            response = client.post(
+                "/api/context/ask",
+                json={"question": "", "agent": "agent-1"},
+            )
+        assert response.status_code == 422
+        body = response.json()
+        assert body["status"] == "invalid_request"
+        assert body["inference"]["model"] == "agent-model"
+        assert body["inference"]["source"] == "agent"
 
 
 if __name__ == "__main__":

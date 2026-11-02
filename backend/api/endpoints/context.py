@@ -28,7 +28,8 @@ from fastapi import Request
 from starlette.responses import JSONResponse
 
 from backend.api.endpoints._helpers import make_read_router
-from backend.context.ask import AskRequest, AskService, get_ask_service
+from backend.agents.registry import get_agent_registry
+from backend.context.ask import AskInference, AskRequest, AskService, get_ask_service
 
 router = make_read_router(
     prefix="/api/context",
@@ -70,6 +71,7 @@ async def ask(request: Request, body: AskRequest) -> JSONResponse:
     """
     question = (body.question or "").strip()
     if not question:
+        audit = _resolve_audit(request, body.agent, body.inference)
         return JSONResponse(
             status_code=422,
             content={
@@ -80,10 +82,65 @@ async def ask(request: Request, body: AskRequest) -> JSONResponse:
                 "timestamp": datetime.now(UTC).isoformat(),
                 "status": "invalid_request",
                 "detail": "'question' is required and must be non-empty.",
+                "inference": audit,
                 "result": None,
             },
         )
 
+
     svc = _ask_service(request)
-    outcome = svc.ask(AskRequest(question=question, context=body.context))
+
+    # Contract §2: when the request names an agent, hydrate the process-wide
+    # registry's in-process binding store from the persisted instance's
+    # ``inference`` jsonb column so the (synchronous) ``ask`` resolution can
+    # read it. ``AskService.ask`` resolves in this order: default → agent
+    # binding → request override, and echoes the winner as the ``inference``
+    # audit key in every response shape.
+    if body.agent is not None and body.agent != "":
+        await _hydrate_agent_binding(request, body.agent)
+
+    outcome = svc.ask(
+        AskRequest(
+            question=question,
+            context=body.context,
+            agent=body.agent,
+            inference=body.inference,
+        )
+    )
     return JSONResponse(status_code=outcome.status_code, content=outcome.body)
+
+
+def _resolve_audit(
+    request: Request, agent: str | None, inference: AskInference | None
+) -> dict[str, str]:
+    """Echo the resolved inference audit for the invalid_request 422 shape."""
+    svc = _ask_service(request)
+    return svc._resolve_inference(agent, inference)
+
+
+async def _hydrate_agent_binding(request: Request, agent_id: str) -> None:
+    """Mirror a persisted agent's ``inference`` jsonb into the process-wide
+    registry's in-process binding store (contract §2 step 2).
+
+    Only native agent *type* manifests are mirrored (their binding lives on the
+    manifest via ``AgentRegistry.set_inference``); a persisted *instance* id is
+    mirrored via ``AgentRegistry.set_agent_binding``. When no DB engine is wired
+    (``NERVE_DB_URL`` unset) the agent is assumed to be a native type and the
+    resolution falls through to the manifest binding — no error is raised for a
+    missing engine, keeping the endpoint functional in fixture-only / no-DB
+    deployments.
+    """
+    from backend.api.endpoints.agents import _agent_service
+
+    svc = _agent_service(request)
+    registry = get_agent_registry()
+    if registry.get(agent_id) is not None:
+        # ``agent_id`` is a native type — its binding lives on the manifest
+        # (set via ``AgentRegistry.set_inference``); nothing to hydrate.
+        return
+    if svc is None:
+        # No DB engine — assume native type, fall through to manifest binding.
+        return
+    binding = await svc.get_inference(agent_id)
+    if binding is not None:
+        registry.set_agent_binding(agent_id, binding)

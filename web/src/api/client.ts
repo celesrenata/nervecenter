@@ -836,14 +836,35 @@ const realApi = {
   // Returns the full answer (200) or the accepted-but-not-executed ack
   // (202, `{accepted, executed, detail, request_id, ...}`); AskView renders
   // whichever shape arrives.
-  postAsk: async (message: string) => {
+  //
+  // INFER_CONTROL_CONTRACT.md §2: the body gains two OPTIONAL fields —
+  // `agent` (native agent type name or persisted agent id) and a nested
+  // `inference` override `{model?, provider?}`. Both are omitted when
+  // unspecified so pre-Batch-4 backends (which are `extra: "forbid"` and
+  // reject unknown keys) keep working.
+  postAsk: async (
+    message: string,
+    opts?: {
+      agent?: string
+      inference?: { model?: string; provider?: string }
+    },
+  ) => {
+    const body: Record<string, unknown> = { question: message }
+    if (opts?.agent) body.agent = opts.agent
+    if (opts?.inference) {
+      const inf: Record<string, string> = {}
+      if (opts.inference.model) inf.model = opts.inference.model
+      if (opts.inference.provider) inf.provider = opts.inference.provider
+      if (Object.keys(inf).length > 0) body.inference = inf
+    }
     const res = await apiFetch('/context/ask', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      // The T003-04 AskRequest is `extra: "forbid"` — only `question` (plus an
-      // optional `context`) is accepted. The legacy `message` alias is no
-      // longer part of the contract and would trip the 422 rejection.
-      body: JSON.stringify({ question: message }),
+      // The T003-04 AskRequest is `extra: "forbid"` — only `question` (plus
+      // optional `context`, and Batch-4 `agent` / `inference`) is accepted.
+      // The legacy `message` alias is no longer part of the contract and
+      // would trip the 422 rejection.
+      body: JSON.stringify(body),
     })
     return { data: await responseOrThrow(res), status: res.status }
   },
@@ -1211,7 +1232,13 @@ const mockApi = {
   },
 
   // Ask endpoint
-  postAsk: async (_message: string) => {
+  postAsk: async (
+    _message: string,
+    _opts?: {
+      agent?: string
+      inference?: { model?: string; provider?: string }
+    },
+  ) => {
     await delay(600)
     return { data: mockAskResponse, status: 200 }
   },
@@ -1803,7 +1830,10 @@ export const systemsApi = {
 }
 
 export const askApi = {
-  post: (message: string) => api.postAsk(message),
+  post: (
+    message: string,
+    opts?: { agent?: string; inference?: { model?: string; provider?: string } },
+  ) => api.postAsk(message, opts),
 }
 
 export const goalsApi = {

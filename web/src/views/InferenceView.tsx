@@ -1,6 +1,10 @@
 import { useState, useEffect } from 'react'
 import { computeApi, routesApi, modelHistoryApi } from '../api/client'
-import { inferenceApi, type ProviderInfo } from '../api/inference'
+import {
+  inferenceApi,
+  type ProviderInfo,
+  type AvailableInference,
+} from '../api/inference'
 
 interface ComputeNode {
   id: string
@@ -66,6 +70,36 @@ const InferenceView = () => {
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [providersLoading, setProvidersLoading] = useState(true)
   const [providersError, setProvidersError] = useState<string | null>(null)
+
+  // Available models/providers (INFER_CONTROL_CONTRACT.md §1) — lazy: fetched
+  // only when the user opens the section, so a plain page load issues no
+  // request the current backend may not expose yet.
+  const [available, setAvailable] = useState<AvailableInference | null>(null)
+  const [availableLoading, setAvailableLoading] = useState(false)
+  const [availableError, setAvailableError] = useState<string | null>(null)
+  const [availableOpen, setAvailableOpen] = useState(false)
+
+  const loadAvailable = async () => {
+    setAvailableLoading(true)
+    setAvailableError(null)
+    try {
+      setAvailable(await inferenceApi.getAvailable())
+    } catch (err) {
+      setAvailableError(
+        err instanceof Error ? err.message : 'Failed to load available models',
+      )
+    } finally {
+      setAvailableLoading(false)
+    }
+  }
+
+  const toggleAvailable = () => {
+    const next = !availableOpen
+    setAvailableOpen(next)
+    if (next && available === null && !availableLoading) {
+      void loadAvailable()
+    }
+  }
 
   useEffect(() => {
     const fetchData = async () => {
@@ -198,6 +232,123 @@ const InferenceView = () => {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* Available models & providers (GET /inference/available, lazy). */}
+      <div className="bg-elevated rounded-lg shadow-lg p-6">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-xl font-semibold text-primary">
+            Available models & providers
+          </h3>
+          <button
+            type="button"
+            data-testid="inference-available-toggle"
+            aria-expanded={availableOpen}
+            aria-controls="inference-available-panel"
+            onClick={toggleAvailable}
+            className="text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+          >
+            {availableOpen ? 'Hide' : 'Show'}
+          </button>
+        </div>
+        <p className="text-sm text-muted mb-4">
+          The models and providers you can select for a request or persist on an
+          agent, plus the current default. Loaded on demand.
+        </p>
+
+        {availableOpen && (
+          <div id="inference-available-panel" data-testid="inference-available-panel">
+            {availableError ? (
+              <div className="text-center py-8">
+                <p
+                  data-testid="inference-available-error"
+                  className="text-red-700 dark:text-red-300 font-medium"
+                >
+                  {availableError}
+                </p>
+                <p className="text-sm text-muted mt-2 max-w-md mx-auto">
+                  The available-models endpoint could not be reached. Retry the
+                  page; nothing is invented here.
+                </p>
+              </div>
+            ) : availableLoading ? (
+              <div className="text-center py-12">Loading...</div>
+            ) : available ? (
+              <div className="space-y-4">
+                <div
+                  data-testid="inference-available-default"
+                  className="flex items-center gap-2 text-sm bg-hover p-3 rounded-lg"
+                >
+                  <span className="text-muted">Current default:</span>
+                  <span className="font-medium text-primary">
+                    {available.default.provider} / {available.default.model}
+                  </span>
+                  <span className="text-xs px-2 py-0.5 rounded bg-blue-500 text-white">
+                    default
+                  </span>
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-primary mb-2">
+                    Providers ({available.providers.length})
+                  </h4>
+                  {available.providers.length === 0 ? (
+                    <EmptyState
+                      testId="inference-empty-available"
+                      title="No providers available."
+                      body="No providers are reachable right now. Configure NERVE_INFERENCE_PROVIDERS and the available options will appear here."
+                    />
+                  ) : (
+                    <ul className="space-y-2">
+                      {available.providers.map((p) => (
+                        <li
+                          key={p.provider}
+                          data-testid="inference-available-provider"
+                          className="flex items-center gap-2 text-sm bg-hover p-3 rounded-lg"
+                        >
+                          <span className="font-medium text-primary">
+                            {p.provider}
+                          </span>
+                          {p.default && (
+                            <span className="text-xs px-2 py-0.5 rounded bg-blue-500 text-white">
+                              default
+                            </span>
+                          )}
+                          <span className="text-xs text-muted ml-auto">
+                            {p.default ? `uses ${p.model_id}` : ''}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+                <div>
+                  <h4 className="text-sm font-semibold text-primary mb-2">
+                    Models ({available.models.length})
+                  </h4>
+                  {available.models.length === 0 ? (
+                    <p className="text-sm text-muted">No models reported.</p>
+                  ) : (
+                    <ul className="flex flex-wrap gap-2">
+                      {available.models.map((m) => (
+                        <li
+                          key={m}
+                          data-testid="inference-available-model"
+                          className="text-sm px-2 py-1 rounded bg-hover text-primary"
+                        >
+                          {m}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8 text-sm text-muted">
+                Select “Show” to load the available models and providers.
+              </div>
+            )}
           </div>
         )}
       </div>

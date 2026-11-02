@@ -175,6 +175,35 @@ export function LoginView() {
           )}
         </div>
 
+        {/* SSO-FIRST (T-WEBUI): when SSO is enabled it is the primary sign-in —
+            the username/password form becomes secondary. Rendered only when
+            enabled; a failed /auth/sso/config fetch shows nothing (never a dead
+            button). */}
+        {ssoEnabled && (
+          <button
+            type="button"
+            data-testid="login-sso"
+            onClick={handleSso}
+            className="mt-4 w-full inline-flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors"
+          >
+            <ShieldCheckIcon size={18} />
+            <span>Sign in with SSO</span>
+          </button>
+        )}
+
+        {ssoEnabled && (
+          <div className="relative my-6" aria-hidden="true">
+            <div className="absolute inset-0 flex items-center">
+              <div className="w-full border-t border-gray-200 dark:border-gray-600" />
+            </div>
+            <div className="relative flex justify-center">
+              <span className="px-3 text-xs uppercase tracking-wide bg-elevated text-muted">
+                or username & password
+              </span>
+            </div>
+          </div>
+        )}
+
         <form onSubmit={handleSubmit}>
           <div className="mb-4">
             <label
@@ -246,29 +275,6 @@ export function LoginView() {
             )}
           </button>
         </form>
-
-        {ssoEnabled && (
-          <div className="mt-6">
-            <div className="relative mb-4" aria-hidden="true">
-              <div className="absolute inset-0 flex items-center">
-                <div className="w-full border-t border-gray-200 dark:border-gray-600" />
-              </div>
-              <div className="relative flex justify-center">
-                <span className="px-3 text-xs uppercase tracking-wide bg-elevated text-muted">
-                  Or
-                </span>
-              </div>
-            </div>
-            <button
-              type="button"
-              onClick={handleSso}
-              className="w-full inline-flex items-center justify-center gap-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-200 font-medium py-2 px-4 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors"
-            >
-              <ShieldCheckIcon size={18} />
-              <span>Sign in with SSO</span>
-            </button>
-          </div>
-        )}
       </div>
     </div>
   )

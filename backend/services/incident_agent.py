@@ -273,6 +273,7 @@ def _agent_to_row(orm: AgentORM) -> dict[str, Any]:
         "memoryUsage": None,
         "tasksCompleted": None,
         "tasksFailed": None,
+        "inference": orm.inference,
     }
 
 
@@ -354,11 +355,13 @@ class AgentService:
         description: str | None = None,
         prompt_template: str | None = None,
         tools: list[str] | None = None,
+        inference: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Create and persist a new agent instance. Returns the web row (201).
 
-        Raises :class:`AgentNameConflictError` when ``name`` collides with an
-        existing row (unique constraint).
+        ``inference`` is the per-agent binding (contract §3); ``None`` means
+        "unbound → default". Raises :class:`AgentNameConflictError` when
+        ``name`` collides with an existing row (unique constraint).
         """
         factory = self._factory()
         async with factory() as session:
@@ -369,6 +372,7 @@ class AgentService:
                 description=description,
                 prompt_template=prompt_template,
                 tools=list(tools or []),
+                inference=inference,
                 updated_at=_utcnow(),
             )
             session.add(orm)
@@ -389,6 +393,21 @@ class AgentService:
             orm = await self._load(session, agent_id)
             return _agent_to_row(orm)
 
+    async def get_inference(self, agent_id: str) -> dict[str, Any] | None:
+        """Return a persisted agent's inference binding (or ``None``).
+
+        Returns ``None`` both when the agent has no binding and when the id is
+        not a persisted instance (e.g. a native type or an unknown id), so the
+        ask endpoint can silently fall through to native-type / default
+        resolution (contract §2 step 2).
+        """
+        factory = self._factory()
+        async with factory() as session:
+            orm = await session.get(AgentORM, agent_id)
+            if orm is None:
+                return None
+            return orm.inference
+
     async def update(
         self,
         agent_id: str,
@@ -397,12 +416,16 @@ class AgentService:
         description: str | None = None,
         prompt_template: str | None = None,
         tools: list[str] | None = None,
+        inference: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Partially update a persisted agent instance; returns the web row.
 
         ``None`` values leave the corresponding field unchanged (partial
-        update). ``status`` is lifecycle, not editable metadata, and is
-        deliberately never touched here. Raises
+        update, contract §4 "absent/null leaves unchanged"). ``status`` is
+        lifecycle, not editable metadata, and is deliberately never touched
+        here. ``inference`` is the nullable jsonb binding; a supplied dict
+        sets/overwrites it, and ``None`` leaves the column as-is (clearing a
+        binding is not a PATCH operation — see contract §4). Raises
         :class:`AgentNotFoundError` when the id is unknown and
         :class:`AgentNameConflictError` when a supplied ``name`` collides with
         another row (mirrors :meth:`create`).
@@ -418,6 +441,8 @@ class AgentService:
                 orm.prompt_template = prompt_template
             if tools is not None:
                 orm.tools = list(tools)
+            if inference is not None:
+                orm.inference = inference
             orm.updated_at = _utcnow()
             # Snapshot the name ahead of the commit: after `rollback()` the ORM
             # is detached, and reading `orm.name` would trigger a lazy DB load

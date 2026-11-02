@@ -1,5 +1,6 @@
 import { useState, useEffect, type FormEvent } from 'react'
 import { agentsApi, type AgentUpdatePayload } from '../api/agents'
+import { inferenceApi, type AvailableInference } from '../api/inference'
 import { apiFetch, apiErrorFromResponse, ApiError } from '../api/client'
 
 /**
@@ -30,6 +31,8 @@ interface Agent {
   memoryUsage: number | null
   tasksCompleted: number | null
   tasksFailed: number | null
+  /** Inference binding (`null`/absent = use service default). */
+  inference?: { provider?: string | null; model?: string | null } | null
 }
 
 // The 14 native agent types (spec §26), from backend/agents/registry.py.
@@ -74,6 +77,82 @@ const AgentsView = () => {
   const [editLoading, setEditLoading] = useState(false)
   const [editError, setEditError] = useState<{ status: number; detail: string } | null>(null)
   const [editSuccess, setEditSuccess] = useState(false)
+
+  // Per-agent inference control (INFER_CONTROL_CONTRACT.md §3 + web scope): a
+  // persisted agent can bind a {provider, model}. The editor is opened per-row
+  // (not on mount) so no extra requests fire during the list render. Native
+  // types are process-only manifests — they show a read-only "native default"
+  // badge and get no editor (honested: there is no write route for them here).
+  const [inferenceAgentId, setInferenceAgentId] = useState<string | null>(null)
+  const [inferProvider, setInferProvider] = useState('')
+  const [inferModel, setInferModel] = useState('')
+  const [inferBusy, setInferBusy] = useState(false)
+  const [inferError, setInferError] = useState<{ status: number; detail: string } | null>(null)
+  const [inferSuccess, setInferSuccess] = useState(false)
+  const [inferOptions, setInferOptions] = useState<AvailableInference | null>(null)
+  const [inferOptionsLoading, setInferOptionsLoading] = useState(false)
+
+  const openInference = async (agentId: string) => {
+    setInferenceAgentId(agentId)
+    setInferError(null)
+    setInferSuccess(false)
+    const agent = agents.find((a) => a.id === agentId)
+    setInferProvider(agent?.inference?.provider ?? '')
+    setInferModel(agent?.inference?.model ?? '')
+    if (inferOptions === null && !inferOptionsLoading) {
+      setInferOptionsLoading(true)
+      try {
+        setInferOptions(await inferenceApi.getAvailable())
+      } catch {
+        // Honest: empty options; the fields still accept manual values.
+        setInferOptions({ providers: [], models: [], default: { provider: 'omniroute', model: 'nerve-ask' } })
+      } finally {
+        setInferOptionsLoading(false)
+      }
+    }
+  }
+
+  const closeInference = () => {
+    setInferenceAgentId(null)
+    setInferProvider('')
+    setInferModel('')
+    setInferError(null)
+    setInferSuccess(false)
+    setInferBusy(false)
+  }
+
+  const submitInference = async () => {
+    if (!inferenceAgentId) return
+    setInferBusy(true)
+    setInferError(null)
+    setInferSuccess(false)
+    try {
+      // PATCH /api/agents/{id}: partial update carrying only the binding.
+      // A null/empty binding clears to the service default.
+      const payload: AgentUpdatePayload = {
+        inference:
+          inferProvider || inferModel
+            ? {
+                provider: inferProvider || null,
+                model: inferModel || null,
+              }
+            : null,
+      }
+      await agentsApi.update(inferenceAgentId, payload)
+      setInferSuccess(true)
+      const list = await agentsApi.list()
+      setAgents(list.data as Agent[])
+      setFetchError(null)
+    } catch (error) {
+      if (error instanceof ApiError) {
+        setInferError({ status: error.status, detail: error.detail })
+      } else {
+        setInferError({ status: 0, detail: 'Request failed (network error)' })
+      }
+    } finally {
+      setInferBusy(false)
+    }
+  }
 
   useEffect(() => {
     const fetchAgents = async () => {
@@ -529,6 +608,123 @@ const AgentsView = () => {
         </form>
       )}
 
+      {/* Per-agent inference binding editor (persisted agents only). */}
+      {inferenceAgentId && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault()
+            void submitInference()
+          }}
+          className="bg-elevated p-6 rounded-lg shadow-lg mb-6"
+          aria-label={`Inference binding for agent ${inferenceAgentId}`}
+        >
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-lg font-semibold text-primary">
+              Inference binding
+            </h2>
+            <p className="text-xs text-muted">
+              Leave both blank to use the service default.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label
+                htmlFor="agent-infer-provider"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+              >
+                Provider
+              </label>
+              <select
+                id="agent-infer-provider"
+                data-testid="agent-infer-provider"
+                value={inferProvider}
+                onChange={(e) => setInferProvider(e.target.value)}
+                disabled={inferBusy}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+              >
+                <option value="">Default</option>
+                {(inferOptions?.providers ?? []).map((p) => (
+                  <option key={p.provider} value={p.provider}>
+                    {p.provider}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label
+                htmlFor="agent-infer-model"
+                className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+              >
+                Model
+              </label>
+              <select
+                id="agent-infer-model"
+                data-testid="agent-infer-model"
+                value={inferModel}
+                onChange={(e) => setInferModel(e.target.value)}
+                disabled={inferBusy}
+                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+              >
+                <option value="">Default</option>
+                {(inferOptions?.models ?? []).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div
+            data-testid="agent-infer-error"
+            aria-live="polite"
+            className="mt-4"
+          >
+            {inferError && (
+              <div
+                className={`px-3 py-2 rounded-lg text-sm ${
+                  inferError.status === 409
+                    ? 'bg-amber-100 text-amber-900 dark:bg-amber-900/40 dark:text-amber-200'
+                    : 'bg-red-100 text-red-900 dark:bg-red-900/40 dark:text-red-200'
+                }`}
+              >
+                <span className="font-semibold">
+                  {inferError.status === 0 ? 'Error' : `HTTP ${inferError.status}`}
+                </span>
+                {' — '}
+                {inferError.detail}
+              </div>
+            )}
+            {inferSuccess && (
+              <div
+                data-testid="agent-infer-success"
+                className="px-3 py-2 rounded-lg text-sm bg-green-100 text-green-900 dark:bg-green-900/40 dark:text-green-200"
+              >
+                Inference binding updated.
+              </div>
+            )}
+          </div>
+
+          <div className="flex items-center gap-3 mt-4">
+            <button
+              type="submit"
+              data-testid="agent-infer-save"
+              disabled={inferBusy}
+              className="bg-blue-500 hover:bg-blue-600 disabled:opacity-50 text-white px-4 py-2 rounded-lg"
+            >
+              {inferBusy ? 'Saving…' : 'Save binding'}
+            </button>
+            <button
+              type="button"
+              onClick={closeInference}
+              className="text-muted px-4 py-2"
+            >
+              Cancel
+            </button>
+          </div>
+        </form>
+      )}
+
       {loading ? (
         <div className="text-center py-12">Loading...</div>
       ) : !fetchError && agents.length === 0 ? (
@@ -564,14 +760,35 @@ const AgentsView = () => {
                 {/* AG-2: text + aria-label, never a bare dot. */}
                 <div className="flex items-center gap-3">
                   {isPersisted(agent.id) && (
-                    <button
-                      type="button"
-                      data-testid="agent-edit"
-                      onClick={() => openEdit(agent.id)}
-                      className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
-                    >
-                      Detail / Edit
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        data-testid="agent-edit"
+                        onClick={() => openEdit(agent.id)}
+                        className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        Detail / Edit
+                      </button>
+                      {/* Inference binding (INFER_CONTROL_CONTRACT.md §3): the
+                          current binding shown as a badge, opened per-row. */}
+                      <span
+                        data-testid="agent-inference-badge"
+                        aria-label={`Agent ${agent.name} inference: ${
+                          agent.inference?.model ?? agent.inference?.provider ?? 'default'
+                        }`}
+                        className="text-xs font-mono text-gray-600 dark:text-gray-400"
+                      >
+                        {agent.inference?.model ?? agent.inference?.provider ?? 'default'}
+                      </span>
+                      <button
+                        type="button"
+                        data-testid="agent-inference"
+                        onClick={() => openInference(agent.id)}
+                        className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        Inference
+                      </button>
+                    </>
                   )}
                   <div
                     role="status"

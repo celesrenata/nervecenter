@@ -1,5 +1,7 @@
 import { useState, useEffect } from 'react'
 import { askApi } from '../api/client'
+import { inferenceApi, type AvailableInference } from '../api/inference'
+import { agentsApi, type Agent } from '../api/agents'
 
 interface EvidenceItem {
   statement: string
@@ -33,6 +35,48 @@ const AskView = () => {
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
 
+  // INFER_CONTROL_CONTRACT.md (web scope): optional per-request inference +
+  // agent control. The picker is COLLAPSED by default — "default" keeps the
+  // service default — so the common path sends a bare `{question}` body and
+  // pre-Batch-4 backends (AskRequest `extra: "forbid"`) keep working. Options
+  // are fetched lazily, only when the user expands the picker, so a mount
+  // issues no extra requests.
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [pickerAgents, setPickerAgents] = useState<Agent[]>([])
+  const [pickerAvailable, setPickerAvailable] = useState<AvailableInference | null>(null)
+  const [pickerLoading, setPickerLoading] = useState(false)
+  const [pickerError, setPickerError] = useState<string | null>(null)
+  const [askAgent, setAskAgent] = useState('')
+  const [askModel, setAskModel] = useState('')
+  const [askProvider, setAskProvider] = useState('')
+
+  const loadPickerOptions = async () => {
+    setPickerLoading(true)
+    setPickerError(null)
+    try {
+      const [agentsRes, availableRes] = await Promise.all([
+        agentsApi.list().catch(() => null),
+        inferenceApi.getAvailable().catch(() => null),
+      ])
+      if (agentsRes) setPickerAgents(agentsRes.data ?? [])
+      if (availableRes) setPickerAvailable(availableRes)
+    } catch {
+      // Honest: a fetch failure leaves the selects empty + a message; the
+      // default (no override) path is still fully usable.
+      setPickerError('Could not load agent / model options.')
+    } finally {
+      setPickerLoading(false)
+    }
+  }
+
+  const togglePicker = () => {
+    const next = !pickerOpen
+    setPickerOpen(next)
+    if (next && !pickerLoading && pickerAvailable === null && pickerAgents.length === 0) {
+      void loadPickerOptions()
+    }
+  }
+
   useEffect(() => {
     const initialMessages: ChatMessage[] = [
       {
@@ -60,7 +104,24 @@ const AskView = () => {
     setLoading(true)
 
     try {
-      const response = await askApi.post(input)
+      // Build the optional per-request override (INFER_CONTROL_CONTRACT.md
+      // §2). Omitted when nothing is selected so the body stays the legacy
+      // `{question}` shape.
+      const inference =
+        askModel || askProvider
+          ? {
+              ...(askModel ? { model: askModel } : {}),
+              ...(askProvider ? { provider: askProvider } : {}),
+            }
+          : undefined
+      const opts =
+        askAgent || inference
+          ? {
+              ...(askAgent ? { agent: askAgent } : {}),
+              ...(inference ? { inference } : {}),
+            }
+          : undefined
+      const response = await askApi.post(input, opts)
       const data = response.data as (AskResponse & {
         accepted?: boolean
         executed?: boolean
@@ -175,7 +236,124 @@ const AskView = () => {
             </div>
           ))}
         </div>
-        <div className="p-4 border-t border-line">
+        <div className="border-t border-line">
+          {/* Optional per-request control (INFER_CONTROL_CONTRACT.md). Collapsed
+              by default — the service default applies unless a model/provider or
+              agent is chosen. Options load lazily on expand. */}
+          <div className="px-4 pt-3">
+            <button
+              type="button"
+              data-testid="ask-advanced-toggle"
+              aria-expanded={pickerOpen}
+              aria-controls="ask-advanced-panel"
+              onClick={togglePicker}
+              className="text-xs font-medium text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-200"
+            >
+              {pickerOpen ? '▲ Hide' : '▼ Advanced'}
+              {' '}model / agent override
+            </button>
+
+            {pickerOpen && (
+              <div
+                id="ask-advanced-panel"
+                data-testid="ask-advanced-panel"
+                className="mt-3 space-y-2"
+              >
+                {pickerError && (
+                  <p
+                    data-testid="ask-advanced-error"
+                    role="alert"
+                    className="text-xs text-red-600 dark:text-red-400"
+                  >
+                    {pickerError}
+                  </p>
+                )}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <label
+                      htmlFor="ask-agent-select"
+                      className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
+                    >
+                      Agent
+                    </label>
+                    <select
+                      id="ask-agent-select"
+                      data-testid="ask-agent-select"
+                      value={askAgent}
+                      onChange={(e) => setAskAgent(e.target.value)}
+                      disabled={pickerLoading}
+                      className="w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs text-primary"
+                    >
+                      <option value="">Default (no agent)</option>
+                      {pickerAgents.map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="ask-model-select"
+                      className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
+                    >
+                      Model
+                    </label>
+                    <select
+                      id="ask-model-select"
+                      data-testid="ask-model-select"
+                      value={askModel}
+                      onChange={(e) => setAskModel(e.target.value)}
+                      disabled={pickerLoading}
+                      className="w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs text-primary"
+                    >
+                      <option value="">
+                        Default
+                        {pickerAvailable
+                          ? ` (${pickerAvailable.default.model})`
+                          : ''}
+                      </option>
+                      {(pickerAvailable?.models ?? []).map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="ask-provider-select"
+                      className="block text-xs font-medium text-gray-600 dark:text-gray-400 mb-1"
+                    >
+                      Provider
+                    </label>
+                    <select
+                      id="ask-provider-select"
+                      data-testid="ask-provider-select"
+                      value={askProvider}
+                      onChange={(e) => setAskProvider(e.target.value)}
+                      disabled={pickerLoading}
+                      className="w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs text-primary"
+                    >
+                      <option value="">
+                        Default
+                        {pickerAvailable
+                          ? ` (${pickerAvailable.default.provider})`
+                          : ''}
+                      </option>
+                      {(pickerAvailable?.providers ?? []).map((p) => (
+                        <option key={p.provider} value={p.provider}>
+                          {p.provider}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="px-4 pb-4">
           <div className="flex space-x-2">
             <input
               type="text"
@@ -195,6 +373,7 @@ const AskView = () => {
             >
               {loading ? '...' : 'Send'}
             </button>
+          </div>
           </div>
         </div>
       </div>

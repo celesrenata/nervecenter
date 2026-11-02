@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import threading
 from typing import Any
 from uuid import uuid4
 
@@ -40,6 +41,8 @@ __all__ = [
     "AgentRun",
     "Blackboard",
     "LoopDetector",
+    "get_agent_registry",
+    "reset_agent_registry",
 ]
 
 # AgentType enum
@@ -79,6 +82,10 @@ class AgentManifest:
     tools: list[str]
     loop_protection: dict[str, Any] = field(default_factory=dict)
     capabilities: AgentCapabilities | None = None
+    #: Optional per-agent inference binding (contract §3): ``{"provider": str,
+    #: "model": str}`` (either key optional) or ``None`` = use the default.
+    #: Process-wide (in-process store) — not persisted.
+    inference: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         if self.capabilities is None:
@@ -169,6 +176,11 @@ class AgentRegistry:
 
     def __init__(self) -> None:
         self._manifests: dict[AgentType, AgentManifest] = {}
+        # Process-wide store of inference bindings for *persisted* agent instances
+        # (id → binding). Hydrated from the DB by the API layer just before a sync
+        # call needs them (contract §3 — persisted instances use a jsonb column,
+        # not the manifest, so this is the in-process mirror that ``ask`` reads).
+        self._agent_inference: dict[str, dict[str, Any]] = {}
         self._register_native()
 
     def _register_native(self) -> None:
@@ -191,6 +203,73 @@ class AgentRegistry:
     def get_native_types(self) -> list[AgentType]:
         """Return the list of native agent types."""
         return list(_create_native_manifests().keys())
+
+    def set_inference(self, agent_type: AgentType, binding: dict[str, Any] | None) -> None:
+        """Set (or clear) the inference binding for a native agent type.
+
+        ``binding`` is ``{"provider": str, "model": str}`` (either key optional) or
+        ``None`` to use the default. Process-wide (in-process store, no DB). An
+        unknown type raises :class:`KeyError` — no silent write to a missing
+        manifest.
+        """
+        manifest = self._manifests.get(agent_type)
+        if manifest is None:
+            raise KeyError(agent_type)
+        # Frozen dataclass — mutate via the same escape hatch ``__post_init__`` uses.
+        object.__setattr__(manifest, "inference", binding)
+
+    def inference(self, agent_type: AgentType) -> dict[str, Any] | None:
+        """Return the inference binding for a native agent type (or ``None``)."""
+        manifest = self._manifests.get(agent_type)
+        return None if manifest is None else manifest.inference
+
+    def set_agent_binding(self, agent_id: str, binding: dict[str, Any] | None) -> None:
+        """Mirror a persisted agent instance's inference binding into the store.
+
+        ``binding`` is ``{"provider": str, "model": str}`` (either key optional) or
+        ``None``. No native-type validation — this is the in-process mirror the
+        sync :func:`ask` resolves against for a persisted agent id (contract §2
+        step 2). The source of truth is the ``agents.inference`` jsonb column.
+        """
+        if binding is None:
+            self._agent_inference.pop(agent_id, None)
+        else:
+            self._agent_inference[agent_id] = binding
+
+    def agent_binding(self, agent_id: str) -> dict[str, Any] | None:
+        """Return the mirrored inference binding for a persisted agent id (``None``
+        if it has none — e.g. the agent is a native type or unbound)."""
+        return self._agent_inference.get(agent_id)
+
+
+#: Process-wide registry singleton backing the inference bindings. Both the agent
+#: *endpoints* (which mirror a persisted instance's ``inference`` jsonb into the
+#: in-process store via :meth:`AgentRegistry.set_agent_binding`) and the synchronous
+#: :func:`backend.context.ask.AskService.ask` resolution must read the *same*
+#: instance — a per-request ``AgentRegistry()`` would be a fresh empty store.
+_agent_registry_lock = threading.Lock()
+_agent_registry: AgentRegistry | None = None
+
+
+def get_agent_registry() -> AgentRegistry:
+    """Return the process-wide :class:`AgentRegistry` singleton (lazily created).
+
+    The 14 native type manifests are immutable, so a single shared instance is
+    safe; the only mutable state is the per-agent inference binding store, which
+    is written under a lock on the instance.
+    """
+    global _agent_registry
+    with _agent_registry_lock:
+        if _agent_registry is None:
+            _agent_registry = AgentRegistry()
+        return _agent_registry
+
+
+def reset_agent_registry() -> None:
+    """Discard the process-wide registry (test hook)."""
+    global _agent_registry
+    with _agent_registry_lock:
+        _agent_registry = None
 
 
 def _create_native_manifests() -> dict[AgentType, AgentManifest]:
