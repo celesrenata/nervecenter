@@ -49,6 +49,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
+from urllib.parse import urlparse
 from typing import Any
 
 import httpx
@@ -721,6 +722,24 @@ async def probe_provider(issuer: str) -> tuple[bool, dict[str, Any] | None]:
     return ok, discovery
 
 
+def _issuer_display_name(issuer: str) -> str:
+    """Derive an honest, human-readable provider name from the issuer URL.
+
+    Uses the *last path segment* of the issuer (Keycloak/Forge-Rhok realm
+    name, e.g. ``https://sso.celestium.life/realms/celestium`` →
+    ``celestium``), falling back to the hostname, then to the raw issuer.
+    No invented names — whatever the issuer URL encodes is what the UI shows.
+    """
+    try:
+        url = urlparse(issuer)
+    except ValueError:
+        return issuer
+    segments = [s for s in url.path.split("/") if s]
+    if segments:
+        return segments[-1]
+    return url.netloc or issuer.strip().rstrip("/")
+
+
 def sso_config(ctx: AuthContext, discovery: dict[str, Any] | None = None) -> dict[str, Any]:
     """Build the ``GET /api/auth/sso/config`` body (AC-S01 shape).
 
@@ -728,6 +747,10 @@ def sso_config(ctx: AuthContext, discovery: dict[str, Any] | None = None) -> dic
     they are derived from the issuer so the shape is complete even before the
     Authentik provider exists.  ``enabled`` is true only when the provider is
     live AND a client id is configured.
+
+    ``issuer_display_name`` is an optional, derived convenience for the login
+    view (a "Sign in with <name>" label); clients that do not read it keep
+    working off the raw ``issuer``.
     """
     base = ctx.issuer_base
     discovered = discovery or {}
@@ -744,6 +767,7 @@ def sso_config(ctx: AuthContext, discovery: dict[str, Any] | None = None) -> dic
     return {
         "enabled": enabled,
         "issuer": ctx.issuer,
+        "issuer_display_name": _issuer_display_name(ctx.issuer),
         "client_id": ctx.client_id,
         "authorization_endpoint": endpoints["authorization_endpoint"],
         "token_endpoint": endpoints["token_endpoint"],

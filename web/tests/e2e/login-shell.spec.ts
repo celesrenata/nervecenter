@@ -172,7 +172,44 @@ test.describe('login view (LG-1…LG-4)', () => {
     await expect(page.locator('main h1')).toHaveText('Today')
   })
 
-  test('SSO button renders only when sso/config reports enabled', async ({
+  test('SSO-first layout: button labelled with issuer display name; form collapsed', async ({
+    page,
+  }) => {
+    // issuer_display_name is present → the button reads "Sign in with example"
+    // (last path segment of the issuer). The username/password form is the
+    // break-glass path, so it renders inside a collapsed <details>.
+    await page.route('**/api/auth/sso/config', (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          enabled: true,
+          client_id: 'nervecenter',
+          issuer: 'https://sso.example.com',
+          issuer_display_name: 'example',
+          authorization_endpoint: 'https://sso.example.com/authorize/',
+        }),
+      }),
+    )
+    await page.goto('/login')
+
+    const sso = page.getByRole('button', { name: 'Sign in with example' })
+    await expect(sso).toBeVisible()
+
+    // The local-admin form is collapsed by default (not the primary path).
+    // A native <details> is collapsed when it lacks the `open` attribute.
+    const local = page.getByTestId('login-local')
+    await expect(local).not.toHaveAttribute('open')
+    await expect(page.locator('#username')).not.toBeVisible()
+
+    // Expanding the disclosure reveals the username/password form.
+    await local.locator('summary').click()
+    await expect(local).toHaveAttribute('open')
+    await expect(page.locator('#username')).toBeVisible()
+    await expect(page.locator('#password')).toBeVisible()
+  })
+
+  test('SSO button falls back to "SSO" when issuer_display_name is absent', async ({
     page,
   }) => {
     await page.route('**/api/auth/sso/config', (route) =>
@@ -189,8 +226,9 @@ test.describe('login view (LG-1…LG-4)', () => {
     )
     await page.goto('/login')
 
-    const sso = page.getByRole('button', { name: /sign in with sso/i })
-    await expect(sso).toBeVisible()
+    await expect(page.getByRole('button', { name: 'Sign in with SSO' })).toBeVisible()
+    // The disclosure is still present (the form is always break-glass under SSO).
+    await expect(page.getByTestId('login-local')).toBeVisible()
   })
 })
 

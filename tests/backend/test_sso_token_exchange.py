@@ -195,6 +195,19 @@ def test_sso_config_enabled_with_keycloak_discovery():
     assert cfg["authorization_endpoint"].endswith("/protocol/openid-connect/auth")
 
 
+def test_sso_config_includes_derived_issuer_display_name():
+    # The display name is derived from the issuer (last path segment / realm
+    # name) — no invented names, and absent/empty issuer degrades to "".
+    cfg = auth_service.sso_config(_ctx(), {"issuer": KEYCLOAK_ISSUER})
+    assert cfg["issuer_display_name"] == "celestium"
+
+    cfg_plain = auth_service.sso_config(_ctx(issuer="https://plain.example.com"))
+    assert cfg_plain["issuer_display_name"] == "plain.example.com"
+
+    cfg_bare = auth_service.sso_config(_ctx(issuer=""))
+    assert cfg_bare["issuer_display_name"] == ""
+
+
 def test_sso_config_disabled_without_client_id():
     ctx = _ctx(client_id="")
     cfg = auth_service.sso_config(ctx, {"issuer": KEYCLOAK_ISSUER})

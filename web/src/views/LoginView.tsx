@@ -57,10 +57,17 @@ async function pkceChallenge(): Promise<{ verifier: string; challenge: string }>
  *   Every error region is an `aria-live` container (LG-3, auditor D-3).
  * - The submit button is disabled with a visible pending label while
  *   `login()` is in flight; focus stays on the button after a failed submit.
- * - SSO: `GET /api/auth/sso/config` on mount — button rendered only when
- *   `enabled` (never a dead button); fetch failure renders nothing extra
- *   (LG-4). The PKCE start flow is implemented locally because the transport
- *   in client.ts exports no start function (reported in the gap handoff).
+ * - SSO: `GET /api/auth/sso/config` on mount — when `enabled`, the SSO
+ *   button is the primary sign-in ("Sign in with <issuer display name>",
+ *   contract INFER §Web: the issuer display name comes from the config's
+ *   `issuer_display_name` when present, else "SSO"); the username/password
+ *   form is moved under a collapsed "Local admin" disclosure (native
+ *   `<details>`) as the break-glass secondary path. The button is only
+ *   rendered when `enabled` (never a dead button); fetch failure renders
+ *   nothing extra (LG-4) and the form stays primary.
+ * - LG-1…LG-4 invariants are preserved: no default-credential hint,
+ *   aria-live errors, pending submit button, and the same field ids /
+ *   error ids / submit button behaviour.
  */
 export function LoginView() {
   const [username, setUsername] = useState('')
@@ -68,10 +75,19 @@ export function LoginView() {
   const [loading, setLoading] = useState(false)
   const [credentialError, setCredentialError] = useState('')
   const [submitError, setSubmitError] = useState('')
-  const [ssoEnabled, setSsoEnabled] = useState(false)
+  const [ssoConfig, setSsoConfig] = useState<{
+    enabled?: boolean
+    issuer_display_name?: string
+    authorization_endpoint?: string
+    client_id?: string
+  } | null>(null)
 
   const { login } = useAuth()
   const submitRef = useRef<HTMLButtonElement>(null)
+
+  const ssoEnabled = ssoConfig?.enabled === true
+  const ssoLabel =
+    ssoConfig?.issuer_display_name?.trim() || 'SSO'
 
   useEffect(() => {
     let cancelled = false
@@ -80,7 +96,9 @@ export function LoginView() {
     fetch('/api/auth/sso/config')
       .then((res) => (res.ok ? res.json() : null))
       .then((cfg) => {
-        if (!cancelled && cfg && cfg.enabled === true) setSsoEnabled(true)
+        if (!cancelled && cfg && typeof cfg === 'object') {
+          setSsoConfig(cfg)
+        }
       })
       .catch(() => {})
     return () => {
@@ -119,7 +137,10 @@ export function LoginView() {
   }
 
   const handleSso = async () => {
-    let cfg: { authorization_endpoint?: string; client_id?: string } | null = null
+    // Re-read the config on click so the button never trusts a stale
+    // snapshot; on any failure the click is a no-op (never a dead button).
+    let cfg: { authorization_endpoint?: string; client_id?: string } | null =
+      null
     try {
       const res = await fetch('/api/auth/sso/config')
       cfg = res.ok ? ((await res.json()) ?? null) : null
@@ -155,6 +176,84 @@ export function LoginView() {
 
   const describedBy = credentialError ? 'login-credential-error' : undefined
 
+  // The username/password form, shared by both layouts: primary when SSO is
+  // off, collapsed behind the "Local admin" disclosure when it is on.
+  // autoFocus is suppressed under SSO because the form is not the primary
+  // path then (focusing a hidden input is a no-op anyway).
+  const credentialForm = (
+    <form onSubmit={handleSubmit}>
+      <div className="mb-4">
+        <label
+          htmlFor="username"
+          className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
+        >
+          Username
+        </label>
+        <input
+          type="text"
+          id="username"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          aria-describedby={describedBy}
+          aria-invalid={credentialError ? true : undefined}
+          className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+          placeholder="Enter username"
+          required
+          autoFocus={!ssoEnabled}
+        />
+        {credentialError && (
+          <p
+            id="login-credential-error"
+            aria-live="polite"
+            role="alert"
+            className="mt-1 text-sm text-red-600 dark:text-red-400"
+          >
+            {credentialError}
+          </p>
+        )}
+      </div>
+
+      <div className="mb-6">
+        <label
+          htmlFor="password"
+          className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
+        >
+          Password
+        </label>
+        <input
+          type="password"
+          id="password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          aria-describedby={describedBy}
+          aria-invalid={credentialError ? true : undefined}
+          className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
+          placeholder="Enter password"
+          required
+        />
+      </div>
+
+      <button
+        type="submit"
+        ref={submitRef}
+        disabled={loading}
+        className="w-full inline-flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {loading ? (
+          <>
+            <span
+              aria-hidden="true"
+              className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
+            />
+            <span>Signing in…</span>
+          </>
+        ) : (
+          'Sign in'
+        )}
+      </button>
+    </form>
+  )
+
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-100 dark:bg-gray-900">
       <div className="max-w-md w-full bg-elevated rounded-lg shadow-lg p-8">
@@ -175,10 +274,11 @@ export function LoginView() {
           )}
         </div>
 
-        {/* SSO-FIRST (T-WEBUI): when SSO is enabled it is the primary sign-in —
-            the username/password form becomes secondary. Rendered only when
-            enabled; a failed /auth/sso/config fetch shows nothing (never a dead
-            button). */}
+        {/* SSO-FIRST (contract INFER, web scope): when SSO is enabled it is
+            the primary sign-in — labelled with the issuer display name from
+            /auth/sso/config (honest: falls back to "SSO" when absent).
+            Rendered only when enabled; a failed config fetch shows nothing
+            (never a dead button, LG-4). */}
         {ssoEnabled && (
           <button
             type="button"
@@ -187,94 +287,25 @@ export function LoginView() {
             className="mt-4 w-full inline-flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-semibold py-2.5 px-4 rounded-lg transition-colors"
           >
             <ShieldCheckIcon size={18} />
-            <span>Sign in with SSO</span>
+            <span>Sign in with {ssoLabel}</span>
           </button>
         )}
 
-        {ssoEnabled && (
-          <div className="relative my-6" aria-hidden="true">
-            <div className="absolute inset-0 flex items-center">
-              <div className="w-full border-t border-gray-200 dark:border-gray-600" />
+        {/* Local admin: the break-glass username/password path. Under SSO it
+            is collapsed behind a clear disclosure (NOT the primary path);
+            without SSO it is the primary form and renders unwrapped. */}
+        {ssoEnabled ? (
+          <details data-testid="login-local" className="mt-6">
+            <summary className="cursor-pointer select-none text-sm font-medium text-muted hover:text-primary">
+              Local admin (break-glass)
+            </summary>
+            <div className="mt-4 border border-gray-200 dark:border-gray-600 rounded-lg p-4">
+              {credentialForm}
             </div>
-            <div className="relative flex justify-center">
-              <span className="px-3 text-xs uppercase tracking-wide bg-elevated text-muted">
-                or username & password
-              </span>
-            </div>
-          </div>
+          </details>
+        ) : (
+          credentialForm
         )}
-
-        <form onSubmit={handleSubmit}>
-          <div className="mb-4">
-            <label
-              htmlFor="username"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-            >
-              Username
-            </label>
-            <input
-              type="text"
-              id="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              aria-describedby={describedBy}
-              aria-invalid={credentialError ? true : undefined}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-              placeholder="Enter username"
-              required
-              autoFocus
-            />
-            {credentialError && (
-              <p
-                id="login-credential-error"
-                aria-live="polite"
-                role="alert"
-                className="mt-1 text-sm text-red-600 dark:text-red-400"
-              >
-                {credentialError}
-              </p>
-            )}
-          </div>
-
-          <div className="mb-6">
-            <label
-              htmlFor="password"
-              className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2"
-            >
-              Password
-            </label>
-            <input
-              type="password"
-              id="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              aria-describedby={describedBy}
-              aria-invalid={credentialError ? true : undefined}
-              className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
-              placeholder="Enter password"
-              required
-            />
-          </div>
-
-          <button
-            type="submit"
-            ref={submitRef}
-            disabled={loading}
-            className="w-full inline-flex items-center justify-center gap-2 bg-blue-500 hover:bg-blue-600 text-white font-medium py-2 px-4 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {loading ? (
-              <>
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-white"
-                />
-                <span>Signing in…</span>
-              </>
-            ) : (
-              'Sign in'
-            )}
-          </button>
-        </form>
       </div>
     </div>
   )
