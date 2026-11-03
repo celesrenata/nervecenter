@@ -25,6 +25,8 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import StaticPool
 
+import httpx
+
 from backend.api.auth_service import (
     ACCESS_TOKEN_TTL,
     TYP_ACCESS,
@@ -39,6 +41,7 @@ from backend.persistence.models import (
     InferenceCombo,
     InferenceProvider,
 )
+import backend.services.inference_providers as inference_providers
 from backend.services.inference_providers import (
     InferenceComboService,
     InferenceProviderService,
@@ -118,6 +121,110 @@ def _app(engine, auth_ctx) -> FastAPI:
     app.state.db_engine = engine
     app.state.auth_ctx = auth_ctx
     return app
+
+
+# ---------------------------------------------------------------------------
+# Ad-hoc pre-save probe (probe_ad_hoc + POST /providers/probe)
+# ---------------------------------------------------------------------------
+
+
+class _FakeProbeResponse:
+    def __init__(self, status_code: int, body: dict) -> None:
+        self.status_code = status_code
+        self.text = ""
+        self._body = body
+
+    def json(self) -> dict:
+        return self._body
+
+
+class _FakeProbeClient:
+    last: tuple | None = None
+
+    def __init__(self, response: _FakeProbeResponse) -> None:
+        self._response = response
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url: str, **kwargs):
+        _FakeProbeClient.last = (url, kwargs)
+        return self._response
+
+
+def _patch_probe(monkeypatch, status: int, body: dict) -> None:
+    """Point the durable-provider service at a fake models endpoint."""
+
+    def fake_client(*args, **kwargs):
+        return _FakeProbeClient(_FakeProbeResponse(status, body))
+
+    monkeypatch.setattr(inference_providers.httpx, "AsyncClient", fake_client)
+
+
+class TestProbeAdHoc:
+    async def test_probe_openai_returns_models(self, provider_service, monkeypatch):
+        _patch_probe(
+            monkeypatch,
+            200,
+            {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]},
+        )
+        res = await provider_service.probe_ad_hoc(
+            provider_type="openai",
+            base_url="https://api.openai.com/v1",
+            api_key="sk-test",
+        )
+        assert res["success"] is True
+        assert res["models_found"] == 2
+        assert res["models"] == ["gpt-4o", "gpt-4o-mini"]
+        assert res["error"] is None
+        assert isinstance(res["latency_ms"], int)
+        # The probe must authenticate with a Bearer key and hit /models.
+        url, kwargs = _FakeProbeClient.last
+        assert url == "https://api.openai.com/v1/models"
+        assert kwargs["headers"].get("Authorization") == "Bearer sk-test"
+
+    async def test_probe_local_parses_ollama_tags(self, provider_service, monkeypatch):
+        _patch_probe(monkeypatch, 200, {"models": [{"name": "llama3.1"}]})
+        res = await provider_service.probe_ad_hoc(provider_type="local")
+        assert res["success"] is True
+        assert res["models"] == ["llama3.1"]
+        # No key → no Authorization header.
+        _url, kwargs = _FakeProbeClient.last
+        assert "Authorization" not in kwargs["headers"]
+
+    async def test_probe_anthropic_no_endpoint(self, provider_service, monkeypatch):
+        _patch_probe(monkeypatch, 200, {})
+        res = await provider_service.probe_ad_hoc(provider_type="anthropic")
+        assert res["success"] is False
+        assert "no models-list endpoint" in (res["error"] or "")
+
+    async def test_probe_http_error_reported(self, provider_service, monkeypatch):
+        _patch_probe(monkeypatch, 401, {})
+        res = await provider_service.probe_ad_hoc(
+            provider_type="openai", api_key="sk-bad"
+        )
+        assert res["success"] is False
+        assert res["models"] == []
+        assert "HTTP 401" in (res["error"] or "")
+
+    async def test_probe_connection_error_reported(self, provider_service, monkeypatch):
+        # AsyncClient enters successfully, then the GET raises an httpx
+        # connection error — the probe must surface it in the body, not raise.
+        class _RaisingClient(_FakeProbeClient):
+            async def get(self, url: str, **kwargs):
+                raise httpx.ConnectError("boom")
+
+        monkeypatch.setattr(
+            inference_providers.httpx, "AsyncClient",
+            lambda *a, **k: _RaisingClient(_FakeProbeResponse(200, {})),
+        )
+        res = await provider_service.probe_ad_hoc(provider_type="openai")
+        assert res["success"] is False
+        assert res["models"] == []
+        assert "Connection error" in (res["error"] or "")
 
 
 # ---------------------------------------------------------------------------
@@ -362,6 +469,65 @@ class TestDurableEndpoints:
                 headers={"Authorization": f"Bearer {token}"},
             )
         assert resp.status_code == 503
+
+    async def test_probe_without_token_is_401(self, engine, auth_ctx):
+        app = _app(engine, auth_ctx)
+        with TestClient(app) as client:
+            resp = client.post(
+                "/api/inference/durable/providers/probe",
+                json={"provider_type": "openai"},
+            )
+        assert resp.status_code == 401
+
+    async def test_probe_unsupported_type_is_422(self, engine, auth_ctx, monkeypatch):
+        _patch_probe(monkeypatch, 200, {})
+        app = _app(engine, auth_ctx)
+        with TestClient(app) as client:
+            token = await _token(auth_ctx)
+            resp = client.post(
+                "/api/inference/durable/providers/probe",
+                json={"provider_type": "bogus"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 422
+
+    async def test_probe_via_api_returns_models(self, engine, auth_ctx, monkeypatch):
+        _patch_probe(
+            monkeypatch,
+            200,
+            {"data": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini"}]},
+        )
+        app = _app(engine, auth_ctx)
+        with TestClient(app) as client:
+            token = await _token(auth_ctx)
+            resp = client.post(
+                "/api/inference/durable/providers/probe",
+                json={"provider_type": "openai", "api_key": "sk-test"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["success"] is True
+        assert body["models"] == ["gpt-4o", "gpt-4o-mini"]
+
+    async def test_probe_via_api_does_not_persist(self, engine, auth_ctx, monkeypatch):
+        """The probe is transient: a successful probe writes no provider row."""
+        _patch_probe(monkeypatch, 200, {"data": [{"id": "gpt-4o"}]})
+        app = _app(engine, auth_ctx)
+        with TestClient(app) as client:
+            token = await _token(auth_ctx)
+            resp = client.post(
+                "/api/inference/durable/providers/probe",
+                json={"provider_type": "openai"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 200
+            listed = client.get(
+                "/api/inference/durable/providers",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+        assert listed.status_code == 200
+        assert listed.json() == []
 
     async def test_provider_crud_via_api(self, engine, auth_ctx):
         app = _app(engine, auth_ctx)

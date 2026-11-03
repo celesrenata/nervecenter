@@ -1,4 +1,12 @@
-import { useState, useEffect, useCallback, type FormEvent } from 'react'
+import {
+  useState,
+  useEffect,
+  useCallback,
+  useMemo,
+  useRef,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react'
 import {
   durableInferenceApi,
   MASKED_KEY,
@@ -99,6 +107,137 @@ interface RowState {
   ok: boolean
 }
 
+/**
+ * Searchable model picker — a combobox that filters a provider's known
+ * model list while still allowing free-form entry (a model id is always a
+ * string, and the provider may expose more than the cached list).
+ *
+ * Replaces the native <datalist> (no search, no keyboard model) with an
+ * accessible combobox:
+ *   - type to filter, arrow keys to move the highlight, Enter to accept
+ *   - free text is kept as the value when it does not match a list item
+ *   - dropdown closes on Escape / outside click / submit
+ */
+interface ModelPickerProps {
+  id: string
+  testId: string
+  value: string
+  onChange: (value: string) => void
+  options: string[]
+  placeholder?: string
+}
+
+const ModelPicker = ({ id, testId, value, onChange, options, placeholder }: ModelPickerProps) => {
+  const [open, setOpen] = useState(false)
+  const [highlight, setHighlight] = useState(0)
+  const rootRef = useRef<HTMLDivElement | null>(null)
+
+  const query = value.trim().toLowerCase()
+  const filtered = useMemo(
+    () => (query ? options.filter((o) => o.toLowerCase().includes(query)) : options),
+    [options, query],
+  )
+
+  // Close on outside click.
+  useEffect(() => {
+    if (!open) return
+    const onDoc = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', onDoc)
+    return () => document.removeEventListener('mousedown', onDoc)
+  }, [open])
+
+  // Keep the highlight index valid as the list changes.
+  useEffect(() => {
+    if (highlight >= filtered.length) setHighlight(0)
+  }, [filtered.length, highlight])
+
+  const pick = (model: string) => {
+    onChange(model)
+    setOpen(false)
+  }
+
+  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'ArrowDown') {
+      e.preventDefault()
+      if (!open) {
+        setOpen(true)
+      } else {
+        setHighlight((h) => Math.min(h + 1, filtered.length - 1))
+      }
+    } else if (e.key === 'ArrowUp') {
+      e.preventDefault()
+      setHighlight((h) => Math.max(h - 1, 0))
+    } else if (e.key === 'Enter') {
+      if (open && filtered[highlight]) {
+        e.preventDefault()
+        pick(filtered[highlight])
+      }
+    } else if (e.key === 'Escape') {
+      if (open) {
+        e.stopPropagation()
+        setOpen(false)
+      }
+    }
+  }
+
+  return (
+    <div ref={rootRef} className="relative">
+      <input
+        id={id}
+        data-testid={testId}
+        type="text"
+        required
+        role="combobox"
+        aria-expanded={open}
+        aria-controls={`${testId}-listbox`}
+        value={value}
+        onChange={(e) => {
+          onChange(e.target.value)
+          setHighlight(0)
+          setOpen(true)
+        }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKey}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+      />
+      {open && (
+        <ul
+          id={`${testId}-listbox`}
+          role="listbox"
+          data-testid={`${testId}-listbox`}
+          className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 shadow-lg"
+        >
+          {filtered.length === 0 ? (
+            <li className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">
+              {options.length === 0 ? 'No known models for this provider' : 'No match — the text will be saved as-is'}
+            </li>
+          ) : (
+            filtered.map((m, i) => (
+              <li
+                key={m}
+                role="option"
+                aria-selected={m === value}
+                data-testid={`${testId}-option-${i}`}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => pick(m)}
+                onMouseEnter={() => setHighlight(i)}
+                className={`px-3 py-2 text-sm cursor-pointer text-primary break-all ${
+                  i === highlight ? 'bg-blue-100 dark:bg-blue-900/40' : ''
+                } ${m === value ? 'font-semibold' : ''}`}
+              >
+                {m}
+              </li>
+            ))
+          )}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 const ProvidersView = () => {
   const [providers, setProviders] = useState<DurableProvider[]>([])
   const [combos, setCombos] = useState<DurableCombo[]>([])
@@ -110,6 +249,13 @@ const ProvidersView = () => {
   const [providerForm, setProviderForm] = useState<ProviderForm>(emptyProviderForm)
   const [providerFormBusy, setProviderFormBusy] = useState(false)
   const [providerFormError, setProviderFormError] = useState<ErrorState | null>(null)
+  // Ad-hoc pre-save probe of the provider form's current credentials.
+  const [providerProbeBusy, setProviderProbeBusy] = useState(false)
+  const [providerProbe, setProviderProbe] = useState<{
+    ok: boolean
+    detail: string
+    models: string[]
+  } | null>(null)
 
   // Provider edit (one row at a time)
   const [editingProviderId, setEditingProviderId] = useState<string | null>(null)
@@ -182,6 +328,56 @@ const ProvidersView = () => {
       setProviderFormError(errToState(err))
     } finally {
       setProviderFormBusy(false)
+    }
+  }
+
+  // ── Provider ad-hoc probe (pre-save) ────────────────────────────────────────
+  /**
+   * Probe the provider form's current credentials against the live
+   * models endpoint WITHOUT saving the provider. On success the recalled
+   * model list is merged into the form's comma-separated models field.
+   */
+  const probeProviderForm = async () => {
+    setProviderProbeBusy(true)
+    setProviderProbe(null)
+    try {
+      const res = await durableInferenceApi.probeProvider({
+        provider_type: providerForm.provider_type,
+        base_url: providerForm.base_url.trim() || null,
+        api_key: providerForm.api_key || null,
+      })
+      if (res.success) {
+        setProviderProbe({
+          ok: true,
+          detail: `✓ ${res.models_found} model(s) reachable in ${res.latency_ms} ms`,
+          models: res.models,
+        })
+        // Merge recalled models into the form (append, dedupe).
+        setProviderForm((f) => {
+          const existing = f.models
+            .split(',')
+            .map((m) => m.trim())
+            .filter(Boolean)
+          for (const m of res.models) {
+            if (!existing.includes(m)) existing.push(m)
+          }
+          return { ...f, models: existing.join(', ') }
+        })
+      } else {
+        setProviderProbe({
+          ok: false,
+          detail: res.error || 'Probe failed',
+          models: [],
+        })
+      }
+    } catch (err) {
+      setProviderProbe({
+        ok: false,
+        detail: errToState(err).detail,
+        models: [],
+      })
+    } finally {
+      setProviderProbeBusy(false)
     }
   }
 
@@ -517,15 +713,42 @@ const ProvidersView = () => {
             </div>
             <div>
               <label htmlFor="provider-models" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Models (comma-separated)</label>
-              <input
-                id="provider-models"
-                data-testid="provider-form-models"
-                type="text"
-                value={providerForm.models}
-                onChange={(e) => setProviderForm((f) => ({ ...f, models: e.target.value }))}
-                placeholder="gpt-4o, gpt-4o-mini"
-                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
-              />
+              <div className="flex gap-2 items-start">
+                <input
+                  id="provider-models"
+                  data-testid="provider-form-models"
+                  type="text"
+                  value={providerForm.models}
+                  onChange={(e) => setProviderForm((f) => ({ ...f, models: e.target.value }))}
+                  placeholder="gpt-4o, gpt-4o-mini"
+                  className="flex-1 px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                />
+                <button
+                  type="button"
+                  data-testid="provider-form-probe"
+                  onClick={() => void probeProviderForm()}
+                  disabled={providerProbeBusy}
+                  title="Probe the live models endpoint with the credentials above (not saved yet)"
+                  className="text-xs px-3 py-2 rounded-md bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600 text-primary disabled:opacity-50 shrink-0"
+                >
+                  {providerProbeBusy ? 'Probing…' : 'Fetch models'}
+                </button>
+              </div>
+              {providerProbe && (
+                <div
+                  data-testid="provider-form-probe-result"
+                  role="status"
+                  className={`mt-2 p-2 rounded-md text-xs ${providerProbe.ok ? 'bg-green-100 dark:bg-green-900/40 text-green-800 dark:text-green-300' : 'bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300'}`}
+                >
+                  {providerProbe.detail}
+                  {providerProbe.ok && providerProbe.models.length > 0 && (
+                    <span className="block opacity-75">
+                      Recalled: {providerProbe.models.slice(0, 6).join(', ')}
+                      {providerProbe.models.length > 6 ? '…' : ''}
+                    </span>
+                  )}
+                </div>
+              )}
             </div>
             {providerFormError && (
               <div role="alert" data-testid="provider-form-error" className="p-3 rounded-md bg-red-100 dark:bg-red-900/40 text-red-800 dark:text-red-300 text-sm font-medium">
@@ -788,22 +1011,14 @@ const ProvidersView = () => {
               </div>
               <div>
                 <label htmlFor="combo-model" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Model</label>
-                <input
+                <ModelPicker
                   id="combo-model"
-                  data-testid="combo-form-model"
-                  type="text"
-                  required
+                  testId="combo-form-model"
                   value={comboForm.model_id}
-                  onChange={(e) => setComboForm((f) => ({ ...f, model_id: e.target.value }))}
-                  list={comboForm.provider_id ? `combo-models-${comboForm.provider_id}` : undefined}
+                  onChange={(v) => setComboForm((f) => ({ ...f, model_id: v }))}
+                  options={providerModelOptions(comboForm.provider_id)}
                   placeholder={providerModelOptions(comboForm.provider_id).length ? 'Pick or type' : 'gpt-4o'}
-                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
                 />
-                <datalist id={comboForm.provider_id ? `combo-models-${comboForm.provider_id}` : undefined}>
-                  {providerModelOptions(comboForm.provider_id).map((m) => (
-                    <option key={m} value={m} />
-                  ))}
-                </datalist>
               </div>
             </div>
             <div>
@@ -943,14 +1158,13 @@ const ProvidersView = () => {
                         </div>
                         <div>
                           <label htmlFor={`combo-edit-model-${c.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Model</label>
-                          <input
+                          <ModelPicker
                             id={`combo-edit-model-${c.id}`}
-                            data-testid={`combo-edit-model-${c.id}`}
-                            type="text"
-                            required
+                            testId={`combo-edit-model-${c.id}`}
                             value={comboEditForm.model_id}
-                            onChange={(e) => setComboEditForm((f) => ({ ...f, model_id: e.target.value }))}
-                            className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                            onChange={(v) => setComboEditForm((f) => ({ ...f, model_id: v }))}
+                            options={providerModelOptions(comboEditForm.provider_id)}
+                            placeholder={providerModelOptions(comboEditForm.provider_id).length ? 'Pick or type' : 'gpt-4o'}
                           />
                         </div>
                       </div>

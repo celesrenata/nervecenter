@@ -78,6 +78,19 @@ class ProviderUpdateRequest(BaseModel):
     models: list[str] | None = Field(default=None)
 
 
+class ProviderProbeRequest(BaseModel):
+    """Payload for ``POST /api/inference/durable/providers/probe``.
+
+    Ad-hoc pre-save probe: run the live models-endpoint probe with transient
+    (unpersisted) credentials so a provider's model list can be discovered
+    before the provider row is created.
+    """
+
+    provider_type: str = Field(..., min_length=1, description="Adapter family")
+    base_url: str | None = Field(default=None, description="Endpoint base URL")
+    api_key: str | None = Field(default=None, description="API key (not persisted)")
+
+
 class ComboCreateRequest(BaseModel):
     """Payload for ``POST /api/inference/durable/combos``.
 
@@ -209,6 +222,34 @@ async def create_provider(
             status_code=409,
             detail=f"A provider named '{payload.name}' already exists.",
         ) from exc
+
+
+@router.post("/providers/probe")
+async def probe_provider(
+    request: Request,
+    payload: ProviderProbeRequest,
+    claims: dict[str, Any] = Depends(current_access),
+) -> dict[str, Any]:
+    """Probe a provider's models endpoint with unpersisted credentials.
+
+    Returns the same shape as the per-provider ``/test`` endpoint:
+    ``{"success", "models_found", "models", "error", "latency_ms"}``.
+    Nothing is written to the registry. 422 on an unsupported provider_type.
+    """
+    if payload.provider_type not in _VALID_PROVIDER_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Unsupported provider_type '{payload.provider_type}'",
+        )
+    svc = _require_provider_service(request)
+    try:
+        return await svc.probe_ad_hoc(
+            provider_type=payload.provider_type,
+            base_url=payload.base_url,
+            api_key=payload.api_key,
+        )
+    except ProviderNotFoundError as exc:  # defensive: probe never needs a row
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.patch("/providers/{provider_id}")

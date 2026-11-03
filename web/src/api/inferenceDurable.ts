@@ -73,6 +73,20 @@ export interface ProviderUpdatePayload {
   models?: string[]
 }
 
+export interface ProviderProbePayload {
+  provider_type: DurableProviderType
+  base_url?: string | null
+  api_key?: string | null
+}
+
+export interface ProbeProviderResult {
+  success: boolean
+  models_found: number
+  models: string[]
+  error?: string | null
+  latency_ms?: number | null
+}
+
 export interface ComboCreatePayload {
   name: string
   provider_id: string
@@ -142,6 +156,21 @@ export const realDurableInferenceApi = {
   deleteProvider: async (id: string): Promise<void> => {
     const res = await apiFetch(`${P}/${id}`, { method: 'DELETE' })
     if (!res.ok && res.status !== 204) throw await apiErrorFromResponse(res)
+  },
+  /**
+   * Ad-hoc pre-save probe: run the models-endpoint probe with unpersisted
+   * credentials. The backend validates the config and returns its model list
+   * without writing anything to the registry — use it to pre-fetch a model
+   * list before the provider row is created.
+   */
+  probeProvider: async (payload: ProviderProbePayload): Promise<ProbeProviderResult> => {
+    const res = await apiFetch(`${P}/probe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as ProbeProviderResult
   },
   testProvider: async (id: string): Promise<TestConnectionResult> => {
     const res = await apiFetch(`${P}/${id}/test`, { method: 'POST' })
@@ -214,6 +243,9 @@ export const mockDurableInferenceApi = {
   },
   testProvider: async (): Promise<TestConnectionResult> => {
     throw new Error('mock: test-connection requires a live backend')
+  },
+  probeProvider: async (): Promise<ProbeProviderResult> => {
+    throw new Error('mock: provider probe requires a live backend')
   },
   recallProviderModels: async (): Promise<RecallModelsResult> => {
     throw new Error('mock: model recall requires a live backend')

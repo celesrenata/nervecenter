@@ -284,11 +284,12 @@ class InferenceProviderService:
 
     # -- live operations -------------------------------------------------------
 
-    def _models_endpoint(self, orm: InferenceProvider) -> str | None:
+    @staticmethod
+    def _models_endpoint(provider_type: str, base_url: str | None) -> str | None:
         """Build the provider's models-list URL, or ``None`` when the
         provider type has no models-list endpoint (e.g. Anthropic)."""
-        base = (orm.base_url or "").strip().rstrip("/")
-        ptype = orm.provider_type.lower()
+        base = (base_url or "").strip().rstrip("/")
+        ptype = provider_type.lower()
         if ptype == "local":
             # Ollama
             return f"{base}/api/tags" if base else "http://localhost:11434/api/tags"
@@ -302,64 +303,94 @@ class InferenceProviderService:
             return f"{base}/v1/models"
         return None
 
-    async def test_connection(self, provider_id: str) -> dict[str, Any]:
-        """Probe the provider's models endpoint; returns the result.
+    async def _probe(
+        self,
+        provider_type: str,
+        base_url: str | None,
+        api_key: str | None,
+    ) -> dict[str, Any]:
+        """Run a live models-endpoint probe against given (possibly
+        unpersisted) provider credentials.
 
         Returns ``{"success": bool, "models_found": int, "models": [...],
         "error": str|None, "latency_ms": int|None}``. Never raises for a
         network failure — the error is in the response body.
         """
+        endpoint = self._models_endpoint(provider_type, base_url)
+        if endpoint is None:
+            return {
+                "success": False,
+                "models_found": 0,
+                "models": [],
+                "error": f"Provider type '{provider_type}' has no models-list endpoint",
+                "latency_ms": None,
+            }
+        headers: dict[str, str] = {}
+        if api_key:
+            if provider_type.lower() == "anthropic":
+                headers["x-api-key"] = api_key
+            else:
+                headers["Authorization"] = f"Bearer {api_key}"
+
+        import time as _time
+
+        t0 = _time.monotonic()
+        try:
+            async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
+                resp = await client.get(endpoint, headers=headers)
+                latency = int((_time.monotonic() - t0) * 1000)
+                if resp.status_code >= 400:
+                    return {
+                        "success": False,
+                        "models_found": 0,
+                        "models": [],
+                        "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
+                        "latency_ms": latency,
+                    }
+                models = self._parse_models(provider_type, resp.json())
+                return {
+                    "success": True,
+                    "models_found": len(models),
+                    "models": models,
+                    "error": None,
+                    "latency_ms": latency,
+                }
+        except httpx.HTTPError as exc:
+            latency = int((_time.monotonic() - t0) * 1000)
+            return {
+                "success": False,
+                "models_found": 0,
+                "models": [],
+                "error": f"Connection error: {exc}",
+                "latency_ms": latency,
+            }
+
+    async def test_connection(self, provider_id: str) -> dict[str, Any]:
+        """Probe the provider's models endpoint; returns the result.
+
+        Returns the shape produced by :meth:`_probe`. Never raises for a
+        network failure — the error is in the response body.
+        """
         factory = self._factory()
         async with factory() as session:
             orm = await self._load(session, provider_id)
-            endpoint = self._models_endpoint(orm)
-            if endpoint is None:
-                return {
-                    "success": False,
-                    "models_found": 0,
-                    "models": [],
-                    "error": f"Provider type '{orm.provider_type}' has no models-list endpoint",
-                    "latency_ms": None,
-                }
-            headers: dict[str, str] = {}
-            if orm.api_key:
-                if orm.provider_type.lower() == "anthropic":
-                    headers["x-api-key"] = orm.api_key
-                else:
-                    headers["Authorization"] = f"Bearer {orm.api_key}"
+            return await self._probe(orm.provider_type, orm.base_url, orm.api_key)
 
-            import time as _time
+    async def probe_ad_hoc(
+        self,
+        *,
+        provider_type: str,
+        base_url: str | None = None,
+        api_key: str | None = None,
+    ) -> dict[str, Any]:
+        """Probe a provider's models endpoint using transient (unpersisted)
+        credentials.
 
-            t0 = _time.monotonic()
-            try:
-                async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
-                    resp = await client.get(endpoint, headers=headers)
-                    latency = int((_time.monotonic() - t0) * 1000)
-                    if resp.status_code >= 400:
-                        return {
-                            "success": False,
-                            "models_found": 0,
-                            "models": [],
-                            "error": f"HTTP {resp.status_code}: {resp.text[:200]}",
-                            "latency_ms": latency,
-                        }
-                    models = self._parse_models(orm.provider_type, resp.json())
-                    return {
-                        "success": True,
-                        "models_found": len(models),
-                        "models": models,
-                        "error": None,
-                        "latency_ms": latency,
-                    }
-            except httpx.HTTPError as exc:
-                latency = int((_time.monotonic() - t0) * 1000)
-                return {
-                    "success": False,
-                    "models_found": 0,
-                    "models": [],
-                    "error": f"Connection error: {exc}",
-                    "latency_ms": latency,
-                }
+        This is the pre-save probe: it validates a provider configuration
+        and returns its model list without writing anything to the registry.
+        Use it to pre-fetch a model list before saving a provider.
+        """
+        return await self._probe(provider_type, base_url, api_key)
 
     async def recall_models(self, provider_id: str) -> dict[str, Any]:
         """Recall the provider's model list and persist it to the ``models`` column.
