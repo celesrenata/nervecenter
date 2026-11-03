@@ -100,6 +100,9 @@ const AgentsView = () => {
   // Durable combo binding (providers feature): a combo shadows the per-agent
   // provider/model. Loaded lazily with the rest of the inference editor.
   const [inferCombo, setInferCombo] = useState('')
+  /** Combo binding present when the editor opened — drives the PATCH tri-state
+   *  (clear vs unchanged) for saves that pick "None (per-agent default)". */
+  const [inferComboInitial, setInferComboInitial] = useState('')
   const [inferCombos, setInferCombos] = useState<DurableCombo[]>([])
   const [inferCombosLoading, setInferCombosLoading] = useState(false)
 
@@ -111,6 +114,7 @@ const AgentsView = () => {
     setInferProvider(agent?.inference?.provider ?? '')
     setInferModel(agent?.inference?.model ?? '')
     setInferCombo(agent?.combo_id ?? '')
+    setInferComboInitial(agent?.combo_id ?? '')
     if (inferOptions === null && !inferOptionsLoading) {
       setInferOptionsLoading(true)
       try {
@@ -140,6 +144,7 @@ const AgentsView = () => {
     setInferProvider('')
     setInferModel('')
     setInferCombo('')
+    setInferComboInitial('')
     setInferError(null)
     setInferSuccess(false)
     setInferBusy(false)
@@ -152,17 +157,22 @@ const AgentsView = () => {
     setInferSuccess(false)
     try {
       // PATCH /api/agents/{id}: partial update carrying the binding(s).
-      // A null/empty binding clears to the service default. A non-empty combo
-      // shadows the per-agent inference (resolved at ask time).
-      const payload: AgentUpdatePayload = {
-        inference:
-          inferProvider || inferModel
-            ? {
-                provider: inferProvider || null,
-                model: inferModel || null,
-              }
-            : null,
-        combo_id: inferCombo,
+      // Inference: a null/empty binding leaves the service default (absent in
+      // the wire body). Combo (contract §4 tri-state): non-empty rebinds,
+      // "" clears a binding the agent had when the editor opened, and omitting
+      // the key leaves it unchanged — so a model-only save never clobbers a
+      // live combo shadow.
+      const payload: AgentUpdatePayload = {}
+      if (inferProvider || inferModel) {
+        payload.inference = {
+          provider: inferProvider || null,
+          model: inferModel || null,
+        }
+      }
+      if (inferCombo) {
+        payload.combo_id = inferCombo
+      } else if (inferComboInitial) {
+        payload.combo_id = ''
       }
       await agentsApi.update(inferenceAgentId, payload)
       setInferSuccess(true)
