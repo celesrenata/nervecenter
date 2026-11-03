@@ -33,6 +33,7 @@ import { AskView } from './views/AskView'
 import { DownloadsView } from './views/DownloadsView'
 import { TodayView } from './views/TodayView'
 import { ConnectionsView } from './views/ConnectionsView'
+import { OauthCallbackView } from './views/OauthCallbackView'
 import { SettingsView } from './views/SettingsView'
 import { LoginView } from './views/LoginView'
 import { AuthCallback } from './auth/AuthCallback'
@@ -67,6 +68,11 @@ function App() {
             <Route path="/" element={<HomeView />} />
             <Route path="/overview" element={<OverviewView />} />
             <Route path="/connections" element={<ConnectionsView />} />
+            {/* Provider-OAuth authorization-code callback (Google / Microsoft
+                sign-in). Rendered inside Layout so the session is present and
+                the result shows in the app chrome; the wizard's provider
+                login is opened in the same tab so the session rides along. */}
+            <Route path="/connections/oauth/callback" element={<OauthCallbackView />} />
             <Route path="/now" element={<NowView />} />
             <Route path="/briefing" element={<BriefingView />} />
             <Route path="/calendar" element={<CalendarView />} />

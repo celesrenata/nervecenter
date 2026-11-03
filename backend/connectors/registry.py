@@ -26,7 +26,9 @@ All repository access is async; the service is bound onto ``app.state`` by
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import os
 import secrets as _secrets
 from datetime import UTC, datetime
 from typing import Any, Protocol, runtime_checkable
@@ -94,6 +96,20 @@ EDITABLE_CONFIG_KEYS: dict[str, tuple[str, ...]] = {
     "relay_device": ("device_name",),
     "calendar": ("account", "host", "port", "ssl"),
 }
+
+#: Deploy-contract environment variables carrying the OAuth app credentials.
+#: ``client_id`` is non-secret config (read from env, falling back to the
+#: connection row); ``client_secret`` is a denied config key and is never
+#: stored on a row. Mirrors :mod:`backend.connectors.wiring`.
+_CLIENT_ID_ENV = {
+    "google": "NERVE_GOOGLE_CLIENT_ID",
+    "microsoft": "NERVE_MICROSOFT_CLIENT_ID",
+}
+
+#: Deploy-contract env var for the registered OAuth callback URI — the exact
+#: ``redirect_uri`` the provider bounces the browser back to (the SPA route).
+#: When unset, falls back to the per-connection ``oauth_redirect_uri`` config.
+_CALLBACK_URL_ENV = "NERVE_OAUTH_CALLBACK_URL"
 
 #: Config keys that are *never* accepted (credential-like / internal).
 DENIED_CONFIG_KEYS = (
@@ -769,12 +785,19 @@ class ConnectionControlPlane:
     # -- OAuth flow (gmail / graph_mail) -------------------------------------------
 
     async def start_oauth(self, connection_id: str) -> dict[str, Any]:
-        """Begin a provider sign-in: return ``{authorization_url, state, provider, code_verifier}``.
+        """Begin a provider sign-in: return ``{authorization_url, state, provider, code_verifier, redirect_uri}``.
 
         The per-flow ``state`` and PKCE ``code_verifier`` are persisted in the
         connection's non-secret ``config`` so :meth:`complete_oauth` can bind
         the callback to this exact flow (CSRF guard, P1-106). Both are denied
         config keys — never echoed back from the public projection.
+
+        The ``state`` nonce carries the connection id (base64url) plus a CSRF
+        token, joined by a dot: ``<b64url(connection_id)>.<csrf_token>``. The
+        provider echoes ``state`` verbatim on the redirect, so the SPA callback
+        route can parse the connection id out of it without any cross-tab
+        session dependency. The CSRF binding in :meth:`complete_oauth` is
+        unchanged — the full state string is compared in constant time.
         """
         row = await self._require_row(connection_id)
         provider_name = OAUTH_PROVIDER_BY_KIND.get(row.kind)
@@ -783,9 +806,40 @@ class ConnectionControlPlane:
                 ERR_OAUTH_INCOMPLETE, f"kind {row.kind!r} does not use OAuth"
             )
         config = row.config or {}
-        client_id = str(config.get("client_id", ""))
-        redirect_uri = str(config.get("oauth_redirect_uri", ""))
-        state = _secrets.token_urlsafe(24)
+        # The client id is a deploy-time app credential: read it from the
+        # environment (deploy contract) first, falling back to the per-connection
+        # config so existing rows/tests that carry it keep working.
+        client_id = str(
+            os.environ.get(_CLIENT_ID_ENV[provider_name], "").strip()
+            or config.get("client_id", "")
+        )
+        # The callback URI must be *exactly* the URI registered with the
+        # provider (Google/Microsoft reject non-registered redirect URIs), so
+        # it is never per-connection: environment wins (one registered URI
+        # works for every row), falling back to the per-connection config. The
+        # SPA callback route carries the connection id itself (sessionStorage),
+        # which keeps this value identical to the provider registration.
+        redirect_uri = str(
+            os.environ.get(_CALLBACK_URL_ENV, "").strip()
+            or config.get("oauth_redirect_uri", "")
+        )
+        if not client_id:
+            raise ConnectionControlPlaneError(
+                ERR_MISSING_CREDENTIAL,
+                "provider app credentials are not configured on this host",
+            )
+        if not redirect_uri:
+            raise ConnectionControlPlaneError(
+                ERR_OAUTH_INCOMPLETE,
+                "no OAuth callback URL is configured",
+            )
+        # The provider echoes ``state`` verbatim back on the redirect, so it
+        # can carry the connection id (base64url) alongside the CSRF token.
+        # The SPA callback route parses it to know which row to complete.
+        conn_id_b64 = base64.urlsafe_b64encode(
+            connection_id.encode("utf-8")
+        ).rstrip(b"=").decode("ascii")
+        state = f"{conn_id_b64}.{_secrets.token_urlsafe(24)}"
         verifier, challenge = make_pkce_pair()
         # Persist the per-flow state + PKCE verifier (config, non-secret) for
         # later verification; the challenge goes in the authorize URL.
@@ -805,6 +859,7 @@ class ConnectionControlPlane:
             "state": state,
             "code_verifier": verifier,
             "provider": provider_name,
+            "redirect_uri": redirect_uri,
         }
 
     async def complete_oauth(self, connection_id: str, code: str, state: str) -> dict[str, Any]:

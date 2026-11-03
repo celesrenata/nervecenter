@@ -368,18 +368,17 @@ export function AddConnectionWizard({
                 <p className="flex flex-col gap-1">
                   <span>
                     Open <strong>{state.kind === 'gmail' ? 'Google' : 'Microsoft'}</strong>{' '}
-                    sign-in for <em>this account</em> in your browser. This is the
-                    provider's own login — separate from your NerveCenter sign-in —
-                    so the browser will ask for your {state.kind === 'gmail' ? 'Google' : 'Microsoft'}
-                    credentials once more.
+                    sign-in for <em>this account</em>. This is the provider's own
+                    login — separate from your NerveCenter sign-in — so the browser
+                    will ask for your {state.kind === 'gmail' ? 'Google' : 'Microsoft'}
+                    credentials once more. When you finish, the browser returns here
+                    and the connection completes on its own.
                   </span>
                   <a
                     href={authUrl}
-                    target="_blank"
-                    rel="noreferrer"
                     className="text-accent hover:text-accent-hover break-all"
                   >
-                    {authUrl}
+                    Open provider sign-in
                   </a>
                 </p>
               ) : (

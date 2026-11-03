@@ -94,7 +94,7 @@ export interface ConnectionUpdatePatch {
 
 /** `POST /{id}/auth` — OAuth start, relay pairing pointer, or completed exchange. */
 export type AuthFlowResult =
-  | { authorization_url: string; state: string; provider: string }
+  | { authorization_url: string; state: string; provider: string; redirect_uri?: string }
   | { ok: true; detail: string; pair_endpoint: string; auth_status: AuthStatus }
   | ({ ok: true; detail: string } & Connection)
   | DegradedWrite

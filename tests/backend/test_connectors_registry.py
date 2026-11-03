@@ -549,6 +549,16 @@ class TestPermissions:
 
 
 class TestOauth:
+    @pytest.fixture(autouse=True)
+    def _oauth_env(self, monkeypatch):
+        """The OAuth app credentials are deploy-time env vars (deploy contract).
+        Inject them for every OAuth test so rows need not carry ``client_id``
+        / ``oauth_redirect_uri`` in config (env-first resolution in
+        :meth:`ConnectionControlPlane.start_oauth`)."""
+        monkeypatch.setenv("NERVE_OAUTH_CALLBACK_URL", "https://host/connections/oauth/callback")
+        monkeypatch.setenv("NERVE_GOOGLE_CLIENT_ID", "env-gcid")
+        monkeypatch.setenv("NERVE_MICROSOFT_CLIENT_ID", "env-mcid")
+
     async def test_start_oauth_persists_state_and_returns_url(self, env):
         plane, registry, *_ = env
         row = await plane.create_connection(
@@ -557,7 +567,14 @@ class TestOauth:
         result = await plane.start_oauth(row.id)
         assert result["provider"] == "google"
         assert result["state"]
-        assert "client_id=cid" in result["authorization_url"]
+        # Env-first: the deploy-contract env var wins over the row config.
+        assert "client_id=env-gcid" in result["authorization_url"]
+        # The registered redirect URI is returned for the SPA callback route.
+        assert result["redirect_uri"] == "https://host/connections/oauth/callback"
+        # The connection id rides inside the state nonce (base64url + '.'),
+        # so the callback route can bind the exchange without a cross-tab session.
+        b64_id = base64.urlsafe_b64encode(row.id.encode()).rstrip(b"=").decode("ascii")
+        assert result["state"].startswith(f"{b64_id}.")
         # The flow state persists in the raw config…
         raw = await registry.connections.get_connection(row.id)
         assert raw.config.get("oauth_state") == result["state"]
@@ -574,7 +591,10 @@ class TestOauth:
 
     async def test_complete_oauth_stores_token_via_vault(self, env):
         plane, registry, vault, _ = env
-        row = await plane.create_connection(kind="graph_mail")
+        row = await plane.create_connection(
+            kind="graph_mail",
+            config={"client_id": "mcid", "oauth_redirect_uri": "http://cb"},
+        )
         exchanger = FakeExchanger("ms-token")
         plane.set_token_exchanger(exchanger)
         flow = await plane.start_oauth(row.id)
@@ -605,7 +625,9 @@ class TestOauth:
         and the durable refresh token; a legacy string exchanger persists
         only the access token (refresh token is absent)."""
         plane, registry, vault, _ = env
-        row = await plane.create_connection(kind="gmail")
+        row = await plane.create_connection(
+            kind="gmail", config={"client_id": "gcid", "oauth_redirect_uri": "http://cb"}
+        )
         exchanger = FakeExchanger(
             {"access_token": "g-at-1", "refresh_token": "g-rt-1"}
         )
@@ -697,7 +719,9 @@ class TestOauth:
         state must be rejected with the stable code — the CSRF guard. The
         token must NOT be exchanged or stored."""
         plane, registry, *_ = env
-        row = await plane.create_connection(kind="gmail")
+        row = await plane.create_connection(
+            kind="gmail", config={"client_id": "gcid", "oauth_redirect_uri": "http://cb"}
+        )
         exchanger = FakeExchanger("forged-token")
         plane.set_token_exchanger(exchanger)
         await plane.start_oauth(row.id)
