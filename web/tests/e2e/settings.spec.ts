@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { seedBreakGlassSession } from './helpers/auth-seed'
 
 /**
  * Settings — browser-local preferences grouped by feature set.
@@ -21,11 +22,9 @@ import { expect, test, type Page } from '@playwright/test'
 /** The dark emerald accent token, as defined in SettingsContext. */
 const EMERALD_DARK_ACCENT = '#10b981'
 
-/** Seed the auth token before any page script runs, then load the path. */
+/** Seed a real break-glass session before any page script runs, then load the path. */
 async function visitSettings(page: import('@playwright/test').Page, path = '/settings') {
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
-  })
+  await seedBreakGlassSession(page)
   await page.goto(path, { waitUntil: 'domcontentloaded' })
 }
 
@@ -126,8 +125,8 @@ test('global attributes apply live to <html> and persist across a reload', async
 })
 
 test('home-view preference changes what / renders', async ({ page }) => {
+  await seedBreakGlassSession(page)
   await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
     localStorage.setItem('nerve-settings', JSON.stringify({ landingPage: 'overview' }))
   })
   await page.goto('/', { waitUntil: 'domcontentloaded' })
@@ -174,9 +173,7 @@ function mockInferAvailable(page: Page) {
 test('inference tab persists default model & provider', async ({ page }) => {
   const pageErrors: string[] = []
   page.on('pageerror', (e) => pageErrors.push(e.message))
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
-  })
+  await seedBreakGlassSession(page)
   await mockInferAvailable(page)
   await page.goto('/settings', { waitUntil: 'domcontentloaded' })
 

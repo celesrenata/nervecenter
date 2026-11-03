@@ -27,8 +27,11 @@ import {
  *   - mount    → if a token is present, introspect /api/auth/me for the user;
  *     an expired/invalid token 401s, which clears the session (apiFetch).
  *
- * The App remains ungated: no view is wrapped in RequireAuth yet (the
- * break-glass vs SSO gating decision is pending — see RequireAuth.tsx).
+ * The App is gated: every feature route renders under <RequireAuth> (App.tsx),
+ * which redirects unauthenticated users to /login. Because this provider
+ * withholds its children until the mount introspection settles, RequireAuth
+ * never sees a transient "not authenticated" state for a live session — the
+ * gate is safe to wrap the whole Layout.
  */
 
 interface User {

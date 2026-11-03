@@ -291,21 +291,11 @@ export function LoginView() {
           </button>
         )}
 
-        {/* Local admin: the break-glass username/password path. Under SSO it
-            is collapsed behind a clear disclosure (NOT the primary path);
-            without SSO it is the primary form and renders unwrapped. */}
-        {ssoEnabled ? (
-          <details data-testid="login-local" className="mt-6">
-            <summary className="cursor-pointer select-none text-sm font-medium text-muted hover:text-primary">
-              Local admin (break-glass)
-            </summary>
-            <div className="mt-4 border border-gray-200 dark:border-gray-600 rounded-lg p-4">
-              {credentialForm}
-            </div>
-          </details>
-        ) : (
-          credentialForm
-        )}
+        {/* Local admin: the break-glass username/password path. It is offered
+            only when SSO is NOT enabled — under SSO the SSO button is the sole
+            sign-in and the form is hidden entirely (SSO-only). Without SSO it
+            is the primary form and renders unwrapped. */}
+        {!ssoEnabled && credentialForm}
       </div>
     </div>
   )

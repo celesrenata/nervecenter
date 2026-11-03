@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { seedBreakGlassSession } from './helpers/auth-seed'
 
 /**
  * Calendar — connected accounts (prompt2 Phase P2, area 2c).
@@ -16,11 +17,9 @@ import { expect, test } from '@playwright/test'
  *     never a fake success and never a fabricated account row.
  */
 
-/** Seed the auth token before any page script runs, then load the path. */
+/** Seed a real break-glass session before any page script runs, then load the path. */
 async function visitCalendar(page: import('@playwright/test').Page, path = '/calendar') {
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
-  })
+  await seedBreakGlassSession(page)
   await page.goto(path, { waitUntil: 'domcontentloaded' })
 }
 

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { seedBreakGlassSession } from './helpers/auth-seed'
 
 /**
  * views-b.spec.ts — gap-closure round 2 (IN/DC/TL/INF/AG).
@@ -97,9 +98,7 @@ async function visitAuthenticated(
   page: import('@playwright/test').Page,
   path: string,
 ) {
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
-  })
+  await seedBreakGlassSession(page)
   await page.goto(path, { waitUntil: 'domcontentloaded' })
 }
 

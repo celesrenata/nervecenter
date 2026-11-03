@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { seedBreakGlassSession } from './helpers/auth-seed'
 
 /**
  * waiting-on.spec.ts — the Waiting-On plane (prompt2 §19 — Waiting-On
@@ -89,9 +90,7 @@ function assertConsoleClean(cap: ConsoleCapture) {
 }
 
 async function visitAuthenticated(page: import('@playwright/test').Page, path: string) {
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
-  })
+  await seedBreakGlassSession(page)
   await page.goto(path, { waitUntil: 'domcontentloaded' })
 }
 

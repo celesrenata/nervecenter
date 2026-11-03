@@ -274,16 +274,28 @@ function ssoConfigBody(enabled: boolean) {
 }
 
 test.describe('SSO session bootstrap (SSO-GAP)', () => {
-  test('no redirect when SSO is disabled (dev / mock) — stay on the page', async ({ page }) => {
+  test('no SSO redirect when SSO is disabled (dev / mock) — unauthenticated user reaches sign-in', async ({
+    page,
+  }) => {
+    // Tokenless + SSO disabled. The S102 route gate (RequireAuth) sends the
+    // unauthenticated user from / to /login; the SSO bootstrap must NOT issue
+    // an issuer redirect (SSO is off, so there is no gate session to bridge).
+    // With SSO disabled the local-admin form is shown, so /login is the
+    // break-glass path the user can actually complete.
     await page.route('**/api/auth/sso/config', (route) =>
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ssoConfigBody(false)) }),
     )
+    const issuerRedirects: string[] = []
+    page.on('request', (req) => {
+      if (req.url().includes('/authorize')) issuerRedirects.push(req.url())
+    })
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     // The bootstrap consults the SSO config before deciding; once that
-    // round-trips, a disabled SSO must leave the user where they landed.
+    // round-trips, a disabled SSO must not have issued an issuer redirect.
     await page.waitForRequest('**/api/auth/sso/config')
-    await page.waitForTimeout(50)
-    expect(page.url()).toBe('http://localhost:3000/')
+    // The route gate lands the tokenless user on the sign-in screen.
+    await page.waitForURL('**/login')
+    expect(issuerRedirects).toEqual([])
     expect(await page.evaluate(() => sessionStorage.getItem('nc.sso.bootstrapAt'))).toBeNull()
   })
 
@@ -309,7 +321,14 @@ test.describe('SSO session bootstrap (SSO-GAP)', () => {
   })
 
   test('does not re-redirect once the bootstrap guard is set', async ({ page }) => {
-    // Seed the guard BEFORE load: the effect must see it and skip.
+    // Seed the guard BEFORE load: the effect must see it and skip the issuer
+    // redirect even though SSO is enabled. The S102 route gate independently
+    // sends the tokenless user to /login; the assertion is that the bootstrap
+    // did NOT additionally bounce them to the issuer (the guard's job).
+    const issuerRedirects: string[] = []
+    page.on('request', (req) => {
+      if (req.url().includes('/authorize')) issuerRedirects.push(req.url())
+    })
     await page.goto('/', { waitUntil: 'domcontentloaded' })
     await page.evaluate(() => {
       sessionStorage.setItem('nc.sso.bootstrapAt', new Date().toISOString())
@@ -318,7 +337,8 @@ test.describe('SSO session bootstrap (SSO-GAP)', () => {
       route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(ssoConfigBody(true)) }),
     )
     await page.goto('/', { waitUntil: 'domcontentloaded' })
-    await page.waitForTimeout(50)
-    expect(page.url()).toBe('http://localhost:3000/')
+    await page.waitForURL('**/login')
+    // The guard held: no issuer authorization request was issued on reload.
+    expect(issuerRedirects).toEqual([])
   })
 })

@@ -1,4 +1,5 @@
 import { expect, test, type Page, type Route } from '@playwright/test'
+import { seedBreakGlassSession } from './helpers/auth-seed'
 
 /**
  * Gap-closure spec — login + app shell (audit LG-1…LG-4, D-1, D-4, D-7).
@@ -8,19 +9,16 @@ import { expect, test, type Page, type Route } from '@playwright/test'
  * endpoints are intercepted per-test with page.route() so the assertions
  * do not depend on the backend's SSO/local-admin configuration.
  *
- * Auth-gated pages get `authToken` seeded in localStorage via
- * addInitScript, following the views.spec.ts convention (AuthContext
- * hydrates from that key).
+ * Auth-gated pages seed a REAL break-glass session (seedBreakGlassSession
+ * → sessionStorage nc.accessToken) so the S102 route gate (RequireAuth)
+ * admits them. The AC005-era `localStorage.authToken` seed was never read
+ * by the client, so those pages now answer 401 → the gate bounces them to
+ * /login; the real session is what the transport actually sends.
  */
 
-const AUTH_SEED = { authToken: 'test-token' }
-
+/** Seed a real break-glass session so the S102 gate admits the app-shell tests. */
 async function seedAuth(page: Page): Promise<void> {
-  await page.addInitScript((seed) => {
-    for (const [k, v] of Object.entries(seed)) {
-      window.localStorage.setItem(k, v)
-    }
-  }, AUTH_SEED)
+  await seedBreakGlassSession(page)
 }
 
 function mockSsoConfig(
@@ -172,12 +170,12 @@ test.describe('login view (LG-1…LG-4)', () => {
     await expect(page.locator('main h1')).toHaveText('Today')
   })
 
-  test('SSO-first layout: button labelled with issuer display name; form collapsed', async ({
+  test('SSO-first layout: button labelled with issuer display name; local form hidden', async ({
     page,
   }) => {
     // issuer_display_name is present → the button reads "Sign in with example"
-    // (last path segment of the issuer). The username/password form is the
-    // break-glass path, so it renders inside a collapsed <details>.
+    // (last path segment of the issuer). SSO is the sole sign-in, so the
+    // break-glass username/password form is NOT rendered at all.
     await page.route('**/api/auth/sso/config', (route) =>
       route.fulfill({
         status: 200,
@@ -196,17 +194,11 @@ test.describe('login view (LG-1…LG-4)', () => {
     const sso = page.getByRole('button', { name: 'Sign in with example' })
     await expect(sso).toBeVisible()
 
-    // The local-admin form is collapsed by default (not the primary path).
-    // A native <details> is collapsed when it lacks the `open` attribute.
-    const local = page.getByTestId('login-local')
-    await expect(local).not.toHaveAttribute('open')
-    await expect(page.locator('#username')).not.toBeVisible()
-
-    // Expanding the disclosure reveals the username/password form.
-    await local.locator('summary').click()
-    await expect(local).toHaveAttribute('open')
-    await expect(page.locator('#username')).toBeVisible()
-    await expect(page.locator('#password')).toBeVisible()
+    // SSO-only (D-4): the local-admin form is absent, not merely collapsed —
+    // no <details> disclosure and no username/password fields in the DOM.
+    await expect(page.getByTestId('login-local')).toHaveCount(0)
+    await expect(page.locator('#username')).toHaveCount(0)
+    await expect(page.locator('#password')).toHaveCount(0)
   })
 
   test('SSO button falls back to "SSO" when issuer_display_name is absent', async ({
@@ -227,8 +219,9 @@ test.describe('login view (LG-1…LG-4)', () => {
     await page.goto('/login')
 
     await expect(page.getByRole('button', { name: 'Sign in with SSO' })).toBeVisible()
-    // The disclosure is still present (the form is always break-glass under SSO).
-    await expect(page.getByTestId('login-local')).toBeVisible()
+    // SSO-only (D-4): the local-admin form is hidden, not merely collapsed.
+    await expect(page.getByTestId('login-local')).toHaveCount(0)
+    await expect(page.locator('#username')).toHaveCount(0)
   })
 })
 
@@ -285,5 +278,20 @@ test.describe('app shell (D-1, D-4)', () => {
     await page.waitForURL('**/systems')
     await expect(drawer).toHaveCount(0)
     await expect(hamburger).toHaveAttribute('aria-expanded', 'false')
+  })
+
+  test('S102 gate: a dead session bounces / to /login', async ({ page }) => {
+    // Seed a token the backend will REJECT (not a valid JWT) into the key the
+    // transport actually reads. /auth/me answers 401, the session never
+    // authenticates, and the S102 route gate (RequireAuth) redirects the
+    // unauthenticated user to /login — the dead `authToken` localStorage seed
+    // that used to silently strand users here is gone.
+    await page.addInitScript(() => {
+      sessionStorage.setItem('nc.accessToken', 'dead-token')
+    })
+    await page.goto('/')
+
+    await page.waitForURL('**/login')
+    await expect(page.getByRole('heading', { name: 'NerveCenter' })).toBeVisible()
   })
 })

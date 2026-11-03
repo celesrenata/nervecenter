@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { seedBreakGlassSession } from './helpers/auth-seed'
 
 /**
  * AC005 — Ask round-trip against the REAL backend.
@@ -45,9 +46,7 @@ test('Ask round-trip renders the /api/context/ask response without console error
   )
 
   try {
-    await page.addInitScript(() => {
-      localStorage.setItem('authToken', 'e2e-token')
-    })
+    await seedBreakGlassSession(page)
     await page.goto('/ask', { waitUntil: 'domcontentloaded' })
     await expect(page.locator('main h1')).toHaveText('Ask NerveCenter')
 

@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test'
+import { seedBreakGlassSession } from './helpers/auth-seed'
 
 /**
  * views-a.spec.ts — gap-closure round for the NerveCenter web audit (OV/SY/TA/GL).
@@ -104,9 +105,7 @@ function attachConsoleCapture(page: import('@playwright/test').Page, cap: Consol
 }
 
 async function visitAuthenticated(page: import('@playwright/test').Page, path: string) {
-  await page.addInitScript(() => {
-    localStorage.setItem('authToken', 'e2e-token')
-  })
+  await seedBreakGlassSession(page)
   await page.goto(path, { waitUntil: 'domcontentloaded' })
 }
 

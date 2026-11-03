@@ -36,6 +36,7 @@ import { ConnectionsView } from './views/ConnectionsView'
 import { SettingsView } from './views/SettingsView'
 import { LoginView } from './views/LoginView'
 import { AuthCallback } from './auth/AuthCallback'
+import { RequireAuth } from './auth/RequireAuth'
 
 /** `/` renders the feature selected in Settings → Workflow → Home view. */
 function HomeView() {
@@ -58,7 +59,9 @@ function App() {
           <Route
             path="/"
             element={
-              <Layout />
+              <RequireAuth>
+                <Layout />
+              </RequireAuth>
             }
           >
             <Route path="/" element={<HomeView />} />
