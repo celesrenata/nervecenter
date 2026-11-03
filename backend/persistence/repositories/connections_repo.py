@@ -13,9 +13,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete, select
 
-from ..models.personal import ConnectionRow, SecretRow
+from ..models.personal import (
+    ConnectionRow,
+    ImportJobRow,
+    IngestCursorRow,
+    RelaySeenMessageRow,
+    SecretRow,
+)
 
 #: Owner kinds a secret may be attached to (``connections`` today; the
 #: connector control plane may extend this).
@@ -123,6 +129,44 @@ class ConnectionsRepository:
                 setattr(row, name, value)
             await session.commit()
             return row
+
+    async def delete_connection(self, connection_id: str) -> bool:
+        """Hard-delete a connection and everything it owned, atomically.
+
+        Removes, in one transaction: every secret row owned by this
+        connection, the per-connection durable children (relay seen
+        messages, ingest cursors, import jobs), and the connection row
+        itself. Returns whether the connection row existed.
+        """
+
+        async with self._sessions() as session:
+            row = await session.get(ConnectionRow, connection_id)
+            if row is None:
+                return False
+            await session.execute(
+                sa_delete(RelaySeenMessageRow).where(
+                    RelaySeenMessageRow.connection_id == connection_id
+                )
+            )
+            await session.execute(
+                sa_delete(IngestCursorRow).where(
+                    IngestCursorRow.connection_id == connection_id
+                )
+            )
+            await session.execute(
+                sa_delete(ImportJobRow).where(
+                    ImportJobRow.connection_id == connection_id
+                )
+            )
+            await session.execute(
+                sa_delete(SecretRow).where(
+                    SecretRow.owner_kind == "connection",
+                    SecretRow.owner_id == connection_id,
+                )
+            )
+            await session.delete(row)
+            await session.commit()
+            return True
 
     # -- secrets (encrypted) -----------------------------------------------
 

@@ -541,19 +541,13 @@ class ConnectionControlPlane:
         return _public(updated)
 
     async def delete_connection(self, connection_id: str) -> bool:
-        """Remove the connection and purge every secret it owned."""
-        row = await self._registry.connections.get_connection(connection_id)
-        if row is None:
-            return False
-        # Purge every secret kind that may have been stored for this owner.
-        for kind in (APP_PASSWORD, ACCESS_TOKEN, REFRESH_TOKEN, RELAY_TOKEN):
-            await self._registry.connections.delete_secret(
-                kind=kind, owner_kind="connection", owner_id=connection_id
-            )
-        # Disable in place (the durable layer has no hard delete this wave).
-        await self._registry.connections.update_connection(connection_id, enabled=False)
-        log.info("control_plane.connection_removed", id=connection_id)
-        return True
+        """Hard-delete the connection, every secret it owned, and its
+        durable children (relay seen messages / cursors / import jobs),
+        atomically. Returns whether the row existed."""
+        deleted = await self._registry.connections.delete_connection(connection_id)
+        if deleted:
+            log.info("control_plane.connection_removed", id=connection_id)
+        return deleted
 
     # -- login probe / verify ----------------------------------------------------
 

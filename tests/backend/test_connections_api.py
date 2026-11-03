@@ -44,6 +44,7 @@ from backend.persistence.models.personal import (
     IngestCursorRow,
     PersonIdentityRow,
     PersonRow,
+    RelaySeenMessageRow,
     SecretRow,
 )
 from backend.persistence.repositories import RepositoryRegistry
@@ -77,6 +78,7 @@ PERSONAL_TABLES = [
     ConversationRow.__table__,
     ImportJobRow.__table__,
     IngestCursorRow.__table__,
+    RelaySeenMessageRow.__table__,
 ]
 
 
@@ -312,19 +314,18 @@ class TestUpdateDelete:
             assert "password" not in patched["config"]
             assert "token" not in patched["config"]
 
-    def test_delete_204_soft_disables(self, wired, tmp_path: Path):
+    def test_delete_204_hard_removes(self, wired, tmp_path: Path):
         app, plane = wired
         with TestClient(app) as client:
             created = client.post("/api/connections", json=_imap_body()).json()
             assert client.delete(f"/api/connections/{created['id']}").status_code == 204
-            # Soft delete (no hard delete this wave): the row remains, disabled.
-            remaining = client.get(f"/api/connections/{created['id']}")
-            assert remaining.status_code == 200
-            assert remaining.json()["enabled"] is False
-            # …and it no longer appears in enabled-only listings.
+            # Hard delete: the row is gone, so it 404s on re-fetch…
             assert (
-                client.get("/api/connections", params={"enabled_only": "true"}).json()["data"]
-                == []
+                client.get(f"/api/connections/{created['id']}").status_code == 404
+            )
+            # …and no longer appears in any listing (enabled or not).
+            assert (
+                client.get("/api/connections").json()["data"] == []
             )
 
 

@@ -243,19 +243,18 @@ class TestCrud:
         plane, *_ = env
         assert await plane.get_connection("missing") is None
 
-    async def test_delete_purges_secrets_and_disables(self, env):
+    async def test_delete_hard_removes_connection_and_secrets(self, env):
         plane, registry, vault, _ = env
         row = await plane.create_connection(kind="imap", config=IMAP_CONFIG)
         await plane.store_secret(
             connection_id=row.id, kind=APP_PASSWORD, plaintext="pw"
         )
         assert await plane.delete_connection(row.id) is True
-        # Soft delete: the row is never hard-removed, so a repeat is idempotent.
-        assert await plane.delete_connection(row.id) is True
-        # The row stays (durable layer has no hard delete) but is disabled…
-        remaining = await registry.connections.get_connection(row.id)
-        assert remaining.enabled is False
-        # …and every secret kind is purged.
+        # Hard delete: the row is gone, so the connection no longer renders
+        # (and a repeat delete of an absent id is a stable False, not an error).
+        assert await registry.connections.get_connection(row.id) is None
+        assert await plane.delete_connection(row.id) is False
+        # Every secret owned by the connection is purged.
         assert (
             await registry.connections.get_secret(
                 kind=APP_PASSWORD, owner_kind="connection", owner_id=row.id
