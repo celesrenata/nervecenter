@@ -88,6 +88,7 @@ function mockDurable(
   const providers: Record<string, unknown>[] = opts.providers ? [...opts.providers] : []
   const combos: Record<string, unknown>[] = opts.combos ? [...opts.combos] : []
   let probeCalls = 0
+  let recallCalls = 0
 
   page.route(`${API}/providers/probe`, (route) => {
     probeCalls += 1
@@ -99,6 +100,27 @@ function mockDurable(
         models_found: 2,
         models: ['gpt-4o', 'gpt-4o-mini'],
         latency_ms: 12,
+      }),
+    })
+  })
+
+  page.route(`${API}/providers/*/models`, (route) => {
+    const req = route.request()
+    if (req.method() !== 'POST') {
+      return route.fulfill({ status: 405, body: 'method not allowed' })
+    }
+    recallCalls += 1
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      // Mirrors the real backend payload (backend/services/inference_providers.py
+      // `_probe`): success + models_found + models + error + latency_ms.
+      body: JSON.stringify({
+        success: true,
+        models_found: 2,
+        models: ['gpt-4o', 'gpt-4o-mini'],
+        error: null,
+        latency_ms: 8,
       }),
     })
   })
@@ -169,7 +191,7 @@ function mockDurable(
     return route.fulfill({ status: 405, body: 'method not allowed' })
   })
 
-  return { probeCalls: () => probeCalls }
+  return { probeCalls: () => probeCalls, recallCalls: () => recallCalls }
 }
 
 test.beforeEach(async ({ page }) => {
@@ -222,6 +244,24 @@ test('ad-hoc probe recalls models into the form without saving', async ({ page }
   // The probe must NOT have persisted a provider row.
   expect(mock.probeCalls()).toBe(1)
   await expect(page.getByText('No durable providers yet.')).toBeVisible()
+
+  errs.assertClean()
+  errs.dispose()
+})
+
+test('recalls models for a provider and renders the count', async ({ page }) => {
+  const errs = trackPageErrors(page)
+  const mock = mockDurable(page, { providers: [SEED_PROVIDER] })
+
+  await page.goto('/providers')
+  await expect(page.getByTestId('providers-list')).toBeVisible()
+  await expect(page.getByText('OpenAI Prod')).toBeVisible()
+
+  await page.getByTestId('provider-recall-prov-1').click()
+  // Regression: this used to render "undefined model(s) recalled" because the
+  // client type expected `count` while the backend returns `models_found`.
+  await expect(page.getByTestId('provider-result-prov-1')).toHaveText('2 model(s) recalled')
+  expect(mock.recallCalls()).toBe(1)
 
   errs.assertClean()
   errs.dispose()

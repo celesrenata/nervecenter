@@ -111,8 +111,12 @@ export interface TestConnectionResult {
 }
 
 export interface RecallModelsResult {
+  /** Mirrors the backend probe payload (same shape as ProbeProviderResult). */
+  success: boolean
+  models_found: number
   models: string[]
-  count: number
+  error?: string | null
+  latency_ms?: number | null
 }
 
 // ─── Real implementation (fetch) ─────────────────────────────────────────────

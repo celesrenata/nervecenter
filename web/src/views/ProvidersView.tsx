@@ -484,10 +484,12 @@ const ProvidersView = () => {
         ...s,
         [id]: {
           busy: false,
-          ok: true,
-          result: res.models.length
-            ? `${res.count} model(s) recalled`
-            : 'No models found (no key or base_url?)',
+          ok: res.success,
+          result: res.success
+            ? res.models.length
+              ? `${res.models_found} model(s) recalled`
+              : 'No models found (no key or base_url?)'
+            : res.error || 'Recall failed',
         },
       }))
     } catch (err) {
