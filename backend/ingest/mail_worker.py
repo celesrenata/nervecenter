@@ -183,15 +183,22 @@ def default_ingest_seam() -> IngestSeam:
 
 
 def _secret_kind_for(conn: Any) -> str:
-    """The durable secret kind a connection authenticates with (§6)."""
+    """The durable secret kind a connection authenticates with (§6).
+
+    The scheme follows the connection's kind, not its transient auth
+    status: gmail/outlook always authenticate with OAuth access tokens,
+    so an expired token must keep resolving ``access_token`` instead of
+    falling back to ``app_password`` — which a Gmail/Outlook connection
+    never carries, and which turned an expired token into a permanent
+    ``connect_failed`` loop.
+    """
     config = getattr(conn, "config", None) or {}
     kind = str(config.get("secret_kind") or "").strip()
     if kind:
         return kind
-    if str(getattr(conn, "auth_status", "") or "") == "authenticated" and (
-        str(config.get("auth_method") or "").lower() == "oauth2"
-        or str(conn.kind).lower() in ("gmail", "outlook")
-    ):
+    if str(config.get("auth_method") or "").lower() == "oauth2" or str(
+        getattr(conn, "kind", "")
+    ).lower() in ("gmail", "outlook"):
         return "access_token"
     return "app_password"
 

@@ -53,6 +53,7 @@ from backend.ingest import (
     mark_seen,
     seen_keys,
 )
+from backend.ingest.mail_worker import _secret_kind_for
 from backend.ingest.supervisor import SUPERVISOR_STATE_KEY
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.personal import (
@@ -738,3 +739,47 @@ def _dummy_registry() -> RepositoryRegistry:
     """A registry whose identity passes the isinstance check but is never
     queried (used only for the store-missing degradation path)."""
     return RepositoryRegistry.__new__(RepositoryRegistry)
+
+
+class TestSecretKindInference:
+    """The credential scheme follows the connection's kind, not its
+    transient auth status (regression for the ``auth_expired`` ->
+    ``app_password`` fallback that looped a Gmail connection in
+    ``connect_failed`` on a production cluster)."""
+
+    @staticmethod
+    def _conn(kind: str, auth_status: str, config: dict[str, Any] | None = None):
+        return SimpleNamespace(kind=kind, auth_status=auth_status, config=config or {})
+
+    @pytest.mark.parametrize(
+        "auth_status",
+        ["authenticated", "auth_expired", "pending_authorization", "unconfigured"],
+    )
+    def test_gmail_is_always_access_token(self, auth_status: str) -> None:
+        # gmail always authenticates via OAuth — an expired token must not
+        # flip the connection to the app-password scheme.
+        assert _secret_kind_for(self._conn("gmail", auth_status)) == "access_token"
+
+    @pytest.mark.parametrize(
+        "auth_status", ["authenticated", "auth_expired", "unconfigured"]
+    )
+    def test_outlook_is_always_access_token(self, auth_status: str) -> None:
+        assert _secret_kind_for(self._conn("outlook", auth_status)) == "access_token"
+
+    @pytest.mark.parametrize(
+        "auth_status", ["authenticated", "auth_expired", "unconfigured"]
+    )
+    def test_imap_still_uses_app_password(self, auth_status: str) -> None:
+        # A plain IMAP connection (no oauth2, not gmail/outlook) keeps the
+        # app-password scheme under any status.
+        assert _secret_kind_for(self._conn("imap", auth_status)) == "app_password"
+
+    def test_explicit_secret_kind_wins(self) -> None:
+        # An operator-set secret_kind always overrides the inference.
+        conn = self._conn("gmail", "auth_expired", {"secret_kind": "app_password"})
+        assert _secret_kind_for(conn) == "app_password"
+
+    def test_explicit_oauth2_wins_for_imap(self) -> None:
+        # An IMAP connection configured with oauth2 also uses access tokens.
+        conn = self._conn("imap", "unconfigured", {"auth_method": "OAuth2"})
+        assert _secret_kind_for(conn) == "access_token"
