@@ -88,6 +88,20 @@ CURSOR_KINDS = {"gmail": "gmail_history", "imap": "imap_seq"}
 #: ``OAUTH_PROVIDER_BY_KIND``; only the kinds the ingest worker serves).
 MAIL_OAUTH_PROVIDERS = {"gmail": "google", "outlook": "microsoft"}
 
+#: Client-credential env-var names per provider (deploy contract, mirroring
+#: :mod:`backend.connectors.wiring` and :mod:`backend.connectors.registry`).
+#: The app keys are *not* per-connection config — ``client_secret`` is a
+#: denied config key on the control plane. The worker reads them from the
+#: environment first, falling back to ``config`` for tests / existing rows.
+_CLIENT_ID_ENV = {
+    "google": "NERVE_GOOGLE_CLIENT_ID",
+    "microsoft": "NERVE_MICROSOFT_CLIENT_ID",
+}
+_CLIENT_SECRET_ENV = {
+    "google": "NERVE_GOOGLE_CLIENT_SECRET",
+    "microsoft": "NERVE_MICROSOFT_CLIENT_SECRET",
+}
+
 #: Backoff bounds (seconds): delay = min(base * 2**failures, max).
 DEFAULT_BACKOFF_BASE_S = 2.0
 DEFAULT_BACKOFF_MAX_S = 120.0
@@ -650,10 +664,27 @@ class MailIngestWorker:
         provider_name = MAIL_OAUTH_PROVIDERS.get(str(getattr(conn, "kind", "")).lower())
         if provider_name is None:
             return False
+        # The app keys are deploy-time credentials: read them from the
+        # environment (deploy contract) first, falling back to the
+        # per-connection config so existing rows/tests that carry it keep
+        # working. Mirrors the control plane's ``start_oauth`` /
+        # ``RegistryTokenExchanger`` convention.
+        import os
+
         config = getattr(conn, "config", None) or {}
-        client_id = str(config.get("client_id") or "").strip()
-        client_secret = str(config.get("client_secret") or "").strip()
+        client_id = str(
+            os.environ.get(_CLIENT_ID_ENV[provider_name], "").strip()
+            or config.get("client_id", "")
+        ).strip()
+        client_secret = str(
+            os.environ.get(_CLIENT_SECRET_ENV[provider_name], "").strip()
+            or config.get("client_secret", "")
+        ).strip()
         if not client_id or not client_secret:
+            log.warning(
+                "mail_worker.refresh_disabled_missing_credentials",
+                kind=str(getattr(conn, "kind", "")),
+            )
             return False
         refresher = self._oauth_refresher or MailOAuthRefresher(
             connections=self._connections

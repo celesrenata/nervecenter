@@ -611,9 +611,143 @@ class TestWorkerRefreshWiring:
         assert row.last_error_code == "auth_expired"
         assert _OLD_REFRESH not in (row.last_error_message or "")
 
-    async def test_no_refresh_without_app_keys(self, harness: Any) -> None:
+    async def test_no_refresh_without_app_keys(
+        self, harness: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         registry = harness.registry
-        # No client_id/client_secret in config → refresh is disabled.
+        # No client_id/client_secret in config *and* none in the deploy env
+        # → refresh is disabled. The env vars are cleared so the test is
+        # deterministic even when the host carries the deploy credentials.
+        for name in (
+            "NERVE_GOOGLE_CLIENT_ID",
+            "NERVE_GOOGLE_CLIENT_SECRET",
+            "NERVE_MICROSOFT_CLIENT_ID",
+            "NERVE_MICROSOFT_CLIENT_SECRET",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        conn = await registry.connections.create_connection(
+            kind="gmail",
+            label="Work",
+            config={
+                "account": _ACCOUNT,
+                "imap_host": "imap.gmail.com",
+                "auth_method": "oauth2",
+            },
+            auth_status="authenticated",
+            enabled=True,
+        )
+        await registry.connections.upsert_secret(
+            kind=ACCESS_TOKEN_KIND,
+            owner_kind="connection",
+            owner_id=conn.id,
+            plaintext=_OLD_ACCESS,
+        )
+        await registry.connections.upsert_secret(
+            kind=REFRESH_TOKEN_KIND,
+            owner_kind="connection",
+            owner_id=conn.id,
+            plaintext=_OLD_REFRESH,
+        )
+        endpoint = FakeTokenEndpoint(
+            [(200, {"access_token": _NEW_ACCESS, "refresh_token": _NEW_REFRESH})]
+        )
+        refresher = MailOAuthRefresher(connections=registry.connections, transport=endpoint)
+        transport = RecordingTransport([TransportAuthError("401: token rejected")])
+        worker = _worker(harness, conn, transport, refresher)
+        await worker.poll_once()
+        summary = worker.status()["last"]
+
+        assert summary["status"] == "auth_expired"
+        assert endpoint.requests == []  # refresh was never attempted
+        assert len(transport.credential_values) == 1  # no retry
+
+    async def test_refresh_uses_env_credentials_when_config_has_none(
+        self, harness: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Production convention: the app keys are deploy-time env vars
+        (``NERVE_GOOGLE_CLIENT_ID`` / ``NERVE_GOOGLE_CLIENT_SECRET``), not
+        per-connection config. The worker must resolve them from the
+        environment so a connection row without config keys still
+        self-heals on token expiry."""
+        registry = harness.registry
+        monkeypatch.setenv("NERVE_GOOGLE_CLIENT_ID", "cid-env")
+        monkeypatch.setenv("NERVE_GOOGLE_CLIENT_SECRET", "csecret-env")
+        # No client_id/client_secret in config — env is the only source.
+        conn = await registry.connections.create_connection(
+            kind="gmail",
+            label="Work",
+            config={
+                "account": _ACCOUNT,
+                "imap_host": "imap.gmail.com",
+                "auth_method": "oauth2",
+            },
+            auth_status="authenticated",
+            enabled=True,
+        )
+        await registry.connections.upsert_secret(
+            kind=ACCESS_TOKEN_KIND,
+            owner_kind="connection",
+            owner_id=conn.id,
+            plaintext=_OLD_ACCESS,
+        )
+        await registry.connections.upsert_secret(
+            kind=REFRESH_TOKEN_KIND,
+            owner_kind="connection",
+            owner_id=conn.id,
+            plaintext=_OLD_REFRESH,
+        )
+        endpoint = FakeTokenEndpoint(
+            [(200, {"access_token": _NEW_ACCESS, "refresh_token": _NEW_REFRESH})]
+        )
+        refresher = MailOAuthRefresher(connections=registry.connections, transport=endpoint)
+        transport = RecordingTransport(
+            [
+                TransportAuthError("401: token rejected by mailbox"),
+                ([_make_item("<1@corp>")], {"history_id": 1, "account": _ACCOUNT}),
+            ]
+        )
+        worker = _worker(harness, conn, transport, refresher)
+        await worker.poll_once()
+        summary = worker.status()["last"]
+
+        assert summary["status"] == "ok"
+        # The refresh fired with the env credentials, not config (none).
+        assert len(endpoint.requests) == 1
+        assert endpoint.requests[0]["body"]["client_id"] == "cid-env"
+        assert endpoint.requests[0]["body"]["client_secret"] == "csecret-env"
+        # The retry ran with the fresh token and the rotation persisted.
+        assert transport.credential_values[1]["access_token"] == _NEW_ACCESS
+        assert await _stored(harness, REFRESH_TOKEN_KIND, conn.id) == _NEW_REFRESH
+
+    async def test_config_client_keys_still_work_as_fallback(
+        self, harness: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backwards compatibility: existing rows/tests that carry the app
+        keys in ``config`` keep refreshing when the env vars are absent."""
+        registry = harness.registry
+        for name in (
+            "NERVE_GOOGLE_CLIENT_ID",
+            "NERVE_GOOGLE_CLIENT_SECRET",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        conn = await _gmail_connection(registry)  # keys in config
+
+        endpoint = FakeTokenEndpoint(
+            [(200, {"access_token": _NEW_ACCESS, "refresh_token": _NEW_REFRESH})]
+        )
+        refresher = MailOAuthRefresher(connections=registry.connections, transport=endpoint)
+        transport = RecordingTransport(
+            [
+                TransportAuthError("401: token rejected by mailbox"),
+                ([_make_item("<1@corp>")], {"history_id": 1, "account": _ACCOUNT}),
+            ]
+        )
+        worker = _worker(harness, conn, transport, refresher)
+        await worker.poll_once()
+        summary = worker.status()["last"]
+
+        assert summary["status"] == "ok"
+        assert endpoint.requests[0]["body"]["client_id"] == "cid-test"
         conn = await registry.connections.create_connection(
             kind="gmail",
             label="Work",
