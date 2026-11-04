@@ -78,15 +78,24 @@ log = structlog.get_logger(__name__)
 #: plane off, anything else enables it.
 ENV_INGEST_ENABLED = "NERVE_INGEST_ENABLED"
 
-#: ``connections.kind`` values that are mail connections.
-CONNECTION_KINDS = ("gmail", "imap", "outlook")
+#: ``connections.kind`` values that are mail connections. ``graph_mail`` is
+#: the canonical Microsoft mail kind (the control plane's ``CONNECTION_KINDS``
+#: value); ``outlook`` is kept only as a backward-compat alias for any
+#: already-stored row (no new row can carry it — the control plane rejects
+#: every kind outside ``CONNECTION_KINDS``).
+CONNECTION_KINDS = ("gmail", "imap", "graph_mail", "outlook")
 
 #: ``ingest_cursors.kind`` per source type.
 CURSOR_KINDS = {"gmail": "gmail_history", "imap": "imap_seq"}
 
 #: OAuth provider per connection kind (mirrors the control plane's
-#: ``OAUTH_PROVIDER_BY_KIND``; only the kinds the ingest worker serves).
-MAIL_OAUTH_PROVIDERS = {"gmail": "google", "outlook": "microsoft"}
+#: ``OAUTH_PROVIDER_BY_KIND``). ``graph_mail`` is canonical for Microsoft;
+#: ``outlook`` stays as a backward-compat alias (same provider).
+MAIL_OAUTH_PROVIDERS = {
+    "gmail": "google",
+    "graph_mail": "microsoft",
+    "outlook": "microsoft",
+}
 
 #: Client-credential env-var names per provider (deploy contract, mirroring
 #: :mod:`backend.connectors.wiring` and :mod:`backend.connectors.registry`).
@@ -212,7 +221,7 @@ def _secret_kind_for(conn: Any) -> str:
         return kind
     if str(config.get("auth_method") or "").lower() == "oauth2" or str(
         getattr(conn, "kind", "")
-    ).lower() in ("gmail", "outlook"):
+    ).lower() in ("gmail", "graph_mail", "outlook"):
         return "access_token"
     return "app_password"
 

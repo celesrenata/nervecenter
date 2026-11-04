@@ -588,36 +588,86 @@ class ConnectionControlPlane:
             secret = await self._load_secret(row, str(ref))
         return await probe.probe(row.config or {}, secret)
 
+    #: Auth-class error codes that a *successful* probe disproves. When a
+    #: probe now succeeds and the recorded operational error is one of these,
+    #: the operational ``error`` was a downstream consequence of the (now
+    #: cleared) auth failure, so it is reconciled away (fix 3). ``auth_failed``
+    #: is included alongside the worker-written ``auth_expired`` because the
+    #: control plane itself writes ``auth_failed`` on a failed probe.
+    _AUTH_CLASS_ERROR_CODES = ("auth_expired", "auth_failed", ERR_OAUTH_AUTH_REJECTED)
+
     async def verify(self, connection_id: str) -> dict[str, Any]:
         """Run the provider login probe.
 
-        On success sets ``auth_status=authenticated`` + ``last_attempt_at``.
-        On failure sets a stable ``last_error_code`` + redacted
-        ``last_error_message``. ``operational_status`` is *never* advanced by a
-        probe — only a real ingest marks the connection healthy.
+        On success sets ``auth_status=authenticated`` + ``last_attempt_at``
+        and clears the stable ``last_error_code`` / redacted
+        ``last_error_message``.
+
+        Operational reconciliation (fix 3 — the gmail-auth-expired loop):
+        when the probe now SUCCEEDS and the recorded ``last_error_code`` is an
+        auth-class error (``auth_expired`` / ``auth_failed`` /
+        ``oauth_auth_rejected``), the operational ``error`` was written by the
+        worker *as a consequence of* that auth failure — not an independent
+        ingest fault. Leaving it would keep the card self-contradicting
+        ("auth fine on Verify / Operational Error / Last error: auth_expired").
+        So, **only when there has been no successful ingest**
+        (``last_success_at is None`` — the reported "never ingested" case), the
+        operational axis is reset from ``error`` back to ``never_synced``.
+
+        Why ``never_synced`` and not ``healthy``: the frozen rule is that a
+        probe never advances the operational axis to ``healthy`` — only a real
+        ingest (:meth:`record_sync_success`) may. ``never_synced`` + cleared
+        error + an authenticated auth axis derives to ``connected`` ("signed
+        in, awaiting the first sync"), which is the honest post-re-auth state.
+        When a prior successful ingest exists (``last_success_at`` set) the
+        operational axis is left untouched: the next worker poll reconciles it
+        to ``healthy`` or a genuine ``error``, and rewriting a real sync
+        history to ``never_synced`` would be dishonest.
         """
         row = await self._require_row(connection_id)
         result = await self._run_probe(row)
         now = _now()
         if result.success:
+            fields: dict[str, Any] = {
+                "auth_status": "authenticated",
+                "last_attempt_at": now,
+                "last_error_code": None,
+                "last_error_message": None,
+            }
+            if (
+                row.operational_status == "error"
+                and row.last_error_code in self._AUTH_CLASS_ERROR_CODES
+                and row.last_success_at is None
+            ):
+                fields["operational_status"] = "never_synced"
             await self._registry.connections.update_connection(
-                connection_id,
-                auth_status="authenticated",
-                last_attempt_at=now,
-                last_error_code=None,
-                last_error_message=None,
+                connection_id, **fields
             )
             updated = await self._registry.connections.get_connection(connection_id)
             public = _public(updated)
             return {**public, "ok": True, "detail": "login probe succeeded"}
         # Failure: keep the existing operational axis untouched; record the
-        # stable error code + redacted message and mark auth as failed.
+        # stable error code + redacted message.
+        #
+        # Honesty for un-probeable kinds (fix 4): ``probe_unsupported`` means
+        # this kind has no login probe at all (``relay_device`` authenticates
+        # with a pairing token via ``relay_register``; ``calendar`` has no
+        # probe registered yet). That is a "not applicable", NOT an auth
+        # failure — so Verify must not downgrade a legitimately paired/signed-
+        # in connection's ``auth_status`` to ``auth_failed``. The result is
+        # still an honest ``ok: false`` with the stable ``probe_unsupported``
+        # code (the UI contract: Verify never implies success for a kind it
+        # cannot actually probe). Only a real probe rejection flips auth to
+        # ``auth_failed``.
+        update_fields: dict[str, Any] = {
+            "last_attempt_at": now,
+            "last_error_code": result.error_code,
+            "last_error_message": _redact(result.error_message),
+        }
+        if result.error_code != ERR_PROBE_UNSUPPORTED:
+            update_fields["auth_status"] = "auth_failed"
         await self._registry.connections.update_connection(
-            connection_id,
-            auth_status="auth_failed",
-            last_attempt_at=now,
-            last_error_code=result.error_code,
-            last_error_message=_redact(result.error_message),
+            connection_id, **update_fields
         )
         updated = await self._registry.connections.get_connection(connection_id)
         return {

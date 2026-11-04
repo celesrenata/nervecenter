@@ -625,3 +625,42 @@ class TestUnsupportedKind:
         after = await harness.registry.connections.get_connection(row.id)
         assert after.operational_status == "never_synced"
         assert after.enabled is True
+
+
+class TestOAuthRefresherWiring:
+    """Fix 2: the supervisor must explicitly inject a shared OAuth refresher
+    into every worker it builds, instead of relying on each worker's
+    per-instance ``None`` → ``MailOAuthRefresher`` fallback (which the
+    production supervisor never exercised, so an expired OAuth token never
+    self-healed)."""
+
+    def test_build_worker_injects_shared_refresher(self, harness) -> None:
+        from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
+
+        supervisor = _supervisor(harness)
+        worker_a = supervisor._build_worker_for(harness.conn)  # noqa: SLF001
+        worker_b = supervisor._build_worker_for(harness.conn)  # noqa: SLF001
+        # Explicitly wired (not the per-worker None fallback)...
+        assert worker_a._oauth_refresher is not None  # noqa: SLF001
+        assert isinstance(worker_a._oauth_refresher, MailOAuthRefresher)  # noqa: SLF001
+        # ...and it is ONE shared instance across every worker (single
+        # refresh seam for the process, per fix 2).
+        assert worker_a._oauth_refresher is worker_b._oauth_refresher  # noqa: SLF001
+
+    def test_shared_refresher_reads_the_registry_connections(
+        self, harness
+    ) -> None:
+        """The refresher must persist/read through the same vault-backed
+        connections seam the workers resolve credentials from (so the rotated
+        token the worker's next poll reads is the one the refresh wrote)."""
+        from backend.persistence.repositories.connections_repo import (
+            ConnectionsRepository,
+        )
+
+        supervisor = _supervisor(harness)
+        worker = supervisor._build_worker_for(harness.conn)  # noqa: SLF001
+        refresher = worker._oauth_refresher  # noqa: SLF001
+        # The refresher persists/reads through the registry's connections
+        # seam (vault-backed) — the same seam the worker resolves credentials
+        # from, so a rotated token is read back on the next poll.
+        assert isinstance(refresher._connections, ConnectionsRepository)  # noqa: SLF001

@@ -165,11 +165,20 @@ async def plane_env(tmp_path: Path):
 
 class TestOAuthProbe:
     async def test_gmail_success_authenticates(self, plane_env) -> None:
-        transport = FakeHttpTransport(200, {"email": "x@g.example"})
+        # Scope parity: the Gmail probe hits the scope-gated Gmail API profile
+        # endpoint (marker ``emailAddress``), the same scope the worker needs.
+        transport = FakeHttpTransport(200, {"emailAddress": "x@g.example"})
         probe = make_oauth_probe("gmail", transport=transport)
         result = await probe.probe({}, "tok-g")
         assert result.success is True
         assert result.error_code is None
+        # It must target the Gmail API host + scope-gated profile path, not
+        # the OpenID userinfo endpoint (which only needs userinfo.email and
+        # let scope-short tokens pass Verify while ingest 401/403'd).
+        assert (
+            transport.calls[0][0]
+            == "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+        )
 
     async def test_graph_mail_success_authenticates(self, plane_env) -> None:
         transport = FakeHttpTransport(200, {"mail": "x@m.example"})
@@ -207,7 +216,9 @@ class TestOAuthProbe:
         assert result.error_code == "oauth_incomplete"
 
     async def test_missing_token_is_missing_credential(self, plane_env) -> None:
-        probe = make_oauth_probe("gmail", transport=FakeHttpTransport(200, {"email": "x"}))
+        probe = make_oauth_probe(
+            "gmail", transport=FakeHttpTransport(200, {"emailAddress": "x"})
+        )
         result = await probe.probe({}, None)
         assert result.success is False
         assert result.error_code == "missing_credential"
@@ -215,23 +226,31 @@ class TestOAuthProbe:
         assert probe._transport.calls == []  # noqa: SLF001 - seam internals, deterministic
 
     async def test_config_overrides_base_url(self, plane_env) -> None:
-        transport = FakeHttpTransport(200, {"email": "x"})
+        transport = FakeHttpTransport(200, {"emailAddress": "x"})
         probe = make_oauth_probe("gmail", transport=transport)
-        await probe.probe({"google_api_base": "https://example.test/"}, "tok")
-        assert transport.calls[0][0] == "https://example.test/oauth2/v3/userinfo"
+        await probe.probe({"gmail_api_base": "https://example.test/"}, "tok")
+        assert (
+            transport.calls[0][0]
+            == "https://example.test/gmail/v1/users/me/profile"
+        )
 
-    async def test_default_google_probe_uses_api_host_not_token_host(
+    async def test_default_google_probe_uses_gmail_api_scope_gated_path(
         self, plane_env
     ) -> None:
-        """Regression: the probe default must target the Google *API* host
-        (``www.googleapis.com``), not the token-exchange host
-        (``oauth2.googleapis.com``), which returns 404 for the userinfo
-        endpoint and made every live verify fail as ``oauth_incomplete``."""
-        transport = FakeHttpTransport(200, {"email": "x@y.z"})
+        """Scope-parity regression (the gmail-auth-expired loop): the Gmail
+        probe default must target the scope-gated Gmail API profile endpoint
+        on ``gmail.googleapis.com`` — the SAME scope (``gmail.readonly``) the
+        ingest worker's history/messages reads require — not the OpenID
+        ``userinfo`` endpoint, which only needs ``userinfo.email`` and so let
+        a scope-short token pass Verify while the worker 401/403'd it."""
+        transport = FakeHttpTransport(200, {"emailAddress": "x@y.z"})
         probe = make_oauth_probe("gmail", transport=transport)
         result = await probe.probe({}, "tok")
         assert result.success is True
-        assert transport.calls[0][0] == "https://www.googleapis.com/oauth2/v3/userinfo"
+        assert (
+            transport.calls[0][0]
+            == "https://gmail.googleapis.com/gmail/v1/users/me/profile"
+        )
 
     async def test_non_oauth_kind_raises(self, plane_env) -> None:
         with pytest.raises(ValueError):
@@ -249,7 +268,7 @@ class TestVerifyIntegration:
         # Register a deterministic gmail probe (real make_oauth_probe, fake
         # transport) plus the frozen IMAP seam (stub client, no network).
         gmail_probe = make_oauth_probe(
-            "gmail", transport=FakeHttpTransport(200, {"email": "x"})
+            "gmail", transport=FakeHttpTransport(200, {"emailAddress": "x"})
         )
         plane.register_probe("gmail", gmail_probe)
         plane.register_probe("imap", _imap_probe_seam(StubImapClient(ImapProbeResult.OK)))
@@ -677,3 +696,196 @@ class TestInstallConnectionWiring:
         monkeypatch.setattr(wiring_module, "register_connection_probes", boom)
         # Must not raise even though probe registration blew up.
         install_connection_wiring(app)
+
+
+# -- scope parity: the probe must exercise the worker's scope --------------------
+
+
+class TestProbeWorkerScopeParity:
+    """The gap that let the gmail-auth-expired loop reach production: the
+    suite never asserted the Verify probe exercises the SAME scope/endpoint
+    class the ingest worker depends on. A token the worker's real API rejects
+    must make the probe FAIL — it may not pass on a weaker endpoint.
+    """
+
+    async def test_gmail_probe_hits_the_same_api_host_the_worker_reads(
+        self, plane_env
+    ) -> None:
+        """Parity by construction: the Gmail probe's default endpoint lives on
+        the same ``gmail.googleapis.com`` host and ``/gmail/v1`` path prefix
+        the worker's :class:`GmailClient` reads (history / messages), so both
+        require the ``gmail.readonly`` scope. A userinfo-only token therefore
+        cannot pass the probe."""
+        from backend.connectors.mail.mail_transport import GmailClient
+
+        worker_host = GmailClient()._base_url  # noqa: SLF001 - transport default
+        transport = FakeHttpTransport(200, {"emailAddress": "x@g"})
+        probe = make_oauth_probe("gmail", transport=transport)
+        await probe.probe({}, "tok")
+        probe_url = transport.calls[0][0]
+        assert probe_url.startswith(worker_host)
+        assert "/gmail/v1/" in probe_url
+
+    async def test_gmail_token_rejected_by_gmail_api_fails_the_probe(
+        self, plane_env
+    ) -> None:
+        """A token that the Gmail API rejects (401/403 — exactly what the
+        worker's history/messages reads would raise as ``TransportAuthError``)
+        must make the probe FAIL with ``oauth_auth_rejected``, NOT pass. This
+        is the assertion whose absence let a scope-short token pass Verify
+        while ingest looped on ``auth_expired``."""
+        for status in (401, 403):
+            transport = FakeHttpTransport(status, {})
+            probe = make_oauth_probe("gmail", transport=transport)
+            result = await probe.probe({}, "scope-short-token")
+            assert result.success is False
+            assert result.error_code == "oauth_auth_rejected"
+
+    async def test_gmail_userinfo_only_token_no_longer_passes(
+        self, plane_env
+    ) -> None:
+        """Belt-and-braces: a 200 body shaped like the OLD userinfo response
+        (``{"email": ...}`` with no Gmail-API ``emailAddress`` marker) no
+        longer satisfies the probe — the marker is the Gmail profile field, so
+        a response that only an identity endpoint would give is not success."""
+        transport = FakeHttpTransport(200, {"email": "x@g"})
+        probe = make_oauth_probe("gmail", transport=transport)
+        result = await probe.probe({}, "tok")
+        assert result.success is False
+        assert result.error_code == "oauth_incomplete"
+
+
+# -- fix 3: verify-success reconciles a stale auth-class operational error -------
+
+
+class TestVerifySuccessReconcilesOperationalError:
+    async def test_success_clears_auth_expired_operational_error(
+        self, plane_env
+    ) -> None:
+        """The reported loop: a row left at ``auth_expired`` / operational
+        ``error`` / ``last_error_code=auth_expired`` with no successful ingest.
+        A now-succeeding Verify must clear the stale operational error (reset
+        ``error`` → ``never_synced``) so the card stops contradicting itself,
+        while never advancing operational to ``healthy`` (frozen rule)."""
+        plane = plane_env.plane
+        row = await plane.create_connection(
+            kind="gmail", config={"account": "x@g.example"}
+        )
+        await plane.store_secret(
+            connection_id=row.id, kind=ACCESS_TOKEN, plaintext="tok-g"
+        )
+        # Simulate the worker's auth-expired write (the loop state).
+        await plane_env.registry.connections.update_connection(
+            row.id,
+            auth_status="auth_expired",
+            operational_status="error",
+            last_error_code="auth_expired",
+            last_error_message="gmail history -> 401",
+        )
+        plane.register_probe(
+            "gmail",
+            make_oauth_probe("gmail", transport=FakeHttpTransport(200, {"emailAddress": "x"})),
+        )
+        result = await plane.verify(row.id)
+        assert result["ok"] is True
+        assert result["auth_status"] == "authenticated"
+        # Operational error reconciled away, but NOT advanced to healthy.
+        assert result["operational_status"] == "never_synced"
+        assert result["last_error_code"] is None
+        # The derived five-state is the honest "signed in, awaiting sync".
+        assert result["state"] == "connected"
+
+    async def test_success_preserves_operational_history_after_prior_sync(
+        self, plane_env
+    ) -> None:
+        """When a prior successful ingest exists (``last_success_at`` set), a
+        successful Verify must NOT rewrite the operational axis to
+        ``never_synced`` — that would erase a real sync history. It clears the
+        error code; the next worker poll reconciles the operational axis."""
+        from datetime import UTC, datetime
+
+        plane = plane_env.plane
+        row = await plane.create_connection(
+            kind="gmail", config={"account": "x@g.example"}
+        )
+        await plane.store_secret(
+            connection_id=row.id, kind=ACCESS_TOKEN, plaintext="tok-g"
+        )
+        await plane_env.registry.connections.update_connection(
+            row.id,
+            auth_status="auth_expired",
+            operational_status="error",
+            last_error_code="auth_expired",
+            last_success_at=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+        plane.register_probe(
+            "gmail",
+            make_oauth_probe("gmail", transport=FakeHttpTransport(200, {"emailAddress": "x"})),
+        )
+        result = await plane.verify(row.id)
+        assert result["ok"] is True
+        assert result["auth_status"] == "authenticated"
+        # History preserved: operational axis untouched (worker reconciles it).
+        assert result["operational_status"] == "error"
+        assert result["last_error_code"] is None
+
+    async def test_success_does_not_touch_non_auth_operational_error(
+        self, plane_env
+    ) -> None:
+        """A non-auth operational error (e.g. ``connect_failed``) is NOT an
+        auth-class code, so a passing Verify leaves the operational axis alone
+        — only an auth-class error (disproven by the probe) is reconciled."""
+        plane = plane_env.plane
+        row = await plane.create_connection(
+            kind="gmail", config={"account": "x@g.example"}
+        )
+        await plane.store_secret(
+            connection_id=row.id, kind=ACCESS_TOKEN, plaintext="tok-g"
+        )
+        await plane_env.registry.connections.update_connection(
+            row.id,
+            auth_status="auth_expired",
+            operational_status="error",
+            last_error_code="connect_failed",
+        )
+        plane.register_probe(
+            "gmail",
+            make_oauth_probe("gmail", transport=FakeHttpTransport(200, {"emailAddress": "x"})),
+        )
+        result = await plane.verify(row.id)
+        assert result["ok"] is True
+        # connect_failed is not auth-class → operational stays error.
+        assert result["operational_status"] == "error"
+
+
+# -- fix 4: honest Verify for un-probeable kinds ---------------------------------
+
+
+class TestUnprobeableKindsAreHonest:
+    async def test_relay_device_verify_is_honest_and_keeps_auth(
+        self, plane_env
+    ) -> None:
+        """relay_device has no login probe (it authenticates with a pairing
+        token). Verify must be an honest ``ok: false`` with the stable
+        ``probe_unsupported`` code AND must NOT downgrade a paired device's
+        ``auth_status`` to ``auth_failed``."""
+        plane = plane_env.plane
+        row = await plane.create_connection(kind="relay_device")
+        # Simulate a paired device.
+        await plane_env.registry.connections.update_connection(
+            row.id, auth_status="authenticated"
+        )
+        result = await plane.verify(row.id)
+        assert result["ok"] is False
+        assert result["error_code"] == "probe_unsupported"
+        # Paired auth state preserved — Verify did not lie by failing it.
+        assert result["auth_status"] == "authenticated"
+
+    async def test_calendar_verify_is_honest(self, plane_env) -> None:
+        """calendar has no probe registered: Verify is an honest
+        ``probe_unsupported``, never a fabricated success."""
+        plane = plane_env.plane
+        row = await plane.create_connection(kind="calendar")
+        result = await plane.verify(row.id)
+        assert result["ok"] is False
+        assert result["error_code"] == "probe_unsupported"

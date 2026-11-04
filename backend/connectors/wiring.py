@@ -54,14 +54,27 @@ log = structlog.get_logger(__name__)
 #: The ingest plane's mail kinds (workstream C) — the kinds that get a sync
 #: trigger. ``graph_mail`` deliberately does NOT get one: Microsoft OAuth mail
 #: is served by the control plane's OAuth flow, not the IMAP/Gmail transports
-#: (P1-106: an unservable provider must never look like a healthy worker).
-MAIL_TRIGGER_KINDS = ("gmail", "imap", "outlook")
+#: (P1-106: an unservable provider must never look like a healthy worker). The
+#: former dead ``outlook`` entry is removed — the control plane only persists
+#: the canonical ``graph_mail`` Microsoft kind, so a trigger keyed on
+#: ``outlook`` matched no row and only disagreed with the control-plane kind
+#: name (the naming inconsistency this change resolves).
+MAIL_TRIGGER_KINDS = ("gmail", "imap")
 
 #: Provider base URLs for the login probes (overridable per connection via
-#: ``config`` ``google_api_base`` / ``graph_api_base`` for testability).
-#: Google's API host is ``www.googleapis.com`` — the token-exchange host
-#: (``oauth2.googleapis.com``) returns 404 for the userinfo endpoint.
-_GOOGLE_DEFAULT_BASE = "https://www.googleapis.com"
+#: ``config`` ``gmail_api_base`` / ``graph_api_base`` for testability).
+#: The probe MUST exercise the same API host + scope the ingest worker
+#: depends on, or a token can pass Verify and still 401/403 the worker
+#: (the gmail-auth-expired loop). Gmail ingest reads
+#: ``gmail.googleapis.com/gmail/v1/...`` (scope ``gmail.readonly``), so the
+#: Gmail probe targets that host — not the OpenID ``userinfo`` endpoint,
+#: which only needs ``userinfo.email`` and is why a scope-short token used
+#: to pass Verify. Microsoft mail ingest is IMAP (granted scope
+#: ``IMAP.AccessAsUser.All``, not a Graph ``Mail.Read`` scope), which a
+#: bearer-token HTTP probe cannot exercise, so the Graph probe stays on
+#: ``/me`` (token liveness/identity) and IMAP-scope parity is enforced by the
+#: IMAP probe — see :func:`make_oauth_probe` for the full reasoning.
+_GMAIL_DEFAULT_BASE = "https://gmail.googleapis.com"
 _GRAPH_DEFAULT_BASE = "https://graph.microsoft.com"
 
 #: Deploy-contract environment variables carrying the OAuth app credentials
@@ -120,8 +133,28 @@ class _HttpxTokenExchangeTransport:
 def make_oauth_probe(kind: str, *, transport: Any | None = None) -> Any:
     """Build the :class:`ProbeSeam` for one durable OAuth connection kind.
 
-    ``gmail`` → Google ``/oauth2/v3/userinfo``; ``graph_mail`` → Microsoft
-    Graph ``/me``. ``200`` → authenticated; ``401``/``403`` →
+    Scope parity (the gmail-auth-expired fix): a probe MUST exercise the
+    same API surface + scope the ingest worker depends on, so a token can
+    never pass Verify while ingest 401/403s.
+
+    - ``gmail`` → Gmail API ``gmail.googleapis.com/gmail/v1/users/me/profile``
+      (scope ``gmail.readonly`` — the *same* scope the worker's history /
+      messages reads require). The former OpenID ``userinfo`` probe only
+      needed ``userinfo.email`` and so passed on scope-short tokens the
+      worker then rejected — the root cause of the auth-expired loop. The
+      profile response carries ``emailAddress`` (the success marker).
+    - ``graph_mail`` → Microsoft Graph ``/me``. NOTE: the Microsoft mail
+      *ingest* path is IMAP (the granted scope is ``IMAP.AccessAsUser.All``,
+      not a Graph ``Mail.Read`` scope), which a bearer-token HTTP probe
+      cannot exercise; hitting Graph ``/me/messages`` would demand a scope
+      the connection is never granted and would fail every correctly
+      onboarded row. So the Graph probe honestly confirms only token
+      liveness/identity — IMAP scope parity is enforced by the IMAP probe
+      on the servable ``outlook``/IMAP transport, not here. ``graph_mail``
+      additionally has no ingest worker (it is not a mail-trigger kind), so
+      the probe-vs-worker divergence class cannot arise for it.
+
+    ``200`` + marker → authenticated; ``401``/``403`` →
     :data:`ERR_OAUTH_AUTH_REJECTED`; anything else (network / malformed) →
     :data:`ERR_OAUTH_INCOMPLETE` — a stable code, never free-form text, and
     never a credential fragment (the token itself never appears in the
@@ -132,8 +165,12 @@ def make_oauth_probe(kind: str, *, transport: Any | None = None) -> Any:
         raise ValueError(f"kind {kind!r} is not an OAuth connection kind")
 
     if provider_name == "google":
-        endpoint, base_key, marker = "/oauth2/v3/userinfo", "google_api_base", "email"
-        default_base = _GOOGLE_DEFAULT_BASE
+        endpoint, base_key, marker = (
+            "/gmail/v1/users/me/profile",
+            "gmail_api_base",
+            "emailAddress",
+        )
+        default_base = _GMAIL_DEFAULT_BASE
     else:  # microsoft
         endpoint, base_key, marker = "/me", "graph_api_base", "mail"
         default_base = _GRAPH_DEFAULT_BASE

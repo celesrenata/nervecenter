@@ -41,6 +41,7 @@ from backend.connectors.registry import (
     ERR_TRIGGER_FAILED,
     ConnectionControlPlaneError,
 )
+from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
 from backend.ingest.mail_worker import (
     CURSOR_KINDS,
     MailIngestWorker,
@@ -52,10 +53,21 @@ from backend.persistence.repositories.registry import RepositoryRegistry
 log = structlog.get_logger(__name__)
 
 #: ``connections.kind`` → (cursor kind, transport factory).
+#:
+#: Only the kinds the worker can actually *serve* appear here. Microsoft
+#: OAuth mail (canonical kind ``graph_mail``) is deliberately absent: the
+#: frozen P1-106 contract keeps it unservable by the ingest worker (it is
+#: served by the control plane's OAuth flow, never the IMAP/Gmail transport),
+#: so a ``graph_mail`` row must get the honest "unsupported" degradation, not
+#: a hidden worker. The former ``outlook`` entry here was a dead alias — the
+#: control plane's ``CONNECTION_KINDS`` only ever persists ``graph_mail`` (and
+#: ``create_connection`` rejects any other kind), so no row named ``outlook``
+#: can exist; carrying it made the worker/supervisor/wiring disagree with the
+#: control plane on the Microsoft kind name (the naming inconsistency). It is
+#: removed so all four surfaces agree on the single canonical ``graph_mail``.
 _KIND_TO_CURSOR = {
     "gmail": ("gmail_history", "gmail"),
     "imap": ("imap_seq", "imap"),
-    "outlook": ("imap_seq", "imap"),
 }
 
 
@@ -116,6 +128,16 @@ class MailIngestSupervisor:
         self._reconcile: asyncio.Task[None] | None = None
         self._known: set[str] = set()
         self._started = False
+        #: One shared durable OAuth refresher for every worker this supervisor
+        #: builds (fix 2): explicitly wired here instead of relying on each
+        #: worker's per-instance ``None`` → ``MailOAuthRefresher`` fallback, so
+        #: the refresh seam is a single, inspectable production object. The
+        #: env-based client-credential resolution (commit b76b87a) lives in the
+        #: worker's ``_attempt_token_refresh`` and keeps working unchanged — the
+        #: refresher only owns the vault read / exchange / write-back.
+        self._oauth_refresher = MailOAuthRefresher(
+            connections=self._registry.connections
+        )
 
     @property
     def workers(self) -> dict[str, MailIngestWorker]:
@@ -268,6 +290,7 @@ class MailIngestSupervisor:
             poll_interval_s=self._poll_interval_s,
             backoff_base_s=self._backoff_base_s,
             backoff_max_s=self._backoff_max_s,
+            oauth_refresher=self._oauth_refresher,
         )
 
     async def _spawn_for(self, conn: Any) -> None:
