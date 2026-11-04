@@ -518,6 +518,29 @@ class TestAuthFlow:
         assert "state" in result
         assert "client_id=cid" in result["authorization_url"]
 
+    def test_start_oauth_callback_url_from_forwarded_headers(
+        self, wired, tmp_path: Path, monkeypatch
+    ):
+        """With no deploy env var and no row config, the route derives the
+        public redirect URI from the forwarded headers (behind the nginx
+        gateway) and the SPA gets it back to show in the wizard."""
+        monkeypatch.delenv("NERVE_OAUTH_CALLBACK_URL", raising=False)
+        app, plane = wired
+        with TestClient(app) as client:
+            created = client.post(
+                "/api/connections",
+                json={"kind": "gmail", "config": {"client_id": "cid"}},
+            ).json()
+            result = client.post(
+                f"/api/connections/{created['id']}/auth",
+                headers={"X-Forwarded-Proto": "https", "X-Forwarded-Host": "nc.example"},
+            ).json()
+        assert result["redirect_uri"] == "https://nc.example/connections/oauth/callback"
+        assert (
+            "redirect_uri=https%3A%2F%2Fnc.example%2Fconnections%2Foauth%2Fcallback"
+            in result["authorization_url"]
+        )
+
     def test_auth_flow_relay_points_to_pair_endpoint(self, wired, tmp_path: Path):
         app, plane = wired
         with TestClient(app) as client:

@@ -82,6 +82,37 @@ def _degraded_write(request: Request, detail: str) -> dict[str, Any]:
     }
 
 
+#: The SPA route the providers redirect back to (web/src/App.tsx). The full
+#: registered redirect URI is ``<public origin> + this path``.
+_OAUTH_CALLBACK_PATH = "/connections/oauth/callback"
+
+
+def _public_callback_url(request: Request) -> str:
+    """Reconstruct the full public OAuth redirect URI for this request.
+
+    The web nginx forwards ``X-Forwarded-Proto`` and the public ``Host``
+    (web/nginx.conf.template), so behind the gateway this yields
+    ``https://nervecenter.celestium.life/connections/oauth/callback`` rather
+    than the internal service address. It is used only as the last fallback
+    for the OAuth redirect URI (deploy env var and row config win); when the
+    forwarded headers are absent the value is a best-effort guess (localhost
+    on dev), which is exactly when the operator should set the env var.
+    """
+    proto = (
+        request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower()
+        or request.url.scheme
+    )
+    host = (
+        request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        or request.headers.get("host", "").strip()
+    )
+    if not host:
+        return ""
+    if proto not in ("http", "https"):
+        proto = request.url.scheme or "http"
+    return f"{proto}://{host}{_OAUTH_CALLBACK_PATH}"
+
+
 def _http_error(exc: ConnectionControlPlaneError) -> HTTPException:
     code = exc.code
     if code == "connection_not_found":
@@ -280,7 +311,9 @@ async def start_auth_flow(
                 "auth_status": row["auth_status"],
             }
         if row["kind"] in ("gmail", "graph_mail"):
-            return await plane.start_oauth(connection_id)
+            return await plane.start_oauth(
+                connection_id, callback_url=_public_callback_url(request)
+            )
         raise ConnectionControlPlaneError(
             "bad_request", f"kind {row['kind']!r} has no auth flow"
         )

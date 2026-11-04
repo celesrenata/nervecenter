@@ -784,8 +784,16 @@ class ConnectionControlPlane:
 
     # -- OAuth flow (gmail / graph_mail) -------------------------------------------
 
-    async def start_oauth(self, connection_id: str) -> dict[str, Any]:
+    async def start_oauth(
+        self, connection_id: str, *, callback_url: str | None = None
+    ) -> dict[str, Any]:
         """Begin a provider sign-in: return ``{authorization_url, state, provider, code_verifier, redirect_uri}``.
+
+        ``callback_url`` (optional) is the public origin the API route derives
+        from the live request; it is used only as the *last* fallback for the
+        redirect URI when neither the deploy env var nor the row config supplies
+        one, so a fresh deploy works before the operator has registered the
+        callback URL.
 
         The per-flow ``state`` and PKCE ``code_verifier`` are persisted in the
         connection's non-secret ``config`` so :meth:`complete_oauth` can bind
@@ -814,14 +822,15 @@ class ConnectionControlPlane:
             or config.get("client_id", "")
         )
         # The callback URI must be *exactly* the URI registered with the
-        # provider (Google/Microsoft reject non-registered redirect URIs), so
-        # it is never per-connection: environment wins (one registered URI
-        # works for every row), falling back to the per-connection config. The
-        # SPA callback route carries the connection id itself (sessionStorage),
-        # which keeps this value identical to the provider registration.
+        # provider (Google/Microsoft reject non-registered redirect URIs). It
+        # is a deploy-time value: the env var wins (one registered URI works
+        # for every row), then the per-connection config, then the public
+        # origin the API route derives from the live request (so a fresh
+        # deploy works before the operator has set the env var).
         redirect_uri = str(
             os.environ.get(_CALLBACK_URL_ENV, "").strip()
-            or config.get("oauth_redirect_uri", "")
+            or str(config.get("oauth_redirect_uri", "")).strip()
+            or (callback_url or "").strip()
         )
         if not client_id:
             raise ConnectionControlPlaneError(
@@ -842,10 +851,15 @@ class ConnectionControlPlane:
         state = f"{conn_id_b64}.{_secrets.token_urlsafe(24)}"
         verifier, challenge = make_pkce_pair()
         # Persist the per-flow state + PKCE verifier (config, non-secret) for
-        # later verification; the challenge goes in the authorize URL.
+        # later verification; the challenge goes in the authorize URL. The
+        # resolved redirect URI is persisted too, so the token exchanger —
+        # which reads the redirect URI from row config only — sends the same
+        # URI the provider saw in the authorize request (a mismatch there
+        # makes the provider reject the code).
         merged = dict(config)
         merged["oauth_state"] = state
         merged["oauth_code_verifier"] = verifier
+        merged["oauth_redirect_uri"] = redirect_uri
         await self._registry.connections.update_connection(connection_id, config=merged)
         url = build_authorization_url(
             provider_name,

@@ -338,12 +338,29 @@ class TestRegistration:
 
 
 class TestTokenExchanger:
+    @pytest.fixture(autouse=True)
+    def _oauth_env(self, monkeypatch):
+        """start_oauth resolves deploy-time env vars for the client id and
+        callback URL (deploy contract), so the exchange tests set them
+        rather than stuffing per-row credentials into config."""
+        monkeypatch.setenv("NERVE_OAUTH_CALLBACK_URL", "https://host/connections/oauth/callback")
+        monkeypatch.setenv("NERVE_GOOGLE_CLIENT_ID", "env-gcid")
+        monkeypatch.setenv("NERVE_MICROSOFT_CLIENT_ID", "env-mcid")
+
     async def test_exchange_completes_grant_and_stores_tokens(
         self, plane_env, monkeypatch
     ) -> None:
         plane = plane_env.plane
         row = await plane.create_connection(kind="gmail", config={"account": "x@g.example"})
         flow = await plane.start_oauth(row.id)
+
+        # The exchange must send the redirect URI the authorize URL used. The
+        # row carries no oauth_redirect_uri config, so both come from the
+        # deploy env var — start_oauth persists it on the row, and the
+        # exchanger (config-only read) must see the same value.
+        stored = await plane_env.registry.connections.get_connection(row.id)
+        assert (stored.config or {}).get("oauth_redirect_uri") == flow["redirect_uri"]
+        assert flow["redirect_uri"] == "https://host/connections/oauth/callback"
 
         transport = FakeTokenTransport(
             200, {"access_token": "new-access", "refresh_token": "new-refresh"}
@@ -383,12 +400,13 @@ class TestTokenExchanger:
         assert form["client_id"] == "cid"
         assert form["client_secret"] == "csecret"
         assert form["code_verifier"] == flow["code_verifier"]
+        assert form["redirect_uri"] == "https://host/connections/oauth/callback"
         # The one-shot state is consumed.
         stored = await plane_env.registry.connections.get_connection(row.id)
         assert not (stored.config or {}).get("oauth_state")
 
     async def test_exchange_is_bound_to_the_matching_flow_across_accounts(
-        self, plane_env
+        self, plane_env, monkeypatch
     ) -> None:
         """Two same-provider onboarding flows are live at once.
 
@@ -397,6 +415,10 @@ class TestTokenExchanger:
         account A's flow. A provider-only row lookup would have posted A's
         verifier — corrupting the PKCE grant for the wrong account.
         """
+        # No deploy-wide callback URL here: this test exercises the
+        # per-connection redirect URI, so clear the env var the autouse
+        # fixture sets.
+        monkeypatch.delenv("NERVE_OAUTH_CALLBACK_URL", raising=False)
         plane = plane_env.plane
         acc_a = await plane.create_connection(
             kind="gmail",

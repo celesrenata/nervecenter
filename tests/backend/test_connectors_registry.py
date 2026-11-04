@@ -589,6 +589,49 @@ class TestOauth:
             await plane.start_oauth(row.id)
         assert exc.value.code == "oauth_incomplete"
 
+    async def test_start_oauth_persists_resolved_redirect_uri(
+        self, env, monkeypatch
+    ):
+        """The token exchanger reads the redirect URI from row config only, so
+        start_oauth must persist the *resolved* URI (here from the deploy env
+        var) — otherwise the exchange POSTs a different redirect_uri than the
+        authorize URL and the provider rejects the code."""
+        plane, registry, *_ = env
+        row = await plane.create_connection(kind="gmail", config={"account": "x@g.example"})
+        result = await plane.start_oauth(row.id)
+        assert result["redirect_uri"] == "https://host/connections/oauth/callback"
+        raw = await registry.connections.get_connection(row.id)
+        assert raw.config.get("oauth_redirect_uri") == result["redirect_uri"]
+
+    async def test_start_oauth_falls_back_to_callback_url(self, env, monkeypatch):
+        """When neither the deploy env var nor the row config supplies a
+        callback URL, the public origin passed by the API route is used and
+        persisted."""
+        monkeypatch.delenv("NERVE_OAUTH_CALLBACK_URL", raising=False)
+        plane, registry, *_ = env
+        row = await plane.create_connection(kind="gmail", config={"account": "x@g.example"})
+        # The API route passes the *full* registered callback URL (origin +
+        # SPA path), not a bare origin — providers match the exact URI.
+        full = "https://pub.example/connections/oauth/callback"
+        result = await plane.start_oauth(row.id, callback_url=full)
+        assert result["redirect_uri"] == full
+        assert (
+            "redirect_uri=https%3A%2F%2Fpub.example%2Fconnections%2Foauth%2Fcallback"
+            in result["authorization_url"]
+        )
+        raw = await registry.connections.get_connection(row.id)
+        assert raw.config.get("oauth_redirect_uri") == full
+
+    async def test_start_oauth_missing_callback_url_is_oauth_incomplete(
+        self, env, monkeypatch
+    ):
+        monkeypatch.delenv("NERVE_OAUTH_CALLBACK_URL", raising=False)
+        plane, *_ = env
+        row = await plane.create_connection(kind="gmail", config={"account": "x@g.example"})
+        with pytest.raises(ConnectionControlPlaneError) as exc:
+            await plane.start_oauth(row.id)
+        assert exc.value.code == "oauth_incomplete"
+
     async def test_complete_oauth_stores_token_via_vault(self, env):
         plane, registry, vault, _ = env
         row = await plane.create_connection(

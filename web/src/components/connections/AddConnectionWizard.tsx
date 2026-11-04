@@ -104,6 +104,7 @@ export function AddConnectionWizard({
   /** The created row (present from the credentials step on). */
   const [connection, setConnection] = useState<Connection | null>(null)
   const [authUrl, setAuthUrl] = useState<string | null>(null)
+  const [callbackUrl, setCallbackUrl] = useState<string | null>(null)
   const [oauthCode, setOauthCode] = useState('')
   const [relayToken, setRelayToken] = useState<{ device_id: string; token: string } | null>(null)
   /** Explicit consent for the relay history import (spec §5 — mandatory). */
@@ -152,7 +153,10 @@ export function AddConnectionWizard({
           if (kind === 'gmail' || kind === 'graph') {
             const started = (await connectionsApi.startAuth(res.id)) as AuthFlowResult
             if (isDegradedWrite(started)) throw new Error(started.detail)
-            if ('authorization_url' in started) setAuthUrl(started.authorization_url)
+            if ('authorization_url' in started) {
+              setAuthUrl(started.authorization_url)
+              if (started.redirect_uri) setCallbackUrl(started.redirect_uri)
+            }
           } else if (kind === 'relay') {
             const pair = await connectionsApi.relayPair(state.config.device_name || null)
             if (isDegradedWrite(pair)) throw new Error(pair.detail)
@@ -380,6 +384,14 @@ export function AddConnectionWizard({
                   >
                     Open provider sign-in
                   </a>
+                  {callbackUrl && (
+                    <span className="text-muted text-xs">
+                      This deployment redirects back to{' '}
+                      <code className="break-all">{callbackUrl}</code> — that URI must
+                      be registered in your {state.kind === 'gmail' ? 'Google' : 'Microsoft'}{' '}
+                      Cloud Console or Azure app, exactly as shown.
+                    </span>
+                  )}
                 </p>
               ) : state.error ? (
                 <p className="text-muted">
