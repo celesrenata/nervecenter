@@ -68,10 +68,10 @@ export function fieldsForStep(state: WizardState): Array<{ key: string; label: s
   if (!state.kind) return []
   switch (state.kind) {
     case 'gmail':
-      return [
-        { key: 'account', label: 'Google account', placeholder: 'you@gmail.com' },
-        { key: 'oauth_redirect_uri', label: 'OAuth redirect URI', placeholder: 'https://your-host/auth/callback' },
-      ]
+      // The OAuth redirect URI is NOT a user field: the server computes it
+      // (env var → row config → forwarded request headers). The user only
+      // supplies the account that will own the mailbox.
+      return [{ key: 'account', label: 'Google account', placeholder: 'you@gmail.com' }]
     case 'imap':
       return [
         { key: 'account', label: 'Mailbox address', placeholder: 'you@mail.example' },
