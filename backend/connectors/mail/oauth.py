@@ -42,22 +42,23 @@ class OauthProvider:
     scopes_note: str = "IMAP read only"
 
 
-#: Provider presets. Google and Microsoft both expose IMAP for mail; the
-#: scopes below are the *minimal* read-only set that lets the relay tail
-#: INBOX (``IMAP.AccessAsUser.All`` for Microsoft). Google additionally
-#: grants the Gmail API ``readonly`` scope because the ingest plane polls
-#: the history resource, not just IMAP.
+#: Provider presets. Microsoft exposes IMAP for mail; the scopes below are
+#: the *minimal* read-only set that lets the relay tail INBOX
+#: (``IMAP.AccessAsUser.All`` for Microsoft). Google grants the Gmail API
+#: ``readonly`` scope plus the identity email scope: the ingest plane polls
+#: the REST history resource, and the legacy ``https://mail.google.com/imap``
+#: scope was retired by Google (it is rejected as ``invalid_scope`` for new
+#: OAuth clients, so it must not be requested).
 PROVIDERS: dict[OauthProviderName, OauthProvider] = {
     "google": OauthProvider(
         name="google",
         authorize_url="https://accounts.google.com/o/oauth2/v2/auth",
         token_url="https://oauth2.googleapis.com/token",
         scopes=(
-            "https://mail.google.com/imap",
             "https://www.googleapis.com/auth/gmail.readonly",
             "https://www.googleapis.com/auth/userinfo.email",
         ),
-        scopes_note="Google Workspace IMAP + Gmail API read only",
+        scopes_note="Gmail API read only",
     ),
     "microsoft": OauthProvider(
         name="microsoft",

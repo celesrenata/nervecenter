@@ -28,6 +28,12 @@ deployments/local/pgvector-data/
 deployments/kubernetes/base/secrets.yaml
 deployments/kubernetes/base/harbor-pull.yaml
 
+# Local provider OAuth app credentials (Google client id + secret)
+gcloud.oauth
+
+# Local browser HAR captures (session URLs, client_id, state params)
+*.har
+
 # Local env
 .env.development.local
 .env.staging.local

@@ -142,8 +142,12 @@ def test_build_authorization_url_carries_client_id_redirect_state():
     assert q["redirect_uri"] == ["https://cb"]
     assert q["state"] == ["nonce123"]
     assert q["response_type"] == ["code"]
-    # Google's IMAP scope is the minimal read-only set.
-    assert "https://mail.google.com/imap" in q["scope"][0]
+    # The Gmail API readonly scope is the minimal read-only set. The legacy
+    # "https://mail.google.com/imap" scope was retired by Google (it is
+    # rejected as invalid_scope for new clients) and must NOT be requested.
+    scope = q["scope"][0]
+    assert "https://www.googleapis.com/auth/gmail.readonly" in scope
+    assert "https://mail.google.com/imap" not in scope
 
 
 def test_build_authorization_url_microsoft_uses_imap_scope():
