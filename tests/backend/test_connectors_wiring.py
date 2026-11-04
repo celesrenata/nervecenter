@@ -220,6 +220,19 @@ class TestOAuthProbe:
         await probe.probe({"google_api_base": "https://example.test/"}, "tok")
         assert transport.calls[0][0] == "https://example.test/oauth2/v3/userinfo"
 
+    async def test_default_google_probe_uses_api_host_not_token_host(
+        self, plane_env
+    ) -> None:
+        """Regression: the probe default must target the Google *API* host
+        (``www.googleapis.com``), not the token-exchange host
+        (``oauth2.googleapis.com``), which returns 404 for the userinfo
+        endpoint and made every live verify fail as ``oauth_incomplete``."""
+        transport = FakeHttpTransport(200, {"email": "x@y.z"})
+        probe = make_oauth_probe("gmail", transport=transport)
+        result = await probe.probe({}, "tok")
+        assert result.success is True
+        assert transport.calls[0][0] == "https://www.googleapis.com/oauth2/v3/userinfo"
+
     async def test_non_oauth_kind_raises(self, plane_env) -> None:
         with pytest.raises(ValueError):
             make_oauth_probe("relay_device")

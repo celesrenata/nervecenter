@@ -547,16 +547,21 @@ class _FakeResp:
 class _FakeGmailClient:
     """httpx.AsyncClient-shaped fake for the corrected Gmail wire contract.
 
-    ``history.start`` returns a valid baseline ``historyId``; ``history.get``
-    serves the configured entries (never a bare startHistoryId on the first
-    sync); per-message fetches serve a base64url plain-text payload."""
+    ``history.list`` (no ``startHistoryId``) returns the mailbox baseline
+    ``historyId``; the same endpoint with a ``startHistoryId`` polls records
+    strictly after it; the INBOX message list serves message ids; per-message
+    fetches serve a base64url plain-text payload."""
 
     def __init__(
-        self, *, history: Any, history_status: int = 200, start_id: int = 70
+        self,
+        *,
+        history: Any,
+        history_status: int = 200,
+        head_id: int = 70,
     ) -> None:
         self._history = history
         self._history_status = history_status
-        self._start_id = start_id
+        self._head_id = head_id
         self.tok_seen: list[str] = []
 
     async def __aenter__(self):
@@ -568,10 +573,16 @@ class _FakeGmailClient:
     async def get(self, url, *, headers=None, params=None):
         auth = (headers or {}).get("Authorization", "")
         self.tok_seen.append(auth)
-        if url.endswith("/history.start"):
-            return _FakeResp(self._history_status, {"historyId": self._start_id})
         if url.endswith("/users/me/history"):
-            return _FakeResp(self._history_status, self._history)
+            # history.list: a bare call (no startHistoryId) is the baseline
+            # probe; polling (startHistoryId set) serves the configured records.
+            if (params or {}).get("startHistoryId"):
+                return _FakeResp(self._history_status, self._history)
+            return _FakeResp(
+                self._history_status, {"historyId": self._head_id, "history": []}
+            )
+        if url.endswith("/users/me/messages"):
+            return _FakeResp(200, {"messages": [{"id": "m1"}]})
         # per-message fetch
         return _FakeResp(200, {
             "payload": {
@@ -604,9 +615,10 @@ class TestGmailTransport:
                 self._observed.append(auth)
                 return await super().get(url, headers=headers, params=params)
 
-        # First sync: history.start gives the valid baseline (70), then
-        # history.get polls from it; the cursor advances to the last
-        # processed entry and the per-message fetch decodes the base64url body.
+        # First sync: history.list gives the valid baseline (70) plus the
+        # INBOX full sync; the poll after the baseline advances the cursor to
+        # the last processed entry and the per-message fetch decodes the
+        # base64url body (the seen-list suppresses the re-yielded record).
         monkeypatch.setattr(mt.httpx, "AsyncClient", lambda **kw: _Recorder(history=history))
         client = GmailClient()
         items, cursor = await client.run(

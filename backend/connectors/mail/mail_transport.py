@@ -469,15 +469,15 @@ class GmailClient:
 
     Cursor shape: ``{"history_id": int, "account": str, "seen": [...]}``.
 
-    - **Initial sync** (no saved id): call ``history.start`` for a valid
-      baseline ``historyId`` and poll ``history.get`` from it (never a bare
-      ``startHistoryId`` on an empty account — A1/A2).
+    - **Initial sync** (no saved id): capture the mailbox's current
+      ``historyId`` with ``history.list``, perform a bounded INBOX full sync,
+      then poll changes after that baseline.
     - **Resume**: reuse the saved *valid* ``history_id`` (A3) — history ids
       are non-contiguous, so the cursor is never ``+1``.
-    - **Expired id** (``history.get`` → 400 or 404): a bounded full resync
-      (``history.start`` + ``users/me/messages`` under the INBOX label, capped
-      by ``max_items``) then continue incrementally from the fresh baseline
-      (A3/A9).
+    - **Expired id** (``history.list`` → 400 or 404): a bounded full resync
+      (current ``historyId`` + ``users/me/messages`` under the INBOX label,
+      capped by ``max_items``) then continue incrementally from the fresh
+      baseline (A3/A9).
     - **INBOX scoping** via the ``INBOX`` label, never an invalid
       ``historyTypes`` value (A1).
     - Delivery is keyed on ``(account, message id)`` — the ``From`` header
@@ -531,10 +531,12 @@ class GmailClient:
                         client, token, baseline, items, seen, account
                     )
             else:
-                # A1/A2: first sync — history.start gives a valid id, then
-                # poll from it (a bare startHistoryId is invalid on an empty
-                # account).
-                baseline = await self._start_history(client, token)
+                # A1/A2: first sync — history.list without startHistoryId
+                # gives the current mailbox historyId. Full-sync INBOX before
+                # polling from that baseline so existing mail is not skipped.
+                baseline, seen = await self._full_resync(
+                    client, token, items, seen, account
+                )
                 if baseline:
                     next_history, seen = await self._poll_history(
                         client, token, baseline, items, seen, account
@@ -544,16 +546,25 @@ class GmailClient:
         # persisted verbatim and must stay secret-free (§4).
         return items, {"history_id": next_history, "account": account, "seen": seen}
 
-    async def _start_history(self, client: httpx.AsyncClient, token: str) -> int:
-        """A1/A2: obtain a valid baseline history id via history.start."""
+    async def _history_head(self, client: httpx.AsyncClient, token: str) -> int:
+        """Return the mailbox's current history id via ``history.list``.
+
+        Gmail v1 has no ``history.start`` endpoint. The only safe pre-sync
+        baseline is the current mailbox ``historyId``; it is captured with a
+        minimal history list before the INBOX full sync so partial polling can
+        begin at a valid, non-expired position.
+        """
         resp = await client.get(
-            f"{self._base_url}/gmail/v1/users/me/history.start",
+            f"{self._base_url}/gmail/v1/users/me/history",
             headers={"Authorization": f"Bearer {token}"},
+            params={"maxResults": 1},
         )
+        if resp.status_code in (400, 404):
+            raise _HistoryExpired(f"gmail history baseline -> {resp.status_code}")
         if resp.status_code in (401, 403):
-            raise TransportAuthError(f"gmail history.start -> {resp.status_code}")
+            raise TransportAuthError(f"gmail history -> {resp.status_code}")
         if resp.status_code >= 500:
-            raise TransportConnectError(f"gmail history.start -> {resp.status_code}")
+            raise TransportConnectError(f"gmail history -> {resp.status_code}")
         resp.raise_for_status()
         return int(resp.json().get("historyId") or 0)
 
@@ -571,7 +582,7 @@ class GmailClient:
         a label filter, capped by ``max_items``, deduping against the durable
         seen-list so nothing is delivered twice.
         """
-        baseline = await self._start_history(client, token)
+        baseline = await self._history_head(client, token)
         resp = await client.get(
             f"{self._base_url}/gmail/v1/users/me/messages",
             headers={"Authorization": f"Bearer {token}"},
@@ -617,27 +628,30 @@ class GmailClient:
         seen: list[str],
         account: str,
     ) -> tuple[int, list[str]]:
-        """A8: page ``history.get`` from ``start_id`` until the saved
-        position is exhausted (``historyNewerThan`` falsy) or ``max_items``
-        is met.
+        """A8: page Gmail ``history.list`` after ``start_id``.
 
-        Returns ``(next_history, seen)`` where ``next_history`` is the history
-        position of the **last processed** message (so a restart re-yields
-        the unprocessed tail of that entry — no skips).
+        The real contract (verified against the Gmail v1 discovery document):
+        flat query params; ``startHistoryId`` is EXCLUSIVE (records strictly
+        after it); ``nextPageToken`` is the only page-continuation signal.
+        The persisted cursor is the last record strictly BEFORE the record
+        on which the item cap fired (held even if that record was fully
+        consumed), so a restart resumes strictly after it (no skips); the
+        cap record is re-yielded on resume and the durable seen-list
+        suppresses what was already delivered (no duplicates).
         """
-        next_newer = start_id
+        page_token: str | None = None
         last_entry_id = start_id
         guard = 0
-        while len(items) < self._max_items and next_newer:
-            # Real Gmail wire: query params use dot-notation. `startHistoryId`
-            # is INCLUSIVE (entries with id >= it are returned) — so resuming
-            # from the saved "last processed" position re-yields that entry's
-            # unprocessed messages (no skips); the seen-list suppresses the
-            # already-processed ones.
+        while len(items) < self._max_items:
+            # Gmail v1 uses flat REST query parameters. ``startHistoryId``
+            # returns records strictly after the saved id, and ``nextPageToken``
+            # is the only page-continuation signal.
             params: dict[str, Any] = {
-                "history.startHistoryId": next_newer,
-                "history.maxHistoryEntries": self._max_items * 4,
+                "startHistoryId": start_id,
+                "maxResults": min(self._max_items * 4, 500),
             }
+            if page_token:
+                params["pageToken"] = page_token
             resp = await client.get(
                 f"{self._base_url}/gmail/v1/users/me/history",
                 headers={"Authorization": f"Bearer {token}"},
@@ -657,15 +671,13 @@ class GmailClient:
                 raise TransportConnectError(f"gmail history -> {resp.status_code}")
             resp.raise_for_status()
             data = resp.json()
-            entries = data.get("history", [])
-            newer_than = data.get("historyNewerThan")
+            # Real Gmail v1 wire (ListHistoryResponse): records live under
+            # "history" (uint64-string ids); there is no "historyRecords"
+            # field — reading it silently yields zero entries.
+            entries = data.get("history") or []
             for entry in entries:
                 entry_id = int(entry.get("id") or 0)
-                # A8: the cursor position is the last *visited* entry, so a
-                # restart re-yields that entry's unprocessed messages (seen
-                # suppresses the rest) — and deleted-only entries still
-                # advance the cursor past themselves (A9).
-                last_entry_id = entry_id
+                cap_hit = False
                 for change in entry.get("messages", []):
                     mid = str(change.get("id") or "").strip()
                     if not mid:
@@ -693,14 +705,23 @@ class GmailClient:
                             source="gmail",
                         )
                     )
-                    last_entry_id = entry_id
                     if len(items) >= self._max_items:
+                        # Cap reached. Stop both delivery and cursor
+                        # advancement: on resume (exclusive ``startHistoryId``)
+                        # this record is re-yielded, and the seen-list
+                        # suppresses the messages already delivered, so
+                        # nothing is skipped and nothing is duplicated.
+                        cap_hit = True
                         break
-                if len(items) >= self._max_items:
+                if cap_hit:
                     break
-            if not newer_than:
-                break  # A8: historyNewerThan exhausted
-            next_newer = int(newer_than)
+                # Advance the cursor only when this record is fully consumed
+                # (every non-seen message delivered or skipped), so a resume
+                # never skips the tail of a partially-delivered record.
+                last_entry_id = entry_id
+            page_token = str(data.get("nextPageToken") or "").strip() or None
+            if not page_token:
+                break
             guard += 1
             if guard > 10000:
                 break  # defensive bound; paging should terminate on its own

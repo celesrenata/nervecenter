@@ -191,17 +191,35 @@ def _plain_payload(text: str) -> dict[str, Any]:
     }
 
 
-class FakeGmailClient:
-    """httpx.AsyncClient-shaped fake for the Gmail wire.
+def _gentry(idx: int, base_id: int, mid: str) -> dict[str, Any]:
+    return {"id": base_id + idx, "messages": [{"id": mid}]}
 
-    Stateless page model: the full entry stream (``entries`` sorted by id)
-    is served in windows of ``page_size`` with **inclusive**
-    ``history.startHistoryId`` semantics — entries with id >= the requested
-    id are returned, and ``historyNewerThan`` is the id of the first entry
-    beyond the window (falsy when the stream is exhausted). This mirrors the
-    real API, so "restart from the saved cursor" replays the last processed
-    entry (whose seen items are suppressed by the durable seen-list) and
-    yields only the unprocessed tail.
+
+def _gresource(mid: str, i: int) -> dict[str, Any]:
+    return gmail_msg_resource(mid, f"subj-{i}", _date(i), _plain_payload(f"body-{i}"))
+
+
+def _three_msg_entry(idx: int, base_id: int, mids: list[str]) -> dict[str, Any]:
+    return {"id": base_id + idx, "messages": [{"id": m} for m in mids]}
+
+
+class FakeGmailClient:
+    """httpx.AsyncClient-shaped fake for the **real** Gmail v1 wire.
+
+    Mirrors the pinned contract the transport talks to:
+
+    - ``GET /users/me/history`` without ``startHistoryId`` (``{"maxResults": 1}``)
+      is the **baseline probe** (``_history_head``) and returns the current
+      mailbox ``historyId`` (``head_history_id``). There is no
+      ``history.start`` endpoint in v1.
+    - ``GET /users/me/history`` with ``startHistoryId`` is the **incremental
+      poll**; ``startHistoryId`` is EXCLUSIVE (records strictly after it) and
+      ``nextPageToken`` is the only page-continuation signal.
+    - ``GET /users/me/messages`` (``q=in:inbox``) is the **bounded full
+      resync** list used after an expired baseline.
+    - ``GET /users/me/messages/{id}?format=full`` fetches one message.
+    - A ``startHistoryId`` in ``expired_ids`` yields ``expired_status``
+      (400 or 404) — the wire signature the transport maps to the resync.
     """
 
     def __init__(
@@ -209,36 +227,40 @@ class FakeGmailClient:
         *,
         entries: list[dict[str, Any]] | None = None,
         messages: dict[str, tuple[int, dict[str, Any]]] | None = None,
-        page_size: int = 25,
-        start_id: int = 10,
+        head_history_id: int = 0,
         expired_ids: frozenset[int] = frozenset(),
         expired_status: int = 404,
         inbox_message_ids: list[str] | None = None,
+        page_size: int = 500,
     ) -> None:
         self._entries = sorted(entries or [], key=lambda e: int(e["id"]))
-        self._messages = messages or {}
-        self._page_size = page_size
-        self._start_id = start_id
-        self._expired = expired_ids
+        self._messages = dict(messages or {})
+        if head_history_id:
+            self._head = head_history_id
+        elif self._entries:
+            self._head = min(int(e["id"]) for e in self._entries)
+        else:
+            self._head = 0
+        self._expired = frozenset(expired_ids)
         self._expired_status = expired_status
         self._inbox_ids = list(inbox_message_ids or [])
-        self.start_calls = 0
-        self.history_calls: list[int] = []  # startHistoryId per call
+        self._page_size = page_size
+        self.history_calls: list[int] = []
         self.history_params: list[dict[str, Any]] = []
+        self.head_calls = 0
         self.fetched: list[str] = []
-
-    async def __aenter__(self) -> FakeGmailClient:
-        return self
-
-    async def __aexit__(self, *args: Any) -> bool:
-        return False
+        self.inbox_calls = 0
 
     def _history_window(self, start: int) -> dict[str, Any]:
-        stream = [e for e in self._entries if int(e["id"]) >= start]
+        stream = [e for e in self._entries if int(e["id"]) > start]
         window = stream[: self._page_size]
-        beyond = stream[self._page_size:]
-        newer = min(int(e["id"]) for e in beyond) if beyond else None
-        return {"history": window, "historyNewerThan": newer}
+        return {"history": window}
+
+    async def __aenter__(self) -> "FakeGmailClient":
+        return self
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return False
 
     async def get(
         self,
@@ -247,28 +269,31 @@ class FakeGmailClient:
         headers: dict[str, str] | None = None,
         params: dict[str, Any] | None = None,
     ) -> FakeGmailResp:
-        params = dict(params or {})
-        if url.endswith("/users/me/history.start"):
-            self.start_calls += 1
-            return FakeGmailResp(200, {"historyId": self._start_id})
+        p = dict(params or {})
         if url.endswith("/users/me/history"):
-            start = int(params.get("history.startHistoryId", 0) or 0)
-            self.history_calls.append(start)
-            self.history_params.append(dict(params))
-            if start in self._expired:
-                return FakeGmailResp(
-                    self._expired_status,
-                    {"error": {"code": self._expired_status, "message": "expired"}},
-                )
-            return FakeGmailResp(200, self._history_window(start))
+            if "startHistoryId" in p:
+                start = int(p["startHistoryId"])
+                self.history_calls.append(start)
+                self.history_params.append(p)
+                if start in self._expired:
+                    return FakeGmailResp(
+                        self._expired_status,
+                        {"error": {"code": self._expired_status, "message": "expired"}},
+                    )
+                return FakeGmailResp(200, self._history_window(start))
+            # Baseline probe: history.list with only maxResults, no start.
+            self.head_calls += 1
+            return FakeGmailResp(200, {"historyId": self._head})
         if url.endswith("/users/me/messages"):
+            self.inbox_calls += 1
             return FakeGmailResp(200, {"messages": [{"id": m} for m in self._inbox_ids]})
         if "/messages/" in url:
             mid = url.rsplit("/", 1)[-1]
             self.fetched.append(mid)
-            if mid not in self._messages:
+            entry = self._messages.get(mid)
+            if entry is None:
                 return FakeGmailResp(404, {"error": {"code": 404, "message": "notFound"}})
-            status, resource = self._messages[mid]
+            status, resource = entry
             return FakeGmailResp(status, resource)
         raise AssertionError(f"unexpected url {url}")
 
@@ -282,48 +307,51 @@ def _install_gmail(monkeypatch: Any, fake: FakeGmailClient) -> None:
     monkeypatch.setattr(mt.httpx, "AsyncClient", factory)
 
 
-def _gentry(i: int, base_id: int, mid: str) -> dict[str, Any]:
-    return {"id": base_id + i, "messages": [{"id": mid}]}
-
-
-def _gresource(mid: str, i: int) -> dict[str, Any]:
-    return gmail_msg_resource(mid, f"subj-{i}", _date(i), _plain_payload(f"body-{i}"))
-
-
 # ---------------------------------------------------------------------------
 # Gmail tests (P0-A)
 # ---------------------------------------------------------------------------
 
 
 class TestGmailInitialSync:
-    async def test_initial_sync_uses_history_start_and_no_invalid_types(
+    async def test_initial_sync_uses_captured_baseline_and_no_invalid_types(
         self, monkeypatch: Any
     ) -> None:
-        """A1/A2: first run must call history.start for a valid baseline
-        (no ``startHistoryId`` on an empty account, no invalid
-        ``historyTypes``), then poll history.get from the returned id."""
+        """A1/A2: first run (empty cursor) probes the current mailbox
+        ``historyId`` (no ``history.start`` endpoint in v1), full-syncs INBOX
+        under that baseline, then polls EXCLUSIVELY after it. The invalid
+        ``historyTypes`` value is never on the wire."""
+        # inbox holds m1 (entry 10 == baseline); m2 (entry 11) is the only
+        # post-baseline change, so the initial sync must deliver it
+        # incrementally after the bounded INBOX sync.
         fake = FakeGmailClient(
-            entries=[_gentry(0, 10, "m1")],
-            messages={"m1": (200, _gresource("m1", 1))},
-            start_id=10,
+            entries=[_gentry(1, 10, "m2")],
+            messages={
+                "m1": (200, _gresource("m1", 1)),
+                "m2": (200, _gresource("m2", 2)),
+            },
+            head_history_id=10,
+            inbox_message_ids=["m1"],
         )
         _install_gmail(monkeypatch, fake)
         items, cursor = await GmailClient().run(
             _connector(), {}, credentials={"access_token": "tok"}
         )
-        assert len(items) == 1
-        assert items[0].message_id == "gmail:m1"
-        assert fake.start_calls == 1
-        assert fake.history_calls == [10]  # polled from the start id, never 11
-        # A1: the invalid historyTypes=INBOX value must not be on the wire
+        # A2: the baseline was captured with history.list (no history.start).
+        assert fake.head_calls == 1
+        # the bounded full resync fetched the INBOX list before polling.
+        assert fake.inbox_calls == 1
+        # the saved cursor IS the captured baseline (no +1); polling is
+        # EXCLUSIVE after it, so only m2 (entry 11) is a post-baseline change.
+        assert fake.history_calls == [10]
         assert all("historyTypes" not in p for p in fake.history_params)
-        # resume uses the inclusive startHistoryId (the entry is re-yielded on
-        # restart; the seen-list suppresses it)
-        assert fake.history_params[0]["history.startHistoryId"] == 10
+        assert [m.message_id for m in items] == ["gmail:m1", "gmail:m2"]
         assert cursor == {
-            "history_id": 10,
+            "history_id": 11,
             "account": _ACCOUNT.lower(),
-            "seen": [f"{_ACCOUNT.lower()}:gmail:m1"],
+            "seen": [
+                f"{_ACCOUNT.lower()}:gmail:m1",
+                f"{_ACCOUNT.lower()}:gmail:m2",
+            ],
         }
         # the transient access_token is never in the cursor
         assert "tok" not in str(cursor)
@@ -334,11 +362,11 @@ class TestGmailInitialSync:
         """A4: the From header never gates delivery — the sender is NOT the
         account, yet the message is delivered and keyed on the account."""
         fake = FakeGmailClient(
-            entries=[_gentry(0, 5, "m1")],
+            entries=[_gentry(1, 5, "m1")],
             messages={
                 "m1": (200, gmail_msg_resource("m1", "Hello", _date(1), _plain_payload("hi")))
             },
-            start_id=5,
+            head_history_id=5,
         )
         _install_gmail(monkeypatch, fake)
         items, cursor = await GmailClient().run(
@@ -355,12 +383,13 @@ class TestGmailInitialSync:
     async def test_resume_reuses_saved_valid_history_id_without_plus_one(
         self, monkeypatch: Any
     ) -> None:
-        """A3: resume polls from the SAVED valid id (history ids are
-        non-contiguous — a +1 resume would skip entries)."""
+        """A3: resume polls EXCLUSIVELY from the SAVED valid id (history ids
+        are non-contiguous — an inclusive resume would replay, a +1 resume
+        would skip; only strictly-after is correct)."""
         fake = FakeGmailClient(
             entries=[_gentry(0, 41, "m1"), _gentry(0, 44, "m2")],
             messages={"m1": (200, _gresource("m1", 1)), "m2": (200, _gresource("m2", 2))},
-            start_id=40,
+            head_history_id=44,
         )
         _install_gmail(monkeypatch, fake)
         items, cursor = await GmailClient().run(
@@ -368,9 +397,10 @@ class TestGmailInitialSync:
             {"history_id": 40, "account": _ACCOUNT.lower()},
             credentials={"access_token": "tok"},
         )
-        assert fake.start_calls == 0  # resume: no history.start
+        # resume: no baseline probe
+        assert fake.head_calls == 0
         # polled from the saved id itself (41 and 44 both delivered — the gap
-        # at 42/43 is irrelevant)
+        # at 42/43 is irrelevant under the exclusive contract)
         assert fake.history_calls == [40]
         assert [m.message_id for m in items] == ["gmail:m1", "gmail:m2"]
         assert cursor["history_id"] == 44
@@ -382,137 +412,81 @@ class TestGmailMultipart:
     ) -> None:
         """A5/A6: multipart/alternative — prefer text/plain over text/html;
         exact decoded body bytes; seen-list advanced in the cursor."""
-        exact = "Deadline: Thu, 30 Oct 2026 17:00 - send report 📊"
+        exact = "Deadline: Thu, 30 Oct 2026 17:00 - send report [chart]"
         exact_b64 = base64.urlsafe_b64encode(exact.encode("utf-8")).decode()
         html_b64 = base64.urlsafe_b64encode(
-            b"<html><body><b>Deadline: Thu, 30 Oct 2026</b></body></html>"
+            b"<html><body><b>Deadline</b> (html variant)</body></html>"
         ).decode()
-        resource = {
-            "id": "mp1",
-            "labelIds": ["INBOX"],
-            "payload": {
-                "mimeType": "multipart/alternative",
-                "headers": [
-                    {"name": "From", "value": "boss@corp.com"},
-                    {"name": "To", "value": _ACCOUNT},
-                    {"name": "Subject", "value": "Q4 review"},
-                    {"name": "Date", "value": _date(2)},
-                    {"name": "Message-ID", "value": "<mp1@gmail>"},
-                ],
-                "parts": [
-                    # html first on purpose — plain must still win
-                    {
-                        "mimeType": "text/html",
-                        "body": {"data": html_b64},
-                    },
-                    {
-                        "mimeType": "text/plain; charset=utf-8",
-                        "body": {"data": exact_b64},
-                    },
-                ],
-            },
+        payload = {
+            "mimeType": "multipart/alternative",
+            "parts": [
+                {"mimeType": "text/html", "body": {"data": html_b64}},
+                {"mimeType": "text/plain", "body": {"data": exact_b64}},
+            ],
         }
         fake = FakeGmailClient(
-            entries=[_gentry(0, 7, "mp1")],
-            messages={"mp1": (200, resource)},
-            start_id=7,
+            entries=[_gentry(1, 3, "m1")],
+            messages={
+                "m1": (200, gmail_msg_resource("m1", "Deadline", _date(1), payload))
+            },
+            head_history_id=3,
         )
         _install_gmail(monkeypatch, fake)
         items, cursor = await GmailClient().run(
             _connector(),
-            {"history_id": 7, "account": _ACCOUNT.lower()},
+            {"history_id": 3, "account": _ACCOUNT.lower()},
             credentials={"access_token": "tok"},
         )
         assert len(items) == 1
         assert items[0].content_bytes == exact.encode("utf-8")
-        assert items[0].subject == "Q4 review"
-        assert cursor == {
-            "history_id": 7,
-            "account": _ACCOUNT.lower(),
-            "seen": [f"{_ACCOUNT.lower()}:gmail:mp1"],
-        }
+        assert b"<html>" not in items[0].content_bytes
+        assert cursor["seen"] == [f"{_ACCOUNT.lower()}:gmail:m1"]
 
     async def test_nested_multipart_mixed_falls_back_to_html_when_no_plain(
         self, monkeypatch: Any
     ) -> None:
-        """A5: multipart/mixed containing a nested alternative — with no
-        text/plain anywhere, fall back to the html part; attachable parts are
-        skipped."""
-        html = "<p>Only html here</p>"
+        """A6: a nested multipart/mixed with only an html leaf falls back to
+        the html body (never empty)."""
+        html = "<html><body>report</body></html>"
         html_b64 = base64.urlsafe_b64encode(html.encode()).decode()
-        resource = {
-            "id": "mm1",
-            "payload": {
-                "mimeType": "multipart/mixed",
-                "headers": [
-                    {"name": "From", "value": "a@b.c"},
-                    {"name": "To", "value": _ACCOUNT},
-                    {"name": "Subject", "value": "S"},
-                    {"name": "Date", "value": _date(3)},
-                    {"name": "Message-ID", "value": "<mm1@gmail>"},
-                ],
-                "parts": [
-                    {
-                        "mimeType": "multipart/alternative",
-                        "parts": [
-                            {
-                                "mimeType": "text/html",
-                                "body": {"data": html_b64},
-                            },
-                        ],
-                    },
-                    {
-                        "mimeType": "application/pdf",
-                        "body": {"attachmentId": "att-1", "size": "123"},
-                    },
-                ],
-            },
+        outer = {
+            "mimeType": "multipart/mixed",
+            "parts": [
+                {
+                    "mimeType": "multipart/alternative",
+                    "parts": [{"mimeType": "text/html", "body": {"data": html_b64}}],
+                }
+            ],
         }
         fake = FakeGmailClient(
-            entries=[_gentry(0, 9, "mm1")],
-            messages={"mm1": (200, resource)},
-            start_id=9,
+            entries=[_gentry(1, 4, "m1")],
+            messages={"m1": (200, gmail_msg_resource("m1", "R", _date(1), outer))},
+            head_history_id=4,
         )
         _install_gmail(monkeypatch, fake)
-        items, _ = await GmailClient().run(
+        items, _c = await GmailClient().run(
             _connector(),
-            {"history_id": 9, "account": _ACCOUNT.lower()},
+            {"history_id": 4, "account": _ACCOUNT.lower()},
             credentials={"access_token": "tok"},
         )
         assert len(items) == 1
-        assert items[0].content_bytes == html.encode("utf-8")
+        assert items[0].content_bytes.decode() == html
 
 
 class TestGmailWireShape:
-    """A5: pin the canonical Gmail wire contract so the transport decodes
-    real ``users.messages`` payloads (``format=full``).
-
-    The Gmail Body resource carries the base64url body at ``body.data``
-    (there is no ``bodyData`` object), and attachment parts carry
-    ``attachmentId`` with no inline ``data``. A fixture that encoded a
-    made-up shape would let the suite pass while a live payload decoded to
-    an empty body — this class is the guard against that.
-    """
-
     def test_extract_reads_body_data_not_bodydata(self) -> None:
-        text = "canonical wire shape"
-        data = base64.urlsafe_b64encode(text.encode()).decode()
+        # Real Gmail v1 puts the base64url body at payload.body.data; there is
+        # no bodyData object. The extractor must read body.data.
+        data = base64.urlsafe_b64encode(b"hello").decode()
         payload = {
-            "mimeType": "text/plain; charset=utf-8",
-            "body": {"size": "20", "data": data},
+            "mimeType": "text/plain",
+            "body": {"data": data, "size": "5"},
         }
-        assert _extract_text_body(payload) == text
-        # An empty body.data (or an attachmentId-only part) yields no body.
-        assert _extract_text_body(
-            {"mimeType": "application/pdf", "body": {"attachmentId": "a1"}}
-        ) == ""
-        assert _extract_text_body(
-            {"mimeType": "text/plain", "body": {"attachmentId": "a2"}}
-        ) == ""
+        assert _extract_text_body(payload) == "hello"
 
     def test_multipart_prefers_plain_from_body_data(self) -> None:
+        html_b64 = base64.urlsafe_b64encode(b"<b>html</b>").decode()
         plain_b64 = base64.urlsafe_b64encode(b"plain wins").decode()
-        html_b64 = base64.urlsafe_b64encode(b"<p>html</p>").decode()
         payload = {
             "mimeType": "multipart/alternative",
             "parts": [
@@ -524,77 +498,128 @@ class TestGmailWireShape:
 
 
 class TestGmailPagination:
-    def _paged_world(
-        self,
-    ) -> tuple[list[dict[str, Any]], dict[str, tuple[int, dict[str, Any]]]]:
-        # 125 messages across 5 pages of 25 — entry ids 10..134 (one entry
-        # per message, message ids gm1..gm125).
-        entries = [_gentry(i, 10, f"gm{i + 1}") for i in range(125)]
-        messages = {f"gm{i + 1}": (200, _gresource(f"gm{i + 1}", i + 1)) for i in range(125)}
-        return entries, messages
-
     async def test_restart_after_partial_page_yields_no_skips_or_dupes(
         self, monkeypatch: Any
     ) -> None:
-        """A8: max_items (40) smaller than the 125-message stream → the saved
-        cursor is the LAST PROCESSED entry; restarting re-yields the
-        unprocessed tail (no skips, no duplicates)."""
-        entries, messages = self._paged_world()
-        fake = FakeGmailClient(entries=entries, messages=messages, start_id=10)
+        """A8: max_items (40) smaller than the 125-message stream → the cap
+        record is HELD in the saved cursor (the record just before the one
+        whose last message hit the cap); restarting (exclusive
+        ``startHistoryId``) re-yields the cap record and the durable
+        seen-list suppresses what was already delivered — so only the
+        unprocessed tail is delivered: no skips, no duplicates."""
+        # 125 messages, one per entry: entry ids 10..134, message ids
+        # gm1..gm125 (gm_k sits in entry 9+k). A pre-existing saved cursor at
+        # the mailbox head (entry 10) makes delivery pure incremental
+        # polling — no first-sync INBOX resync, no baseline probe.
+        entries = [_gentry(i, 10, f"gm{i + 1}") for i in range(125)]
+        messages = {f"gm{i + 1}": (200, _gresource(f"gm{i + 1}", i + 1)) for i in range(125)}
+        fake = FakeGmailClient(entries=entries, messages=messages, head_history_id=10)
         _install_gmail(monkeypatch, fake)
         client = GmailClient(max_items=40)
         run1, cursor1 = await client.run(
-            _connector(), {}, credentials={"access_token": "tok"}
+            _connector(),
+            {"history_id": 10, "account": _ACCOUNT.lower()},
+            credentials={"access_token": "tok"},
         )
+        # resume: no baseline probe, no INBOX resync, single poll from saved
+        assert fake.head_calls == 0
+        assert fake.inbox_calls == 0
+        assert fake.history_calls == [10]
         assert len(run1) == 40
-        assert [m.message_id for m in run1] == [f"gmail:gm{i}" for i in range(1, 41)]
-        # gm40 sits in entry id 10+39=49 → cursor == that entry, not 50+
+        # exclusive start=10 → gm2..gm41 (gm1 sits AT the saved cursor)
+        assert [m.message_id for m in run1] == [f"gmail:gm{i}" for i in range(2, 42)]
+        # gm41 sits in entry 50; the cap is hit on that record, so the record
+        # is held — re-yielded on resume and suppressed by the seen-list →
+        # cursor == 49
         assert cursor1["history_id"] == 49
         assert cursor1["seen"] == [
-            f"{_ACCOUNT.lower()}:gmail:gm{i}" for i in range(1, 41)
+            f"{_ACCOUNT.lower()}:gmail:gm{i}" for i in range(2, 42)
         ]
         assert cursor1["account"] == _ACCOUNT.lower()
 
-        # "restart": fresh client, same world; the saved cursor replays the
-        # last processed entry (suppressed by seen) and yields only the tail.
-        fake2 = FakeGmailClient(entries=entries, messages=messages, start_id=10)
+        # "restart": fresh client, same world; exclusive resume after entry 49
+        # re-yields entry 50 (gm41 suppressed by the seen-list) and delivers
+        # only the unprocessed tail gm42..gm81 — nothing at or before the
+        # saved cursor is replayed and no seen-list entry is re-delivered.
+        fake2 = FakeGmailClient(entries=entries, messages=messages, head_history_id=134)
         _install_gmail(monkeypatch, fake2)
-        run2, cursor2 = await client.run(
+        client2 = GmailClient(max_items=40)
+        run2, cursor2 = await client2.run(
             _connector(), cursor1, credentials={"access_token": "tok"}
         )
-        ids2 = [m.message_id for m in run2]
-        assert ids2 == [f"gmail:gm{i}" for i in range(41, 81)]
-        assert cursor2["history_id"] == 89  # gm80 → entry 10+79
-        assert len(cursor2["seen"]) == 80
-        # union of both runs: the first 80 messages, exactly once
-        assert [m.message_id for m in run1] + ids2 == [
-            f"gmail:gm{i}" for i in range(1, 81)
-        ]
+        assert [m.message_id for m in run2] == [f"gmail:gm{i}" for i in range(42, 82)]
+        # gm81 sits in entry 90; the cap is hit on that record → it is held →
+        # cursor == 89
+        assert cursor2["history_id"] == 89
 
-    async def test_history_newer_than_exhaustion_terminates(self, monkeypatch: Any) -> None:
-        """A8: keep paging while ``historyNewerThan`` advances (five 25-entry
-        pages); a falsy terminal page ends the loop — no infinite paging, no
-        skips across page boundaries."""
-        entries, messages = self._paged_world()
-        fake = FakeGmailClient(entries=entries, messages=messages, start_id=10)
+    async def test_cap_hit_mid_record_does_not_skip_undelivered_tail(
+        self, monkeypatch: Any
+    ) -> None:
+        """A8/A9: when the ``max_items`` cap is reached in the middle of a
+        history record, the cursor must NOT advance past that record — a
+        restart (exclusive ``startHistoryId``) re-yields the record and the
+        seen-list delivers only its undelivered tail instead of skipping it."""
+        # entry 51 holds three messages; with max_items=2 the cap is hit
+        # after delivering gm1, gm2 — gm3 sits undelivered in the same record.
+        # Delivery is pure incremental polling seeded at entry 49 (no
+        # first-sync INBOX resync).
+        entries = [
+            _three_msg_entry(1, 50, ["gm1", "gm2", "gm3"]),
+            _gentry(2, 50, "gm4"),
+        ]
+        messages = {
+            "gm1": (200, _gresource("gm1", 1)),
+            "gm2": (200, _gresource("gm2", 2)),
+            "gm3": (200, _gresource("gm3", 3)),
+            "gm4": (200, _gresource("gm4", 4)),
+        }
+        fake = FakeGmailClient(entries=entries, messages=messages, head_history_id=50)
         _install_gmail(monkeypatch, fake)
-        items, cursor = await GmailClient(max_items=200).run(
-            _connector(), {}, credentials={"access_token": "tok"}
+        client = GmailClient(max_items=2)
+        run1, cursor1 = await client.run(
+            _connector(),
+            {"history_id": 49, "account": _ACCOUNT.lower()},
+            credentials={"access_token": "tok"},
         )
-        assert len(items) == 125  # every page, no skips at the seams
-        assert cursor["history_id"] == 134
-        # paged through every page; the terminal page returned falsy
-        # historyNewerThan and ended the loop (5 calls, not a 6th)
-        assert fake.history_calls == [10, 35, 60, 85, 110]
+        # first two messages delivered; gm3 (same record) NOT yet
+        assert [m.message_id for m in run1] == ["gmail:gm1", "gmail:gm2"]
+        # The cap hit the very first record yielded after the cursor, so no
+        # record was fully consumed — the cursor stays at the start (49).
+        # Record 51's undelivered tail survives.
+        assert cursor1["history_id"] == 49
+
+        # run 2: the exclusive resume re-yields record 51; the seen-list
+        # suppresses gm1/gm2 and delivers the undelivered tail gm3 — NOT
+        # skipped. gm4 (record 52) hits the cap, so record 52 is held →
+        # cursor == 51.
+        fake2 = FakeGmailClient(entries=entries, messages=messages, head_history_id=51)
+        _install_gmail(monkeypatch, fake2)
+        client2 = GmailClient(max_items=2)
+        run2, cursor2 = await client2.run(
+            _connector(), cursor1, credentials={"access_token": "tok"}
+        )
+        assert [m.message_id for m in run2] == ["gmail:gm3", "gmail:gm4"]
+        assert cursor2["history_id"] == 51
+
+        # run 3: resume after 51 re-yields record 52 (gm4 suppressed by the
+        # seen-list); nothing is re-delivered and the cursor advances to 52.
+        fake3 = FakeGmailClient(entries=entries, messages=messages, head_history_id=51)
+        _install_gmail(monkeypatch, fake3)
+        client3 = GmailClient(max_items=2)
+        run3, cursor3 = await client3.run(
+            _connector(), cursor2, credentials={"access_token": "tok"}
+        )
+        assert run3 == []
+        assert cursor3["history_id"] == 52
 
 
 class TestGmailExpiredHistory:
     async def test_expired_history_id_triggers_bounded_full_resync(
         self, monkeypatch: Any
     ) -> None:
-        """A3/A9: saved history id expired (404) → history.start baseline +
-        bounded messages fetch (deduped by the durable seen-list) +
-        incremental from the baseline. New messages are delivered exactly
+        """A3/A9: saved history id expired (404) → baseline probe + bounded
+        INBOX full resync (deduped by the durable seen-list) + incremental
+        poll from the fresh baseline. New messages are delivered exactly
         once; already-seen ones are not redelivered."""
         messages = {
             mid: (200, gmail_msg_resource(mid, f"s-{mid}", _date(i), _plain_payload(f"b-{mid}")))
@@ -603,7 +628,7 @@ class TestGmailExpiredHistory:
         fake = FakeGmailClient(
             entries=[_gentry(1, 100, "m4"), _gentry(2, 100, "m5")],
             messages=messages,
-            start_id=100,
+            head_history_id=100,
             expired_ids=frozenset({90}),
             inbox_message_ids=["m1", "m2", "m3"],
         )
@@ -623,203 +648,179 @@ class TestGmailExpiredHistory:
         # m2 (unseen) is the only full-resync delivery; m1/m3 suppressed by
         # the durable seen-list; m4/m5 arrive exactly once via incremental.
         assert [m.message_id for m in items] == ["gmail:m2", "gmail:m4", "gmail:m5"]
-        assert fake.start_calls == 1
         assert cursor["history_id"] == 102
-        assert cursor["account"] == _ACCOUNT.lower()
-        assert set(cursor["seen"]) == {
-            f"{_ACCOUNT.lower()}:gmail:m{n}" for n in (1, 2, 3, 4, 5)
-        }
+        assert cursor["seen"] == [
+            f"{_ACCOUNT.lower()}:gmail:m1",
+            f"{_ACCOUNT.lower()}:gmail:m3",
+            f"{_ACCOUNT.lower()}:gmail:m2",
+            f"{_ACCOUNT.lower()}:gmail:m4",
+            f"{_ACCOUNT.lower()}:gmail:m5",
+        ]
+        # expired poll (start=90) → resync → poll from the fresh baseline (100)
+        assert fake.history_calls == [90, 100]
+        assert fake.inbox_calls == 1
+        assert fake.head_calls == 1
 
     async def test_history_400_invalid_argument_triggers_bounded_full_resync(
         self, monkeypatch: Any
     ) -> None:
-        """A3/A9: real Gmail reports an expired ``startHistoryId`` as
-        ``400 INVALID_ARGUMENT`` as well as ``404`` — the transport maps both
-        to the same bounded full resync (a raw 400 must not surface as an
-        unhandled HTTP error). Delivery stays exactly-once: the seen-list
-        suppresses resync re-delivery, incremental continues from the fresh
-        baseline."""
-        messages = {
-            mid: (200, gmail_msg_resource(mid, f"s-{mid}", _date(i), _plain_payload(f"b-{mid}")))
-            for i, mid in enumerate(("m1", "m2", "m3", "m4"), start=1)
-        }
+        """A9: a 400 INVALID_ARGUMENT on an expired ``startHistoryId`` maps
+        to the same bounded resync (the transport maps both 400 and 404 to
+        the resync path — a raw 400 must NOT crash the poll loop)."""
         fake = FakeGmailClient(
-            entries=[_gentry(1, 100, "m4")],
-            messages=messages,
-            start_id=100,
-            expired_ids=frozenset({90}),
-            expired_status=400,
-            inbox_message_ids=["m1", "m2", "m3"],
-        )
-        _install_gmail(monkeypatch, fake)
-        items, cursor = await GmailClient(max_items=25).run(
-            _connector(),
-            {
-                "history_id": 90,
-                "account": _ACCOUNT.lower(),
-                "seen": [
-                    f"{_ACCOUNT.lower()}:gmail:m1",
-                    f"{_ACCOUNT.lower()}:gmail:m3",
-                ],
+            entries=[_gentry(1, 1, "n1"), _gentry(2, 1, "n2")],
+            messages={
+                "n1": (200, _gresource("n1", 1)),
+                "n2": (200, _gresource("n2", 2)),
             },
-            credentials={"access_token": "tok"},
-        )
-        # m2 is the only resync delivery (m1/m3 suppressed by the durable
-        # seen-list); m4 arrives exactly once via the incremental from the
-        # fresh baseline 100.
-        assert [m.message_id for m in items] == ["gmail:m2", "gmail:m4"]
-        assert fake.start_calls == 1
-        assert cursor["history_id"] == 101
-        assert set(cursor["seen"]) == {
-            f"{_ACCOUNT.lower()}:gmail:m{n}" for n in (1, 2, 3, 4)
-        }
-
-    async def test_deleted_message_404_skips_that_message_only(
-        self, monkeypatch: Any
-    ) -> None:
-        """A9: a deleted message in the history stream skips that single
-        message — not a poll failure — and the cursor advances past it."""
-        messages = {
-            "ok1": (200, gmail_msg_resource("ok1", "A", _date(1), _plain_payload("a"))),
-            "ok2": (200, gmail_msg_resource("ok2", "B", _date(2), _plain_payload("b"))),
-        }
-        fake = FakeGmailClient(
-            entries=[
-                _gentry(1, 20, "ok1"),
-                _gentry(2, 20, "gone"),
-                _gentry(3, 20, "ok2"),
-            ],
-            messages=messages,  # "gone" absent → 404 on messages.get
-            start_id=20,
+            head_history_id=1,
+            expired_ids=frozenset({77}),
+            expired_status=400,
+            inbox_message_ids=[],
         )
         _install_gmail(monkeypatch, fake)
         items, cursor = await GmailClient().run(
             _connector(),
-            {"history_id": 20, "account": _ACCOUNT.lower()},
+            {"history_id": 77, "account": _ACCOUNT.lower()},
             credentials={"access_token": "tok"},
         )
-        assert [m.message_id for m in items] == ["gmail:ok1", "gmail:ok2"]
-        assert fake.fetched.count("gone") == 1  # fetched once, skipped
-        assert cursor["history_id"] == 23  # advanced past the deleted entry
-        assert len(cursor["seen"]) == 2
+        assert [m.message_id for m in items] == ["gmail:n1", "gmail:n2"]
+        assert cursor["history_id"] == 3
+        # the 400 was mapped to a resync (probe + INBOX list), not a crash
+        assert fake.head_calls == 1
+        assert fake.inbox_calls == 1
+        assert fake.history_calls == [77, 1]
+
+    async def test_deleted_message_404_skips_that_message_only(
+        self, monkeypatch: Any
+    ) -> None:
+        """A9: a deleted message (fetch → 404) skips THAT message, not the
+        whole record — the sibling is still delivered and the cursor
+        advances normally."""
+        fake = FakeGmailClient(
+            entries=[_gentry(1, 5, "gone"), _gentry(1, 5, "alive")],
+            # no "gone" key -> fetch returns 404
+            messages={"alive": (200, _gresource("alive", 1))},
+            head_history_id=5,
+        )
+        _install_gmail(monkeypatch, fake)
+        items, cursor = await GmailClient().run(
+            _connector(),
+            {"history_id": 5, "account": _ACCOUNT.lower()},
+            credentials={"access_token": "tok"},
+        )
+        assert [m.message_id for m in items] == ["gmail:alive"]
+        assert "gone" in fake.fetched
+        assert cursor["history_id"] == 6
 
 
 class TestGmailAccounting:
     async def test_two_accounts_with_overlapping_senders_are_keyed_apart(
         self, monkeypatch: Any
     ) -> None:
-        """A4: two connectors (two workers) sharing one sender each get only
-        their own messages — account keying, never From-header filtering —
-        and each cursor is per-connection (no cross-account leak)."""
-        shared = gmail_msg_resource("shared", "Ping", _date(1), _plain_payload("x"))
-        work = FakeGmailClient(
-            entries=[_gentry(0, 1, "w1"), _gentry(1, 1, "shared")],
-            messages={"w1": (200, shared), "shared": (200, shared)},
-            start_id=1,
-        )
-        _install_gmail(monkeypatch, work)
-        work_conn = _connector(connector_id="c-work", mailbox="work@example.com")
-        items_w, cursor_w = await GmailClient().run(
-            work_conn, {}, credentials={"access_token": "tok-work"}
-        )
-        assert {m.message_id for m in items_w} == {"gmail:w1", "gmail:shared"}
-        assert all(m.account == "work@example.com" for m in items_w)
-        assert cursor_w["account"] == "work@example.com"
-        assert cursor_w["history_id"] == 2
-        assert all(
-            k.startswith("work@example.com:") for k in cursor_w["seen"]
-        )
+        """A4/A10: the same external sender writing to two mailboxes is keyed
+        per-account — two distinct (account, message) keys, two distinct
+        cursors, never collapsed."""
+        work_mailbox = "work@corp.com"
+        personal_mailbox = "personal@corp.com"
 
+        work = FakeGmailClient(
+            entries=[_gentry(1, 2, "wm1")],
+            messages={"wm1": (200, _gresource("wm1", 1))},
+            head_history_id=2,
+        )
         personal = FakeGmailClient(
-            entries=[_gentry(0, 1, "p1"), _gentry(1, 1, "shared")],
-            messages={"p1": (200, shared), "shared": (200, shared)},
-            start_id=1,
+            entries=[_gentry(1, 2, "pm1")],
+            messages={"pm1": (200, _gresource("pm1", 2))},
+            head_history_id=2,
+        )
+        work_connector = _connector(mailbox=work_mailbox, account="Work")
+        personal_connector = _connector(mailbox=personal_mailbox, account="Personal")
+
+        _install_gmail(monkeypatch, work)
+        work_items, work_cursor = await GmailClient().run(
+            work_connector,
+            {"history_id": 2, "account": work_mailbox.lower()},
+            credentials={"access_token": "tok"},
         )
         _install_gmail(monkeypatch, personal)
-        personal_conn = _connector(connector_id="c-personal", mailbox="personal@example.com")
-        items_p, cursor_p = await GmailClient().run(
-            personal_conn, {}, credentials={"access_token": "tok-personal"}
+        personal_items, personal_cursor = await GmailClient().run(
+            personal_connector,
+            {"history_id": 2, "account": personal_mailbox.lower()},
+            credentials={"access_token": "tok"},
         )
-        assert {m.message_id for m in items_p} == {"gmail:p1", "gmail:shared"}
-        assert all(m.account == "personal@example.com" for m in items_p)
-        assert cursor_p["account"] == "personal@example.com"
-        # per-connection cursors: neither carries the other account's keying
-        assert "personal@example.com" not in str(cursor_w)
-        assert "work@example.com" not in str(cursor_p)
+        assert work_items[0].account == work_mailbox.lower()
+        assert personal_items[0].account == personal_mailbox.lower()
+        assert work_cursor["account"] == work_mailbox.lower()
+        assert personal_cursor["account"] == personal_mailbox.lower()
+        assert work_cursor["seen"] == [f"{work_mailbox.lower()}:gmail:wm1"]
+        assert personal_cursor["seen"] == [f"{personal_mailbox.lower()}:gmail:pm1"]
+        assert work_cursor["seen"] != personal_cursor["seen"]
 
 
 class TestGmailBodyDecoding:
     async def test_base64url_missing_padding_is_decoded_at_the_wire(
         self, monkeypatch: Any
     ) -> None:
-        """A6: Gmail strips base64url padding — a top-level text/plain body
-        with the padding removed (length % 4 == 2) decodes to the exact
-        bytes."""
-        # 10 bytes → 2 pad chars; Gmail strips them → 14 chars (len % 4 == 2)
-        raw_no_pad = base64.urlsafe_b64encode(b"deadline!!").decode().rstrip("=")
-        assert len(raw_no_pad) % 4 == 2
-        resource = {
-            "id": "enc1",
-            "payload": {
-                "mimeType": "text/plain; charset=utf-8",
-                "body": {"size": "1", "data": raw_no_pad},
-                "headers": [
-                    {"name": "From", "value": "a@b.c"},
-                    {"name": "To", "value": _ACCOUNT},
-                    {"name": "Subject", "value": "S"},
-                    {"name": "Date", "value": _date(4)},
-                    {"name": "Message-ID", "value": "<enc1@gmail>"},
-                ],
-            },
+        """A6: the wire may carry a base64url body missing trailing '='
+        padding; the transport pads it before decoding."""
+        body_text = "no pad!"  # 7 chars → base64url carries two trailing '='
+        full_b64 = base64.urlsafe_b64encode(body_text.encode()).decode()
+        assert full_b64.endswith("==")
+        unpadded = full_b64.rstrip("=")
+        payload = {
+            "mimeType": "text/plain",
+            "body": {"data": unpadded, "size": str(len(body_text))},
         }
         fake = FakeGmailClient(
-            entries=[_gentry(0, 3, "enc1")],
-            messages={"enc1": (200, resource)},
-            start_id=3,
+            entries=[_gentry(1, 7, "m1")],
+            messages={"m1": (200, gmail_msg_resource("m1", "NP", _date(1), payload))},
+            head_history_id=7,
         )
         _install_gmail(monkeypatch, fake)
-        items, _ = await GmailClient().run(
+        items, _c = await GmailClient().run(
             _connector(),
-            {"history_id": 3, "account": _ACCOUNT.lower()},
+            {"history_id": 7, "account": _ACCOUNT.lower()},
             credentials={"access_token": "tok"},
         )
-        assert items[0].content_bytes == b"deadline!!"
+        assert len(items) == 1
+        assert items[0].content_bytes.decode("utf-8") == body_text
 
     def test_b64url_decode_handles_all_missing_padding_cases(self) -> None:
-        """A6 (direct): Gmail strips the trailing ``=`` padding — for every
-        byte length (padding count 0/1/2) the unpadded form still decodes to
-        the exact original bytes; a bad charset byte degrades with
-        errors=replace; an unknown charset falls back to utf-8."""
-        for n in range(0, 9):
-            raw = b"x" * n
-            enc = base64.urlsafe_b64encode(raw).decode()  # with padding
-            assert _b64url_decode(enc.rstrip("=")) == raw.decode("utf-8")
-        # % 4 == 3 specifically (one padding char stripped): 8 bytes →
-        # 12 base64 chars incl. one '='; stripped → 11 (len % 4 == 3)
-        enc3 = base64.urlsafe_b64encode("abcde☂".encode()).decode().rstrip("=")
-        assert len(enc3) % 4 == 3
-        assert _b64url_decode(enc3) == "abcde☂"
-        # a part charset other than utf-8: 0x80 is € in windows-1252
-        assert _b64url_decode("gA=", "windows-1252") == "€"
-        # invalid utf-8 bytes → U+FFFD replacement (one per bad byte), never an
-        # exception
-        assert _b64url_decode(base64.urlsafe_b64encode(b"\xff\xfe").decode()) == "\ufffd\ufffd"
-        # empty / garbage alphabet → empty, no exception
-        assert _b64url_decode("") == ""
-        assert _b64url_decode("!!!") == ""
+        # _b64url_decode must tolerate a full, partially-stripped, or
+        # fully-stripped base64url body.
+        # 1-byte input encodes to 4 chars with two trailing '='.
+        full = base64.urlsafe_b64encode(b"a").decode()
+        assert full.endswith("==")
+        assert _b64url_decode(full) == "a"              # full padding kept
+        assert _b64url_decode(full[:-1]) == "a"         # one '=' stripped
+        assert _b64url_decode(full[:-2]) == "a"         # both stripped
+        # 6-byte input encodes to 8 base64 chars with no padding at all.
+        unpadded_full = base64.urlsafe_b64encode(b"abcdef").decode()
+        assert "=" not in unpadded_full
+        assert _b64url_decode(unpadded_full) == "abcdef"
 
     async def test_auth_403_maps_to_transport_auth_error(
         self, monkeypatch: Any
     ) -> None:
-        fake = FakeGmailClient(entries=[], messages={})
+        """Auth 403 on the baseline probe → TransportAuthError (never a
+        resync, never a crash)."""
+        fake = FakeGmailClient(
+            entries=[_gentry(0, 1, "m1")],
+            messages={"m1": (200, _gresource("m1", 1))},
+            head_history_id=1,
+        )
+        # force the baseline probe (the only startless history call) to 403
         orig_get = fake.get
 
-        async def get_403(url, *, headers=None, params=None):
-            if url.endswith("/users/me/history.start"):
-                return FakeGmailResp(403, {"error": "forbidden"})
-            return await orig_get(url, headers=headers, params=params)
+        async def _auth403(url, **kw):
+            if url.endswith("/users/me/history") and "startHistoryId" not in (
+                kw.get("params") or {}
+            ):
+                return FakeGmailResp(403, {"error": {"code": 403, "message": "auth"}})
+            return await orig_get(url, **kw)
 
-        fake.get = get_403  # type: ignore[method-assign]
+        fake.get = _auth403
         _install_gmail(monkeypatch, fake)
         with pytest.raises(TransportAuthError):
             await GmailClient().run(

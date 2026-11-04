@@ -59,7 +59,9 @@ MAIL_TRIGGER_KINDS = ("gmail", "imap", "outlook")
 
 #: Provider base URLs for the login probes (overridable per connection via
 #: ``config`` ``google_api_base`` / ``graph_api_base`` for testability).
-_GOOGLE_DEFAULT_BASE = "https://oauth2.googleapis.com"
+#: Google's API host is ``www.googleapis.com`` — the token-exchange host
+#: (``oauth2.googleapis.com``) returns 404 for the userinfo endpoint.
+_GOOGLE_DEFAULT_BASE = "https://www.googleapis.com"
 _GRAPH_DEFAULT_BASE = "https://graph.microsoft.com"
 
 #: Deploy-contract environment variables carrying the OAuth app credentials
