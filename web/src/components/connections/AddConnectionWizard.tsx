@@ -381,6 +381,11 @@ export function AddConnectionWizard({
                     Open provider sign-in
                   </a>
                 </p>
+              ) : state.error ? (
+                <p className="text-muted">
+                  The provider sign-in could not be started — resolve the problem shown
+                  above, then press the button to retry.
+                </p>
               ) : (
                 <p className="text-muted">
                   If the sign-in did not finish, press the button to start it again.
@@ -550,8 +555,30 @@ export function AddConnectionWizard({
 function errMessage(err: unknown): string {
   if (err && typeof err === 'object' && 'detail' in err) {
     const detail = (err as { detail: unknown }).detail
-    if (typeof detail === 'string' && detail) return detail
+    if (typeof detail === 'string') {
+      // The API maps control-plane errors to `detail: {error_code, message}`
+      // (FastAPI HTTPException), which the client stringifies — surface the
+      // human `message` instead of the raw JSON.
+      const msg = detailMessage(detail)
+      if (msg) return msg
+      if (detail) return detail
+    }
   }
   if (err instanceof Error && err.message) return err.message
   return 'request failed'
+}
+
+/** Extract a human message from an API `detail` that may be a stringified
+ *  object with an `error_code` + `message` pair. */
+function detailMessage(detail: string): string | null {
+  const trimmed = detail.trim()
+  if (!trimmed.startsWith('{')) return null
+  try {
+    const parsed = JSON.parse(trimmed) as { error_code?: unknown; message?: unknown }
+    if (typeof parsed.message === 'string' && parsed.message) return parsed.message
+    if (typeof parsed.error_code === 'string' && parsed.error_code) return parsed.error_code
+  } catch {
+    /* not JSON — fall through to the raw string */
+  }
+  return null
 }
