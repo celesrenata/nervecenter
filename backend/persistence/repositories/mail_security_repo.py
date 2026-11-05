@@ -39,7 +39,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import delete, select, update
 
 from backend.mail_security.models import (
     MessageEvidenceManifest,
@@ -51,6 +51,12 @@ from backend.persistence.models.mail_security import (
     MailSecurityFindingRow,
     MailSecurityJobRow,
 )
+
+#: Bound on the per-job replay lineage kept in ``meta['replays']``.
+_MAX_REPLAY_HISTORY = 20
+
+#: ``processing_state`` value of a not-yet-complete assessment placeholder.
+_INCOMPLETE = "INCOMPLETE"
 
 
 class MailSecurityRepository:
@@ -135,21 +141,121 @@ class MailSecurityRepository:
         lease_owner: str | None = None,
         lease_expires_at: datetime | None = None,
         last_error_code: str | None = None,
+        if_state: str | None = None,
+        if_attempts: int | None = None,
+        if_lease_owner: str | None = None,
     ) -> MailSecurityJobRow | None:
         """Patch a job's processing state, scoped to the account.
 
         Returns ``None`` (no write) if the job belongs to another account.
+
+        Optional ``if_*`` guards turn the patch into an atomic compare-and-set
+        (Task 2.1, R-018): the write is ONE conditional ``UPDATE ... WHERE``
+        and applies only when every supplied guard still matches the stored
+        row; otherwise nothing is written and ``None`` is returned. The pair
+        ``(lease_owner, attempts)`` is the fencing token: ``attempts`` is
+        bumped on every claim, so a stale worker holding an older token can
+        never ack, fail or re-lease a job somebody else has since reclaimed.
+        """
+        values: dict[str, Any] = {
+            "state": state,
+            "lease_owner": lease_owner,
+            "lease_expires_at": lease_expires_at,
+            "last_error_code": last_error_code,
+        }
+        if attempts is not None:
+            values["attempts"] = attempts
+        stmt = update(MailSecurityJobRow).where(
+            MailSecurityJobRow.id == job_id,
+            MailSecurityJobRow.account_scope == account_scope,
+        )
+        if if_state is not None:
+            stmt = stmt.where(MailSecurityJobRow.state == if_state)
+        if if_attempts is not None:
+            stmt = stmt.where(MailSecurityJobRow.attempts == if_attempts)
+        if if_lease_owner is not None:
+            stmt = stmt.where(MailSecurityJobRow.lease_owner == if_lease_owner)
+        async with self._sessions() as session:
+            result = await session.execute(stmt.values(**values))
+            if getattr(result, "rowcount", 0) != 1:
+                await session.rollback()
+                return None
+            row = (
+                await session.execute(
+                    select(MailSecurityJobRow)
+                    .where(MailSecurityJobRow.id == job_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+            await session.commit()
+            return row
+
+    async def replay_dead_letter(
+        self, account_scope: str, job_id: str, *, replayed_at: datetime
+    ) -> MailSecurityJobRow | None:
+        """Manually replay a ``DEAD_LETTER`` job (Task 2.1, R-018.4).
+
+        Atomic: applies only while the job is still ``DEAD_LETTER``; any other
+        state (or another account's job) returns ``None`` with no write. The
+        job returns to ``PENDING`` with a fresh attempt budget, but lineage is
+        kept: the row id / outbox key / deterministic assessment id are
+        unchanged, ``last_error_code`` is preserved, and a bounded
+        ``meta["replays"]`` history records when, from which state and with how
+        many prior attempts. Never invoked automatically.
         """
         async with self._sessions() as session:
-            row = await session.get(MailSecurityJobRow, job_id)
-            if row is None or row.account_scope != account_scope:
+            current = (
+                await session.execute(
+                    select(MailSecurityJobRow)
+                    .where(
+                        MailSecurityJobRow.id == job_id,
+                        MailSecurityJobRow.account_scope == account_scope,
+                        MailSecurityJobRow.state == "DEAD_LETTER",
+                    )
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one_or_none()
+            if current is None:
                 return None
-            row.state = state
-            if attempts is not None:
-                row.attempts = attempts
-            row.lease_owner = lease_owner
-            row.lease_expires_at = lease_expires_at
-            row.last_error_code = last_error_code
+            prior_attempts = int(current.attempts or 0)
+            meta = dict(current.meta or {})
+            history = list(meta.get("replays") or [])
+            history.append(
+                {
+                    "at": replayed_at.isoformat(),
+                    "from_state": "DEAD_LETTER",
+                    "prior_attempts": prior_attempts,
+                    "prior_error_code": current.last_error_code,
+                }
+            )
+            meta["replays"] = history[-_MAX_REPLAY_HISTORY:]
+            meta["replay_count"] = int(meta.get("replay_count") or 0) + 1
+            result = await session.execute(
+                update(MailSecurityJobRow)
+                .where(
+                    MailSecurityJobRow.id == job_id,
+                    MailSecurityJobRow.account_scope == account_scope,
+                    MailSecurityJobRow.state == "DEAD_LETTER",
+                    MailSecurityJobRow.attempts == prior_attempts,
+                )
+                .values(
+                    state="PENDING",
+                    attempts=0,
+                    lease_owner=None,
+                    lease_expires_at=None,
+                    meta=meta,
+                )
+            )
+            if getattr(result, "rowcount", 0) != 1:
+                await session.rollback()
+                return None
+            row = (
+                await session.execute(
+                    select(MailSecurityJobRow)
+                    .where(MailSecurityJobRow.id == job_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
             await session.commit()
             return row
 
@@ -243,56 +349,80 @@ class MailSecurityRepository:
             result = await session.execute(stmt)
             row = result.scalar_one_or_none()
             if row is not None:
+                # Idempotent replay keeps the existing row, with ONE exception
+                # (Task 2.1): an INCOMPLETE placeholder written by a failed
+                # attempt is upgraded in place by a later complete verdict, so
+                # a retry can actually land. The reverse never happens: a
+                # complete verdict is never downgraded by a stale/failed
+                # worker (fencing at the data layer, R-018, T-17).
+                if not (
+                    row.processing_state == _INCOMPLETE
+                    and str(assessment.processing_state.value) != _INCOMPLETE
+                ):
+                    return row
+                await session.execute(
+                    delete(MailSecurityFindingRow).where(
+                        MailSecurityFindingRow.account_scope
+                        == assessment.account_scope,
+                        MailSecurityFindingRow.assessment_id
+                        == assessment.assessment_id,
+                    )
+                )
+                self._fill_assessment_row(row, assessment)
+                self._add_findings(session, assessment)
+                await session.commit()
                 return row
 
-            # Resolve the model version (if any) from the last model run — a
-            # safe metadata id, never model output text.
-            model_version = (
-                assessment.model_runs[-1].model_id
-                if assessment.model_runs
-                else None
-            )
             row = MailSecurityAssessmentRow(
                 assessment_id=assessment.assessment_id,
                 account_scope=assessment.account_scope,
                 source_id=assessment.source_ref,
-                revision=assessment.source_revision,
-                analysis_profile_version=assessment.analysis_profile_version,
-                model_version=model_version,
-                policy_version=assessment.policy.policy_version,
-                processing_state=str(assessment.processing_state.value),
-                evidence_fidelity=str(assessment.evidence_fidelity.value),
-                mode=str(assessment.policy.mode.value),
-                disposition=str(assessment.policy.disposition.value),
-                assessment=assessment.model_dump(mode="json"),
             )
+            self._fill_assessment_row(row, assessment)
             session.add(row)
-
-            for finding in assessment.findings:
-                confidence_semantics: str | None = None
-                confidence_value: dict[str, Any] = {"value": None}
-                session.add(
-                    MailSecurityFindingRow(
-                        account_scope=assessment.account_scope,
-                        assessment_id=assessment.assessment_id,
-                        finding_key=finding.finding_key,
-                        rule_id=finding.rule_id,
-                        category=str(finding.category.value),
-                        severity=str(finding.severity.value),
-                        status=str(finding.status.value),
-                        confidence_semantics=confidence_semantics,
-                        confidence_value=confidence_value,
-                        evidence_ref=(
-                            finding.evidence_refs[0]
-                            if finding.evidence_refs
-                            else None
-                        ),
-                        explanation_code=finding.explanation_code,
-                        meta={"evidence_refs": list(finding.evidence_refs)},
-                    )
-                )
+            self._add_findings(session, assessment)
             await session.commit()
             return row
+
+    @staticmethod
+    def _fill_assessment_row(
+        row: MailSecurityAssessmentRow, assessment: SecurityAssessment
+    ) -> None:
+        """Copy the mutable assessment columns from the Pydantic model."""
+        row.revision = assessment.source_revision
+        row.analysis_profile_version = assessment.analysis_profile_version
+        row.model_version = (
+            assessment.model_runs[-1].model_id if assessment.model_runs else None
+        )
+        row.policy_version = assessment.policy.policy_version
+        row.processing_state = str(assessment.processing_state.value)
+        row.evidence_fidelity = str(assessment.evidence_fidelity.value)
+        row.mode = str(assessment.policy.mode.value)
+        row.disposition = str(assessment.policy.disposition.value)
+        row.assessment = assessment.model_dump(mode="json")
+
+    @staticmethod
+    def _add_findings(session: Any, assessment: SecurityAssessment) -> None:
+        """Add one finding row per typed finding (metadata only)."""
+        for finding in assessment.findings:
+            session.add(
+                MailSecurityFindingRow(
+                    account_scope=assessment.account_scope,
+                    assessment_id=assessment.assessment_id,
+                    finding_key=finding.finding_key,
+                    rule_id=finding.rule_id,
+                    category=str(finding.category.value),
+                    severity=str(finding.severity.value),
+                    status=str(finding.status.value),
+                    confidence_semantics=None,
+                    confidence_value={"value": None},
+                    evidence_ref=(
+                        finding.evidence_refs[0] if finding.evidence_refs else None
+                    ),
+                    explanation_code=finding.explanation_code,
+                    meta={"evidence_refs": list(finding.evidence_refs)},
+                )
+            )
 
     async def get_assessment(
         self, account_scope: str, assessment_id: str

@@ -86,7 +86,7 @@ import time
 import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import Any, Protocol
 
 import structlog
@@ -122,34 +122,25 @@ from backend.mail_security.parser import (
     parse_mime_evidence,
 )
 from backend.mail_security.policy import PolicyEvidence, decide_policy
+from backend.mail_security.queue import (
+    CODE_LEASE_EXPIRED,
+    DEFAULT_LEASE_SECONDS,
+    DEFAULT_MAX_ATTEMPTS,
+    JOB_STATE_DEAD_LETTER,
+    JOB_STATE_DONE,
+    JOB_STATE_ERROR_RETRYABLE,
+    JOB_STATE_PENDING,
+    JOB_STATE_RUNNING,
+    QueuePolicy,
+    claim_next_job,
+    lease_expired,
+)
 
 log = structlog.get_logger(__name__)
 
 #: Version token stamped on this worker's logs / behavior. Bump on a change to
 #: the consumer orchestration (not the pure sub-stages, which carry their own).
 WORKER_VERSION = "mail-security-worker@1"
-
-# -- job lifecycle states (design §3 / §4.4; stored as capped strings) --------
-
-#: A freshly scheduled job (Task 1.8). The only state this worker claims from.
-JOB_STATE_PENDING = "PENDING"
-#: A job currently leased by a worker. Transient; cleared on terminal states.
-JOB_STATE_RUNNING = "RUNNING"
-#: A job whose verdict is committed and whose work is done (the ack). Terminal.
-JOB_STATE_DONE = "DONE"
-#: A job that failed transiently and may be retried within the ceiling.
-JOB_STATE_ERROR_RETRYABLE = "ERROR_RETRYABLE"
-#: A job whose retries are exhausted. Terminal until a manual replay.
-JOB_STATE_DEAD_LETTER = "DEAD_LETTER"
-
-#: Default bounded retry ceiling (R-018). After this many *attempts* a failing
-#: job is dead-lettered rather than retried forever.
-DEFAULT_MAX_ATTEMPTS = 5
-
-#: Default lease duration. A crashed worker's lease lapses after this so the
-#: job becomes re-claimable (T-17). Content scanning is bounded and fast, so a
-#: short lease is safe.
-DEFAULT_LEASE_SECONDS = 300
 
 # -- safe failure codes (upper-snake; never raw text) -------------------------
 
@@ -264,6 +255,9 @@ class MailSecurityWorker:
         self._limits = limits
         self._max_attempts = max(1, int(max_attempts))
         self._lease_seconds = int(lease_seconds)
+        self._policy = QueuePolicy(
+            max_attempts=self._max_attempts, lease_seconds=self._lease_seconds
+        )
         self._worker_id = worker_id or f"worker:{uuid.uuid4().hex[:16]}"
         self._clock = clock if clock is not None else lambda: datetime.now(tz=UTC)
         self._monotonic = monotonic if monotonic is not None else time.monotonic
@@ -312,45 +306,70 @@ class MailSecurityWorker:
     # -- claim (lease / compare-and-set) -----------------------------------
 
     async def _claim_next(self) -> Any | None:
-        """Lease the next claimable ``PENDING`` job for this account.
+        """Lease the next claimable job for this account (Task 2.1 queue).
 
-        A job is claimable when it is ``PENDING`` with no live lease. The claim
-        is a compare-and-set via :meth:`MailSecurityRepository.mark_job_state`
-        keyed on the row id within this account scope, so two concurrent workers
-        cannot both win the same job (the second's CAS sees the state already
-        moved and returns ``None``). The lease carries this worker's id and an
-        expiry so a crashed worker's job lapses and is re-claimable (T-17).
+        Delegates to :func:`~backend.mail_security.queue.claim_next_job`: an
+        atomic compare-and-set claim that bumps ``attempts`` (the fencing
+        token with ``lease_owner``). ``PENDING``, due ``ERROR_RETRYABLE`` and
+        lease-expired ``RUNNING`` jobs are claimable; a live lease is not.
         """
-        now = self._clock()
-        pending = await self._repo.list_jobs(
-            self._account_scope, state=JOB_STATE_PENDING
+        return await claim_next_job(
+            self._repo,
+            self._account_scope,
+            worker_id=self._worker_id,
+            now=self._clock(),
+            policy=self._policy,
         )
-        for candidate in pending:
-            if self._lease_is_live(candidate, now):
-                continue
-            claimed = await self._repo.mark_job_state(
-                self._account_scope,
-                candidate.id,
-                state=JOB_STATE_RUNNING,
-                attempts=int(getattr(candidate, "attempts", 0) or 0) + 1,
-                lease_owner=self._worker_id,
-                lease_expires_at=now + timedelta(seconds=self._lease_seconds),
-                last_error_code=None,
-            )
-            if claimed is not None and claimed.lease_owner == self._worker_id:
-                return claimed
-        return None
 
-    @staticmethod
-    def _lease_is_live(job: Any, now: datetime) -> bool:
-        """``True`` if the job currently holds an unexpired lease."""
-        owner = getattr(job, "lease_owner", None)
-        expires = getattr(job, "lease_expires_at", None)
-        if not owner or expires is None:
-            return False
-        if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=UTC)
-        return expires > now
+    async def _still_owner(self, job: Any) -> bool:
+        """Fencing check: re-assert our lease token before writing a verdict.
+
+        A guarded no-op update that matches only while ``(lease_owner,
+        attempts)`` is still ours. ``False`` means the lease was reclaimed and
+        this worker is stale: it must write nothing (R-018, T-17).
+        """
+        held = await self._repo.mark_job_state(
+            job.account_scope,
+            job.id,
+            state=JOB_STATE_RUNNING,
+            attempts=int(job.attempts or 0),
+            lease_owner=self._worker_id,
+            lease_expires_at=job.lease_expires_at,
+            last_error_code=None,
+            if_state=JOB_STATE_RUNNING,
+            if_attempts=int(job.attempts or 0),
+            if_lease_owner=self._worker_id,
+        )
+        if held is None:
+            log.warning(
+                "mail_security.lease_lost",
+                account_scope=job.account_scope,
+                job_id=job.id,
+            )
+        return held is not None
+
+    async def record_incomplete(self, job: Any, code: str) -> None:
+        """Record an honest INCOMPLETE assessment for a job (sweeper hook).
+
+        Used when a lease expired: no verdict was committed, and the message
+        must never read as clean (I-02). Idempotent; never downgrades a
+        complete assessment.
+        """
+        content_ref = str((job.meta or {}).get("content_ref") or "") or None
+        assessment = self._assess_incomplete(
+            account_scope=job.account_scope,
+            source_key=job.source_key,
+            content_ref=content_ref,
+            evidence=None,
+            code=_safe_code(code),
+        )
+        await self._persist_verdict(
+            account_scope=job.account_scope,
+            source_key=job.source_key,
+            content_ref=content_ref,
+            evidence=None,
+            assessment=assessment,
+        )
 
     # -- process one claimed job -------------------------------------------
 
@@ -397,6 +416,15 @@ class MailSecurityWorker:
                 content_ref=content_ref, flags=flags,
             )
 
+        # Per-job timeout: a lease that lapsed mid-processing makes the result
+        # untrustworthy for this attempt -> retryable + INCOMPLETE, never clean.
+        if lease_expired(job, self._clock()):
+            return await self._fail_job(
+                job, attempts, code=CODE_LEASE_EXPIRED,
+                account_scope=account_scope, source_key=source_key,
+                content_ref=content_ref, flags=flags,
+            )
+
         assessment = self._assess(
             account_scope=account_scope,
             source_key=source_key,
@@ -404,6 +432,9 @@ class MailSecurityWorker:
             evidence=evidence,
             flags=flags,
         )
+
+        if not await self._still_owner(job):
+            return job  # stale worker: reclaimed by another; write nothing
 
         # --- verdict BEFORE ack (design §4.4 step 5, T-16/T-17) -------------
         # Persist evidence + assessment + findings and commit, THEN mark the
@@ -424,6 +455,9 @@ class MailSecurityWorker:
             lease_owner=None,
             lease_expires_at=None,
             last_error_code=None,
+            if_state=JOB_STATE_RUNNING,
+            if_attempts=attempts,
+            if_lease_owner=self._worker_id,
         )
         log.info(
             "mail_security.job_done",
@@ -705,6 +739,8 @@ class MailSecurityWorker:
         a restrictive disposition by construction.
         """
         safe = _safe_code(code)
+        if not await self._still_owner(job):
+            return job  # stale worker: reclaimed by another; write nothing
         assessment = self._assess_incomplete(
             account_scope=account_scope,
             source_key=source_key,
@@ -731,8 +767,16 @@ class MailSecurityWorker:
             state=terminal,
             attempts=attempts,
             lease_owner=None,
-            lease_expires_at=None,
+            # While RETRYABLE (no owner) this holds the backoff "not before".
+            lease_expires_at=(
+                None
+                if terminal == JOB_STATE_DEAD_LETTER
+                else self._policy.not_before(self._clock(), attempts)
+            ),
             last_error_code=safe,
+            if_state=JOB_STATE_RUNNING,
+            if_attempts=attempts,
+            if_lease_owner=self._worker_id,
         )
         log.warning(
             "mail_security.job_failed",
