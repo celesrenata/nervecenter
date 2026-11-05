@@ -99,16 +99,26 @@ class MailIntelRepository:
 
     # -- promotion ----------------------------------------------------------
 
+    def now(self) -> datetime:
+        """The repository's injected clock reading (single clock source)."""
+        return aware(self._clock())
+
     async def promote(
-        self, records: Sequence[IntelRecord], *, dry_run: bool = False
+        self,
+        records: Sequence[IntelRecord],
+        *,
+        dry_run: bool = False,
+        now: datetime | None = None,
     ) -> PromotionPlan:
         """Explicitly promote validated records as the next store version.
 
         ``dry_run=True`` replays the decision and returns the plan without any
         write. Re-promoting identical ``(key, feed_version)`` is a no-op and
-        consumes no version.
+        consumes no version. ``now`` pins the instant used for the TTL re-check
+        (default: the repository clock) so a caller can use one instant for the
+        whole operation.
         """
-        now = self._clock()
+        now = aware(now) if now is not None else self.now()
         if len(records) > MAX_BATCH:
             raise IntelError(IntelErrorCode.BATCH_TOO_LARGE)
         keys = [r.key for r in records]
@@ -300,10 +310,13 @@ class MailIntelRepository:
         out.sort(key=lambda m: (m.canonical_indicator, m.source, m.feed_version))
         return out
 
-    async def live_keys(self, source: str) -> frozenset[tuple[str, str]]:
-        """``(indicator_type, canonical_indicator)`` of every *live* row of
-        ``source`` (read-only; used by the Task 2.3 change-ratio guard)."""
-        now = self._clock()
+    async def live_state(
+        self, source: str, *, now: datetime | None = None
+    ) -> dict[tuple[str, str], tuple[datetime, str]]:
+        """``(indicator_type, canonical_indicator) -> (expires_at, feed_version)``
+        of every *live* row of ``source`` at ``now`` (default: repository clock).
+        Read-only; used by the Task 2.3 change guards."""
+        at = aware(now) if now is not None else self.now()
         async with self._sessions() as session:
             rows = (
                 (
@@ -316,9 +329,17 @@ class MailIntelRepository:
                 .scalars()
                 .all()
             )
-        return frozenset(
-            (r.indicator_type, r.canonical_indicator) for r in rows if _row_live(r, now)
-        )
+        return {
+            (r.indicator_type, r.canonical_indicator): (aware(r.expires_at), r.feed_version)
+            for r in rows
+            if _row_live(r, at)
+        }
+
+    async def live_keys(
+        self, source: str, *, now: datetime | None = None
+    ) -> frozenset[tuple[str, str]]:
+        """Keys of every *live* row of ``source`` (see :meth:`live_state`)."""
+        return frozenset(await self.live_state(source, now=now))
 
     async def audit_history(
         self, indicator_type: IndicatorType, canonical_indicator: str

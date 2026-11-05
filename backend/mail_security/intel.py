@@ -453,6 +453,12 @@ _SCOPE_RE = re.compile(r"^[A-Za-z0-9:_-]{1,128}$")
 _REF_RE = re.compile(r"^[A-Za-z0-9:_-]{1,200}$")
 
 
+def is_valid_approval_ref(ref: object) -> bool:
+    """True for an opaque approval reference (same alphabet as override refs)."""
+    # fullmatch: ``$`` would also accept a trailing newline
+    return isinstance(ref, str) and _REF_RE.fullmatch(ref) is not None
+
+
 def validate_override_scope(
     *,
     account_scope: str,
@@ -545,6 +551,7 @@ __all__ = [
     "canonicalize_indicator",
     "check_ttl",
     "is_live",
+    "is_valid_approval_ref",
     "lookup_candidates",
     "match_to_finding",
     "sender_key",

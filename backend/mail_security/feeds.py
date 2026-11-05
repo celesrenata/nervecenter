@@ -31,12 +31,27 @@ Poisoning guards (all run before anything is written):
 3. protected domains: a feed that lists one is **rejected entirely** (a feed
    claiming a top site is malicious is treated as poisoned, not trimmed);
    matching is exact on the canonical domain;
-4. change-ratio: additions beyond ``max_change_ratio`` of the source's live
-   set are rejected pending explicit owner approval of that exact feed version
-   (the dry-run plan is returned; nothing is written);
+4. change guards, measured against the source's live set (dry-run plan is
+   returned, nothing is written, pending explicit owner approval of that exact
+   feed version):
+
+   - additions beyond ``max_change_ratio`` (``CHANGE_RATIO_EXCEEDED``);
+   - removals beyond ``max_removal_ratio`` (``REMOVAL_RATIO_EXCEEDED``). A
+     *removal* is a live indicator the update would drop without replacement:
+     either absent from the incoming snapshot (counted conservatively even
+     though ``promote`` alone would leave it live until expiry, because the
+     feed is a snapshot and operators treat omission as retraction) or
+     replaced by a version that expires *earlier* (early expiry);
+   - the first load into an empty live set (including a fully expired or
+     rolled-back one) has no ratio, so it needs an explicit opaque
+     ``initial_load_approval_ref`` (``INITIAL_LOAD_APPROVAL_REQUIRED``);
 5. duplicates collapse deterministically (shortest TTL wins);
 6. TTL is capped by config (<= :data:`~backend.mail_security.intel.MAX_TTL`)
    so a feed that stops updating ages out.
+
+Clock: one instant is read per ingest (the injected ``now``, or the repository
+clock when ``now`` is omitted) and passed to the live-set read and to
+``promote``, so the guard, record validation and promotion agree.
 
 A fetch failure or timeout never touches the store and never marks anything
 safe: the previous live set simply runs to its natural expiry.
@@ -70,6 +85,7 @@ from backend.mail_security.intel import (
     PromotionPlan,
     aware,
     canonicalize_indicator,
+    is_valid_approval_ref,
     validate_record,
 )
 
@@ -81,6 +97,8 @@ MAX_PAYLOAD_CEILING = 1_048_576
 MAX_RECORD_LEN = 253
 MAX_JSON_DEPTH = 4
 DEFAULT_MAX_CHANGE_RATIO = 0.5
+#: Fraction of the live set a single update may remove / expire early.
+DEFAULT_MAX_REMOVAL_RATIO = 0.5
 DEFAULT_FETCH_TIMEOUT_S = 10.0
 _SHA256_HEX = re.compile(r"^[a-f0-9]{64}$")
 _SOURCE = re.compile(r"^[A-Za-z0-9:_-]{1,100}$")
@@ -147,6 +165,8 @@ class FeedErrorCode(StrEnum):
     RECORD_INVALID = "RECORD_INVALID"
     PROTECTED_DOMAIN = "PROTECTED_DOMAIN"
     CHANGE_RATIO_EXCEEDED = "CHANGE_RATIO_EXCEEDED"
+    REMOVAL_RATIO_EXCEEDED = "REMOVAL_RATIO_EXCEEDED"
+    INITIAL_LOAD_APPROVAL_REQUIRED = "INITIAL_LOAD_APPROVAL_REQUIRED"
     INGEST_REJECTED = "INGEST_REJECTED"
 
 
@@ -163,7 +183,7 @@ class RunStatus(StrEnum):
     DRY_RUN = "DRY_RUN"
     REJECTED = "REJECTED"  # payload judged unsafe/invalid; nothing written
     FAILED = "FAILED"  # could not obtain a payload; previous live set kept
-    NEEDS_OWNER_REVIEW = "NEEDS_OWNER_REVIEW"  # change-ratio guard; nothing written
+    NEEDS_OWNER_REVIEW = "NEEDS_OWNER_REVIEW"  # change guards; nothing written
     REFUSED = "REFUSED"  # disabled / unconfigured; nothing attempted
 
 
@@ -196,6 +216,7 @@ class FeedConfig:
     ttl: timedelta
     enabled: bool = False
     max_change_ratio: float = DEFAULT_MAX_CHANGE_RATIO
+    max_removal_ratio: float = DEFAULT_MAX_REMOVAL_RATIO
     require_tls: bool = True
     fetch_timeout_s: float = DEFAULT_FETCH_TIMEOUT_S
     confidence_type: ConfidenceType = ConfidenceType.FEED_ASSERTED
@@ -237,6 +258,9 @@ class FeedRunResult:
     accepted: int = 0
     duplicates: int = 0
     change_ratio: float | None = None
+    removed: int = 0  # live indicators dropped without replacement
+    expired_early: int = 0  # live indicators replaced by an earlier expiry
+    removal_ratio: float | None = None
     plan: PromotionPlan | None = None
 
 
@@ -268,6 +292,8 @@ def validate_config(config: FeedConfig) -> None:
     if not timedelta(0) < config.ttl <= MAX_TTL:
         raise FeedError(FeedErrorCode.CONFIG_INVALID)
     if not 0.0 <= config.max_change_ratio <= 1.0:
+        raise FeedError(FeedErrorCode.CONFIG_INVALID)
+    if not 0.0 <= config.max_removal_ratio <= 1.0:
         raise FeedError(FeedErrorCode.CONFIG_INVALID)
     if not 0 < config.fetch_timeout_s <= 120:
         raise FeedError(FeedErrorCode.CONFIG_INVALID)
@@ -484,10 +510,11 @@ async def ingest_feed(
     fetcher: FeedFetcher,
     repo: Any,
     *,
-    now: Callable[[], Any],
+    now: Callable[[], Any] | None = None,
     env: Mapping[str, str] | None = None,
     dry_run: bool = False,
     approved_feed_version: str | None = None,
+    initial_load_approval_ref: str | None = None,
 ) -> FeedRunResult:
     """Fetch (via the injected fetcher), verify, parse, guard and promote one feed.
 
@@ -495,6 +522,10 @@ async def ingest_feed(
     typed :class:`FeedRunResult` and the previous live set is untouched.
     ``approved_feed_version`` is the owner's explicit approval of one exact
     feed version after reviewing a ``NEEDS_OWNER_REVIEW`` dry-run.
+    ``initial_load_approval_ref`` is an opaque owner approval reference
+    (validated like override approval refs) required when the source has no
+    live indicators; without it the load is ``REJECTED``. ``now`` is the single
+    clock for the run; when omitted the repository clock is used.
     """
     if not mail_security_enabled(dict(env) if env is not None else None):
         return FeedRunResult(config.source, RunStatus.REFUSED, FeedErrorCode.MASTER_FLAG_OFF)
@@ -527,7 +558,7 @@ async def ingest_feed(
         return _result_for(config, status, exc.code)
 
     feed_version = "feed-" + hashlib.sha256(fetched.payload).hexdigest()[:32]
-    clock_now = aware(now())
+    clock_now = aware(now()) if now is not None else aware(repo.now())
     records = []
     try:
         for entry in entries:
@@ -554,26 +585,51 @@ async def ingest_feed(
             config, RunStatus.REJECTED, FeedErrorCode.RECORD_INVALID, feed_version=feed_version
         )
 
-    live = await repo.live_keys(config.source)
-    incoming = {(r.indicator_type.value, r.canonical_indicator) for r in records}
-    added = len(incoming - live)
+    live_state = await repo.live_state(config.source, now=clock_now)
+    live = set(live_state)
+    incoming = {(r.indicator_type.value, r.canonical_indicator): r for r in records}
+    added = len(set(incoming) - live)
+    removed = len(live - set(incoming))
+    expired_early = sum(
+        1
+        for key, (old_expiry, old_version) in live_state.items()
+        if key in incoming
+        and old_version != feed_version
+        and incoming[key].expires_at < old_expiry
+    )
     ratio = (added / len(live)) if live else 0.0
-    guard_tripped = bool(live) and ratio > config.max_change_ratio
+    removal_ratio = ((removed + expired_early) / len(live)) if live else 0.0
+    counts: dict[str, Any] = {
+        "feed_version": feed_version,
+        "accepted": len(records),
+        "duplicates": duplicates,
+        "change_ratio": ratio,
+        "removed": removed,
+        "expired_early": expired_early,
+        "removal_ratio": removal_ratio,
+    }
+
+    if not live and not is_valid_approval_ref(initial_load_approval_ref):
+        return _result_for(
+            config,
+            RunStatus.REJECTED,
+            FeedErrorCode.INITIAL_LOAD_APPROVAL_REQUIRED,
+            feed_version=feed_version,
+        )
+
+    review_code: FeedErrorCode | None = None
+    if live and ratio > config.max_change_ratio:
+        review_code = FeedErrorCode.CHANGE_RATIO_EXCEEDED
+    elif live and removal_ratio > config.max_removal_ratio:
+        review_code = FeedErrorCode.REMOVAL_RATIO_EXCEEDED
 
     try:
-        if guard_tripped and approved_feed_version != feed_version:
-            plan = await repo.promote(records, dry_run=True)
+        if review_code is not None and approved_feed_version != feed_version:
+            plan = await repo.promote(records, dry_run=True, now=clock_now)
             return _result_for(
-                config,
-                RunStatus.NEEDS_OWNER_REVIEW,
-                FeedErrorCode.CHANGE_RATIO_EXCEEDED,
-                feed_version=feed_version,
-                accepted=len(records),
-                duplicates=duplicates,
-                change_ratio=ratio,
-                plan=plan,
+                config, RunStatus.NEEDS_OWNER_REVIEW, review_code, plan=plan, **counts
             )
-        plan = await repo.promote(records, dry_run=dry_run)
+        plan = await repo.promote(records, dry_run=dry_run, now=clock_now)
     except IntelError:
         return _result_for(
             config, RunStatus.REJECTED, FeedErrorCode.INGEST_REJECTED, feed_version=feed_version
@@ -588,6 +644,9 @@ async def ingest_feed(
         accepted=len(records),
         duplicates=duplicates,
         change_ratio=ratio,
+        removed=removed,
+        expired_early=expired_early,
+        removal_ratio=removal_ratio,
         plan=plan,
     )
 
