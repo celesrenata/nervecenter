@@ -12,6 +12,14 @@ consumed by any existing code path yet.
 
 from __future__ import annotations
 
+from backend.mail_security.identifiers import (
+    HASH_ALGORITHM,
+    KEY_SCHEME_VERSION,
+    assessment_id,
+    logical_source_key,
+    normalize_analysis_version,
+    outbox_job_key,
+)
 from backend.mail_security.models import (
     SCHEMA_VERSION,
     AcquisitionMode,
@@ -58,6 +66,8 @@ from backend.mail_security.models import (
 NERVE_MAIL_SECURITY_ENABLED = 0
 
 __all__ = [
+    "HASH_ALGORITHM",
+    "KEY_SCHEME_VERSION",
     "NERVE_MAIL_SECURITY_ENABLED",
     "SCHEMA_VERSION",
     "AcquisitionMode",
@@ -97,4 +107,8 @@ __all__ = [
     "SecurityFinding",
     "SemanticObservation",
     "TrustAxes",
+    "assessment_id",
+    "logical_source_key",
+    "normalize_analysis_version",
+    "outbox_job_key",
 ]
