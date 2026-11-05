@@ -377,6 +377,10 @@ async def wire_dependencies(target: FastAPI) -> None:
                     set_mail_security_repository(
                         target.state.repository_registry.mail_security
                     )
+                    # Phase 2 wiring: explicitly start the flag-gated runner
+                    # that sweeps and drains the scheduled jobs. Never reached
+                    # with the flag OFF (no task, no construction).
+                    start_mail_security_runner(target)
             except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "api.wiring.commitment_store_failed", error=str(exc)
@@ -529,10 +533,104 @@ async def _build_and_connect_nats(target: FastAPI) -> NatsClient | None:
     return nats_client
 
 
+def _mail_security_object_store() -> Any | None:
+    """Object store the security worker resolves content from (``None`` when
+    not configured; the runner then does not start)."""
+    from backend.ingest.supervisor import _object_store_from_env
+
+    return _object_store_from_env()
+
+
+#: Optional override of the runner pass interval (seconds).
+ENV_MAIL_SECURITY_RUNNER_INTERVAL = "NERVE_MAIL_SECURITY_RUNNER_INTERVAL_SECONDS"
+
+
+def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
+    """Start the NerveShield pipeline runner ONLY when the flag is ON.
+
+    Flag OFF: returns ``None`` before touching anything (no object store, no
+    worker, no task). Flag ON but no durable repository or no object store:
+    logs a safe code and starts nothing. Never raises.
+    """
+    from backend.mail_security.ingestion_seam import mail_security_enabled
+
+    if not mail_security_enabled():
+        return None
+    try:
+        from backend.mail_security.ingestion_seam import (
+            DEFAULT_ANALYSIS_PROFILE_VERSION,
+        )
+        from backend.mail_security.pipeline_runner import (
+            DEFAULT_INTERVAL_SECONDS,
+            MailSecurityPipelineRunner,
+        )
+        from backend.mail_security.worker import (
+            MailSecurityWorker,
+            ObjectStoreContentResolver,
+        )
+
+        registry = getattr(target.state, "repository_registry", None)
+        repo = getattr(registry, "mail_security", None) if registry else None
+        if repo is None:
+            log.warning("api.wiring.mail_security_runner_skipped", code="NO_REPOSITORY")
+            return None
+        store = _mail_security_object_store()
+        if store is None:
+            log.warning("api.wiring.mail_security_runner_skipped", code="NO_OBJECT_STORE")
+            return None
+        resolver = ObjectStoreContentResolver(object_store=store)
+
+        def make_worker(scope: str) -> MailSecurityWorker:
+            return MailSecurityWorker(
+                repository=repo,
+                content_resolver=resolver,
+                account_scope=scope,
+                analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
+            )
+
+        try:
+            interval = float(
+                os.environ.get(ENV_MAIL_SECURITY_RUNNER_INTERVAL, "")
+                or DEFAULT_INTERVAL_SECONDS
+            )
+        except ValueError:
+            interval = DEFAULT_INTERVAL_SECONDS
+        runner = MailSecurityPipelineRunner(
+            repository=repo,
+            worker_factory=make_worker,
+            interval_seconds=max(1.0, interval),
+        )
+        task = runner.start()
+        target.state.mail_security_runner = runner
+        return task
+    except Exception as exc:  # noqa: BLE001 - startup must not crash
+        log.warning(
+            "api.wiring.mail_security_runner_failed", error_type=type(exc).__name__
+        )
+        return None
+
+
+async def stop_mail_security_runner(target: Any) -> None:
+    """Cancel the runner loop (no-op when never started). Never raises."""
+    runner = getattr(target.state, "mail_security_runner", None)
+    if runner is None:
+        return
+    target.state.mail_security_runner = None
+    try:
+        await runner.stop()
+    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+        log.warning(
+            "api.wiring.mail_security_runner_stop_failed",
+            error_type=type(exc).__name__,
+        )
+
+
 async def teardown_dependencies(target: FastAPI) -> None:
     """Stop the ingest supervisor, then dispose the engine and disconnect
     NATS; absence of any of them is a no-op."""
 
+    # The security runner also holds the session factory; stop it first.
+    await stop_mail_security_runner(target)
     # The mail ingest workers hold open the durable session factory, so
     # they are stopped before the engine is disposed (order matters).
     try:

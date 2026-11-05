@@ -56,6 +56,8 @@ from backend.persistence.models.mail_security import (
 
 #: Bound on the per-job replay lineage kept in ``meta['replays']``.
 _MAX_REPLAY_HISTORY = 20
+#: Job states the runner-only scope enumeration considers runnable.
+_RUNNABLE_STATES = ("PENDING", "ERROR_RETRYABLE", "RUNNING")
 
 #: ``processing_state`` value of a not-yet-complete assessment placeholder.
 _INCOMPLETE = "INCOMPLETE"
@@ -295,6 +297,31 @@ class MailSecurityRepository:
             stmt = stmt.order_by(MailSecurityJobRow.created_at)
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def list_scopes_with_runnable_jobs(self) -> list[str]:
+        """Distinct ``account_scope`` strings that have runnable work.
+
+        RUNNER-ONLY, INTERNAL. This is the ONE deliberate cross-scope read in
+        the repository: the pipeline runner needs to know which scopes to
+        build a worker for. It returns scope strings and nothing else (no
+        rows, ids, keys or meta), and it must never be reachable from an API
+        route (a test pins that only the runner module references it). The
+        runner then binds one worker to exactly ONE scope; every other
+        repository call stays single-scope (R-023).
+
+        Includes ``PENDING`` and ``ERROR_RETRYABLE`` (drainable) and
+        ``RUNNING`` (so the sweeper can reclaim expired leases). Due-ness is
+        decided later by the scoped claim, not here.
+        """
+        async with self._sessions() as session:
+            stmt = (
+                select(MailSecurityJobRow.account_scope)
+                .where(MailSecurityJobRow.state.in_(_RUNNABLE_STATES))
+                .distinct()
+                .order_by(MailSecurityJobRow.account_scope)
+            )
+            result = await session.execute(stmt)
+            return [str(s) for s in result.scalars().all()]
 
     # -- evidence manifest --------------------------------------------------
     async def upsert_evidence(
