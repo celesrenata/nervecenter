@@ -12,6 +12,16 @@ consumed by any existing code path yet.
 
 from __future__ import annotations
 
+from backend.mail_security.auth_evidence import (
+    AUTH_EVIDENCE_VERSION,
+    NO_AUTH_EVIDENCE_CAPTURED,
+    AuthEvidenceResult,
+    SenderAddresses,
+    TrustedReceiverBoundary,
+    build_auth_evidence,
+    classify_authentication,
+    inspect_sender_provenance,
+)
 from backend.mail_security.identifiers import (
     HASH_ALGORITHM,
     KEY_SCHEME_VERSION,
@@ -80,15 +90,18 @@ from backend.mail_security.parser import (
 NERVE_MAIL_SECURITY_ENABLED = 0
 
 __all__ = [
+    "AUTH_EVIDENCE_VERSION",
     "DEFAULT_LIMITS",
     "HASH_ALGORITHM",
     "KEY_SCHEME_VERSION",
     "NERVE_MAIL_SECURITY_ENABLED",
+    "NO_AUTH_EVIDENCE_CAPTURED",
     "PARSER_VERSION",
     "SCHEMA_VERSION",
     "AcquisitionMode",
     "AttachmentDescriptor",
     "AssessmentMode",
+    "AuthEvidenceResult",
     "AuthObservation",
     "AuthProvenance",
     "AuthResult",
@@ -129,10 +142,15 @@ __all__ = [
     "SecurityAssessment",
     "SecurityFinding",
     "SemanticObservation",
+    "SenderAddresses",
     "TextPart",
     "TrustAxes",
+    "TrustedReceiverBoundary",
     "assessment_id",
+    "build_auth_evidence",
+    "classify_authentication",
     "evidence_fidelity_for",
+    "inspect_sender_provenance",
     "logical_source_key",
     "normalize_analysis_version",
     "outbox_job_key",
