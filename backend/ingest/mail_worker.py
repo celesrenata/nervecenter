@@ -150,6 +150,14 @@ class IngestSeam(Protocol):
         (``{"communication", "conversation", "created"}``)."""
         ...
 
+    def register_content(self, content_ref: str, text: str) -> None:
+        """Optional member: register the message body transiently with the
+        detector (keyed by ``content_ref``) so detection runs on real text
+        instead of ``""``. Never persisted or logged (§7). Doubles of the
+        seam may omit it; the worker getattr-guards (no registration means
+        empty text, exactly like the endpoint path)."""
+        ...
+
     def run_pipeline(self, communication: Communication, *, now: Any) -> Any:
         """Run the §61 detection → follow-up → attention pass."""
         ...
@@ -352,6 +360,20 @@ class DefaultIngestSeam:
         except Exception as exc:  # noqa: BLE001 - surfaced via flush_durable
             if self._durable_failure is None:
                 self._durable_failure = exc
+
+    def register_content(self, content_ref: str, text: str) -> None:
+        """Register the message body transiently with the detector (P0-C).
+
+        The worker reads the body it just stored back out of the object store
+        and hands it here BEFORE :meth:`run_pipeline`, so
+        :class:`~backend.communications.detection.service.DetectionService.
+        _text_for` resolves the real text instead of ``""`` — without this the
+        production seam leaves the detector running on empty text and yielding
+        zero findings. The text is forwarded to the process-wide detection
+        service only; it is never persisted on the durable communication row
+        and never logged (§7) — the durable plane keeps only the
+        ``content_ref`` pointer."""
+        self.pipeline.detection.register_content(content_ref, text)
 
     def run_pipeline(self, communication: Communication, *, now: Any) -> Any:
         return self.pipeline.ingest(communication, now=now)
