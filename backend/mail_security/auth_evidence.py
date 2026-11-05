@@ -64,10 +64,13 @@ extending them. No model change is required.
 
 from __future__ import annotations
 
-import unicodedata
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 
+from backend.mail_security._domains import domain_of as _shared_domain_of
+from backend.mail_security._domains import (
+    is_confusable_domain as _shared_is_confusable_domain,
+)
 from backend.mail_security.models import (
     Authentication,
     AuthObservation,
@@ -531,59 +534,23 @@ def _finding(
 def _domain_of(address: str | None) -> str | None:
     """Return the lowercased domain of an email address, offline and bounded.
 
-    Handles an optional display name and angle-addr (``Name <a@b>``) and bare
-    ``a@b``. Returns ``None`` when no ``@domain`` is present. Performs no DNS.
+    Thin wrapper over the shared package helper
+    (:func:`backend.mail_security._domains.domain_of`) so the Task 1.4 and
+    Task 1.5 detectors share one canonicalization; behavior is unchanged.
     """
-    if not isinstance(address, str):
-        return None
-    text = address.strip()
-    if "<" in text and ">" in text:
-        start = text.rfind("<")
-        end = text.find(">", start)
-        if end > start:
-            text = text[start + 1 : end].strip()
-    if "@" not in text:
-        return None
-    domain = text.rsplit("@", 1)[-1].strip().strip("<>").rstrip(".")
-    # Strip a trailing route/port or whitespace fragment defensively.
-    domain = domain.split()[0] if domain.split() else ""
-    return domain.lower() or None
+    return _shared_domain_of(address)
 
 
 def _is_confusable_domain(domain: str) -> bool:
     """Offline heuristic: does the domain look like a homoglyph/IDNA lookalike?
 
-    Minimal and network-free (T-03). Flags a domain when either:
-
-    - it is already in punycode/IDNA ``xn--`` form (an encoded non-ASCII label
-      that could be a lookalike of an ASCII brand), or
-    - it contains any non-ASCII character that is not a plain lowercase letter
-      — i.e. a Unicode confusable such as Cyrillic ``а`` (U+0430) mixed into an
-      otherwise ASCII-looking name.
-
-    Richer registrable-domain / skeleton-similarity scoring overlaps Task 1.5's
-    URL inspections and is deferred there; this keeps a conservative offline
-    signal so a confusable sender is never silently trusted.
+    Thin wrapper over the shared package helper
+    (:func:`backend.mail_security._domains.is_confusable_domain`) so the
+    confusable / IDNA check lives in one place (review finding 1); behavior is
+    unchanged. Richer registrable-domain / skeleton-similarity scoring lives in
+    Task 1.5's URL inspections.
     """
-    if not domain:
-        return False
-    lowered = domain.lower()
-    # Punycode / IDNA encoded labels.
-    if "xn--" in lowered:
-        return True
-    # Any non-ASCII code point is a confusable candidate.
-    for char in domain:
-        if ord(char) > 0x7F:
-            return True
-        # Mixed-script detection for already-decoded homoglyphs: a letter whose
-        # Unicode name says it is not from the Latin block is suspicious.
-        if char.isalpha() and not char.isascii():
-            return True
-    # Defensive: NFKC-fold and compare; if folding changes the string it had
-    # compatibility/confusable characters.
-    if unicodedata.normalize("NFKC", domain) != domain:
-        return True
-    return False
+    return _shared_is_confusable_domain(domain)
 
 
 __all__ = [

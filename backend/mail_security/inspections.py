@@ -50,8 +50,9 @@ handed; there is no import of ``socket``, ``urllib``, ``requests``, ``http`` or
 from __future__ import annotations
 
 import re
-import unicodedata
 
+from backend.mail_security._domains import domain_of as _domain_of
+from backend.mail_security._domains import is_confusable_domain as _is_confusable_domain
 from backend.mail_security.auth_evidence import SenderAddresses
 from backend.mail_security.models import (
     Code,
@@ -250,22 +251,35 @@ def inspect_message(
     """Run offline evidence inspections plus offline sender-provenance checks.
 
     Convenience composition: :func:`inspect_offline` followed by
-    :func:`inspect_sender_provenance`. Sender findings are appended after the
+    :func:`inspect_offline_sender_provenance`. Sender findings are appended after the
     evidence findings so ordering stays deterministic. Still performs zero
     network I/O (R-005.2, T-05).
     """
     findings = inspect_offline(evidence)
     if addresses is not None:
-        findings.extend(inspect_sender_provenance(addresses))
+        findings.extend(inspect_offline_sender_provenance(addresses))
     return findings
 
 
-def inspect_sender_provenance(addresses: SenderAddresses) -> list[SecurityFinding]:
-    """Emit offline sender-provenance findings (R-005, T-03), no network.
+def inspect_offline_sender_provenance(
+    addresses: SenderAddresses,
+) -> list[SecurityFinding]:
+    """Emit Task 1.5 offline sender-provenance findings (R-005, T-03), no network.
 
-    Checks From vs Reply-To and From vs Return-Path registrable-domain
-    mismatches and a confusable/typosquat From domain. These are observations,
-    never trust decisions.
+    This is the *richer, registrable-domain* sender check that belongs to the
+    Task 1.5 URL/domain inspection taxonomy: it compares registrable domains
+    (eTLD+1) rather than bare domains and promotes ``REPLY_TO_MISMATCH`` /
+    ``RETURN_PATH_MISMATCH`` / ``DOMAIN_CONFUSABLE_IDNA`` to *rule_ids*. It is
+    deliberately **named distinctly** from the Task 1.4
+    :func:`backend.mail_security.auth_evidence.inspect_sender_provenance`
+    (which keeps its bare-domain comparison and ``auth.sender.*`` rule-id
+    taxonomy) so the two detectors never collide on name, signature or
+    ``finding_key`` (review findings 1 and 3). Both reuse the one shared
+    confusable / domain canonicalization in
+    :mod:`backend.mail_security._domains`.
+
+    These are observations, never trust decisions; the Task 1.6 policy decides
+    disposition.
     """
     if not isinstance(addresses, SenderAddresses):
         raise TypeError("addresses must be a SenderAddresses")
@@ -278,12 +292,13 @@ def inspect_sender_provenance(addresses: SenderAddresses) -> list[SecurityFindin
         if reply_domain and _registrable(reply_domain) != _registrable(from_domain):
             findings.append(
                 _finding(
-                    finding_key="sender-reply-to-mismatch",
+                    finding_key="offline-sender-reply-to-mismatch",
                     rule_id=_RULE_REPLY_TO_MISMATCH,
                     category=FindingCategory.SENDER_IMPERSONATION,
                     severity=FindingSeverity.MEDIUM,
                     status=FindingStatus.OBSERVED,
                     explanation_code="REPLY_TO_DOMAIN_MISMATCH",
+                    evidence_refs=["sender:reply-to"],
                 )
             )
 
@@ -292,18 +307,23 @@ def inspect_sender_provenance(addresses: SenderAddresses) -> list[SecurityFindin
         if return_domain and _registrable(return_domain) != _registrable(from_domain):
             findings.append(
                 _finding(
-                    finding_key="sender-return-path-mismatch",
+                    finding_key="offline-sender-return-path-mismatch",
                     rule_id=_RULE_RETURN_PATH_MISMATCH,
                     category=FindingCategory.SENDER_IMPERSONATION,
                     severity=FindingSeverity.LOW,
                     status=FindingStatus.OBSERVED,
                     explanation_code="RETURN_PATH_DOMAIN_MISMATCH",
+                    evidence_refs=["sender:return-path"],
                 )
             )
 
     if from_domain:
         findings.extend(
-            _domain_deception_findings(from_domain, finding_key_prefix="sender-from")
+            _domain_deception_findings(
+                from_domain,
+                finding_key_prefix="offline-sender-from",
+                evidence_ref="sender:from",
+            )
         )
 
     return findings
@@ -320,6 +340,7 @@ def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
     for index, link in enumerate(evidence.links):
         target_host = _url_host(link.target)
         prefix = f"link-{index}"
+        ref = link.evidence_ref
 
         # Visible-text vs actual-href mismatch: when the display text itself
         # looks like a URL/host that disagrees with the real target host.
@@ -337,6 +358,7 @@ def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.MEDIUM,
                     status=FindingStatus.SUSPECTED,
                     explanation_code="DISPLAY_HOST_DIFFERS_FROM_TARGET",
+                    evidence_refs=[ref],
                 )
             )
 
@@ -344,7 +366,9 @@ def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
             continue
 
         # Confusable / typosquat domain findings on the actual target host.
-        for finding in _domain_deception_findings(target_host, finding_key_prefix=prefix):
+        for finding in _domain_deception_findings(
+            target_host, finding_key_prefix=prefix, evidence_ref=ref
+        ):
             findings.append(finding)
 
         # Subdomain deception: a known brand appearing as a *subdomain* label of
@@ -358,6 +382,7 @@ def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.MEDIUM,
                     status=FindingStatus.SUSPECTED,
                     explanation_code="BRAND_IN_DECEPTIVE_SUBDOMAIN",
+                    evidence_refs=[ref],
                 )
             )
 
@@ -371,6 +396,7 @@ def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.LOW,
                     status=FindingStatus.OBSERVED,
                     explanation_code="SHORTENED_LINK_NOT_EXPANDED",
+                    evidence_refs=[ref],
                 )
             )
 
@@ -394,6 +420,7 @@ def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.INFO,
                     status=FindingStatus.OBSERVED,
                     explanation_code="EXTERNAL_LINK_RESOURCE",
+                    evidence_refs=[ref],
                 )
             )
 
@@ -407,6 +434,7 @@ def _inspect_images(evidence: ParsedEvidence) -> list[SecurityFinding]:
         if not image.is_remote:
             continue
         prefix = f"image-{index}"
+        ref = image.evidence_ref
         if _looks_like_tracking_pixel(image.target):
             findings.append(
                 _finding(
@@ -416,6 +444,7 @@ def _inspect_images(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.LOW,
                     status=FindingStatus.SUSPECTED,
                     explanation_code="REMOTE_TRACKING_PIXEL",
+                    evidence_refs=[ref],
                 )
             )
         else:
@@ -427,6 +456,7 @@ def _inspect_images(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.INFO,
                     status=FindingStatus.OBSERVED,
                     explanation_code="REMOTE_IMAGE_RESOURCE",
+                    evidence_refs=[ref],
                 )
             )
         # Prompt-injection hidden in alt text is captured as an inert finding.
@@ -439,6 +469,7 @@ def _inspect_images(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.MEDIUM,
                     status=FindingStatus.OBSERVED,
                     explanation_code="PROMPT_INJECTION_IN_ALT_TEXT",
+                    evidence_refs=[ref],
                 )
             )
     return findings
@@ -481,6 +512,7 @@ def _inspect_html_parts(evidence: ParsedEvidence) -> list[SecurityFinding]:
             continue
         html = part.raw
         prefix = f"html-{index}"
+        ref = part.evidence_ref
         if _has_hidden_text(html):
             findings.append(
                 _finding(
@@ -490,6 +522,7 @@ def _inspect_html_parts(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.LOW,
                     status=FindingStatus.SUSPECTED,
                     explanation_code="HIDDEN_OR_OFFSCREEN_TEXT",
+                    evidence_refs=[ref],
                 )
             )
         if _TINY_IMG.search(html):
@@ -501,6 +534,7 @@ def _inspect_html_parts(evidence: ParsedEvidence) -> list[SecurityFinding]:
                     severity=FindingSeverity.LOW,
                     status=FindingStatus.SUSPECTED,
                     explanation_code="TINY_TRACKING_IMAGE_MARKUP",
+                    evidence_refs=[ref],
                 )
             )
     return findings
@@ -523,16 +557,19 @@ def _has_hidden_text(html: str) -> bool:
 def _inspect_phrases(evidence: ParsedEvidence) -> list[SecurityFinding]:
     """Scan decoded text parts for inert prompt-injection / pressure phrases."""
     findings: list[SecurityFinding] = []
-    injection_seen = False
-    social_seen = False
+    # Collect the evidence_refs of the parts that matched, in part order, so the
+    # phrase findings point back at the exact text parts they came from
+    # (R-005.5). Bounded by the model's evidence_refs cap; parts are few.
+    injection_refs: list[str] = []
+    social_refs: list[str] = []
     for part in evidence.text_parts:
         text = part.normalized or part.raw
-        if not injection_seen and _matches_any(text, _PROMPT_INJECTION_PATTERNS):
-            injection_seen = True
-        if not social_seen and _matches_any(text, _SOCIAL_ENGINEERING_PATTERNS):
-            social_seen = True
+        if _matches_any(text, _PROMPT_INJECTION_PATTERNS):
+            injection_refs.append(part.evidence_ref)
+        if _matches_any(text, _SOCIAL_ENGINEERING_PATTERNS):
+            social_refs.append(part.evidence_ref)
 
-    if injection_seen:
+    if injection_refs:
         findings.append(
             _finding(
                 finding_key="phrase-prompt-injection",
@@ -541,9 +578,10 @@ def _inspect_phrases(evidence: ParsedEvidence) -> list[SecurityFinding]:
                 severity=FindingSeverity.MEDIUM,
                 status=FindingStatus.OBSERVED,
                 explanation_code="PROMPT_INJECTION_PHRASE",
+                evidence_refs=_dedupe(injection_refs),
             )
         )
-    if social_seen:
+    if social_refs:
         findings.append(
             _finding(
                 finding_key="phrase-social-engineering",
@@ -552,9 +590,23 @@ def _inspect_phrases(evidence: ParsedEvidence) -> list[SecurityFinding]:
                 severity=FindingSeverity.LOW,
                 status=FindingStatus.SUSPECTED,
                 explanation_code="SOCIAL_ENGINEERING_PRESSURE",
+                evidence_refs=_dedupe(social_refs),
             )
         )
     return findings
+
+
+def _dedupe(refs: list[str]) -> list[str]:
+    """Order-preserving de-duplication, bounded to the model's refs cap (24)."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for ref in refs:
+        if ref not in seen:
+            seen.add(ref)
+            unique.append(ref)
+        if len(unique) >= 24:
+            break
+    return unique
 
 
 # =============================================================================
@@ -563,9 +615,14 @@ def _inspect_phrases(evidence: ParsedEvidence) -> list[SecurityFinding]:
 
 
 def _domain_deception_findings(
-    host: str, *, finding_key_prefix: str
+    host: str, *, finding_key_prefix: str, evidence_ref: str
 ) -> list[SecurityFinding]:
-    """Emit confusable-IDNA and all-ASCII typosquat findings for a host."""
+    """Emit confusable-IDNA and all-ASCII typosquat findings for a host.
+
+    ``evidence_ref`` is the opaque reference of the originating link (or a
+    synthetic ``sender:*`` token for the From domain) that the emitted findings
+    point back at (R-005.5).
+    """
     findings: list[SecurityFinding] = []
     if _is_confusable_domain(host):
         findings.append(
@@ -576,6 +633,7 @@ def _domain_deception_findings(
                 severity=FindingSeverity.HIGH,
                 status=FindingStatus.SUSPECTED,
                 explanation_code="IDNA_UNICODE_CONFUSABLE",
+                evidence_refs=[evidence_ref],
             )
         )
     elif _is_ascii_typosquat(host):
@@ -589,30 +647,10 @@ def _domain_deception_findings(
                 severity=FindingSeverity.MEDIUM,
                 status=FindingStatus.SUSPECTED,
                 explanation_code="ASCII_BRAND_TYPOSQUAT",
+                evidence_refs=[evidence_ref],
             )
         )
     return findings
-
-
-def _is_confusable_domain(domain: str) -> bool:
-    """Offline homoglyph / IDNA lookalike heuristic (T-03), no network.
-
-    Flags a domain when it is in punycode ``xn--`` form, contains any non-ASCII
-    code point (a potential Unicode confusable such as Cyrillic ``а``), or a
-    compatibility NFKC fold changes it. Kept behavior-compatible with the
-    conservative check in :mod:`backend.mail_security.auth_evidence`.
-    """
-    if not domain:
-        return False
-    lowered = domain.lower()
-    if "xn--" in lowered:
-        return True
-    for char in domain:
-        if ord(char) > 0x7F:
-            return True
-    if unicodedata.normalize("NFKC", domain) != domain:
-        return True
-    return False
 
 
 def _is_ascii_typosquat(host: str) -> bool:
@@ -831,28 +869,6 @@ def _edit_distance_le_1(a: str, b: str) -> bool:
 # =============================================================================
 
 
-def _domain_of(address: str | None) -> str | None:
-    """Return the lowercased domain of an email address, offline and bounded.
-
-    Handles ``Name <a@b>`` and bare ``a@b``. Returns ``None`` when no
-    ``@domain`` is present. Performs no DNS. (Behavior mirrors the equivalent
-    helper in :mod:`backend.mail_security.auth_evidence`.)
-    """
-    if not isinstance(address, str):
-        return None
-    text = address.strip()
-    if "<" in text and ">" in text:
-        start = text.rfind("<")
-        end = text.find(">", start)
-        if end > start:
-            text = text[start + 1 : end].strip()
-    if "@" not in text:
-        return None
-    domain = text.rsplit("@", 1)[-1].strip().strip("<>").rstrip(".")
-    domain = domain.split()[0] if domain.split() else ""
-    return domain.lower() or None
-
-
 def _finding(
     *,
     finding_key: str,
@@ -861,8 +877,17 @@ def _finding(
     severity: FindingSeverity,
     status: FindingStatus,
     explanation_code: Code,
+    evidence_refs: list[str] | None = None,
 ) -> SecurityFinding:
-    """Build a metadata-only typed finding (no raw body text, I-05/R-022.4)."""
+    """Build a metadata-only typed finding (no raw body text, I-05/R-022.4).
+
+    ``evidence_refs`` are the *opaque* evidence references the finding points
+    back at — the parser's stable per-part / per-link / per-image
+    ``evidence_ref`` tokens (e.g. ``part:text:html:0:link:0``) or a synthetic
+    ``sender:*`` token for address-level findings. They carry no raw body text
+    by construction (the :class:`OpaqueRef` pattern forbids it) and preserve the
+    traceability R-005.5 / design §9 require.
+    """
     return SecurityFinding(
         finding_key=finding_key,
         rule_id=rule_id,
@@ -870,7 +895,7 @@ def _finding(
         severity=severity,
         status=status,
         detector_version=INSPECTIONS_VERSION,
-        evidence_refs=[],
+        evidence_refs=list(evidence_refs) if evidence_refs else [],
         explanation_code=explanation_code,
     )
 
@@ -880,5 +905,5 @@ __all__ = [
     "SenderAddresses",
     "inspect_message",
     "inspect_offline",
-    "inspect_sender_provenance",
+    "inspect_offline_sender_provenance",
 ]
