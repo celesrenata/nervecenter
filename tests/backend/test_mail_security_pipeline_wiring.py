@@ -300,6 +300,25 @@ class TestFailureIsolation:
         assert calls == 2
         assert runner.failure_counts[RunnerFailure.SCOPE_ENUMERATION_FAILED] == 2
 
+    async def test_failing_enumeration_does_not_advance_heartbeat(
+        self, harness
+    ) -> None:
+        class Repo:
+            async def list_scopes_with_runnable_jobs(self) -> list[str]:
+                raise OSError("db down")
+
+        runner = MailSecurityPipelineRunner(
+            repository=Repo(),
+            worker_factory=_factory(harness),
+            interval_seconds=1.0,
+            clock=lambda: _NOW,
+            sleep=_no_sleep,
+            env=_ON,
+        )
+        await runner.run_once()
+        # Nothing swept: the stale-sweeper signal must stay un-fed (None = never).
+        assert telemetry.sweeper_age_seconds(_NOW) is None
+
     async def test_loop_survives_failing_pass(self, harness) -> None:
         passes = 0
         done = asyncio.Event()

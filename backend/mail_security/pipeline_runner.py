@@ -22,8 +22,10 @@ is deliberately not caught, so shutdown cancels promptly. Shutdown cancels only
 the loop task; it never rewrites job rows (a lease it does not own expires and
 is reclaimed by the sweeper). asyncio tasks only; no threads.
 
-Observability: every pass advances the Task 2.6 sweeper heartbeat
-(:func:`~backend.mail_security.telemetry.note_sweep`).
+Observability: a pass that really swept advances the Task 2.6 sweeper heartbeat
+(:func:`~backend.mail_security.telemetry.note_sweep`). A failed scope
+enumeration, or a pass where every scope's sweep failed, does not, so a stalled
+sweeper stays visible.
 
 Privacy (T-14): logs carry fixed codes and exception type names only.
 """
@@ -118,18 +120,23 @@ class MailSecurityPipelineRunner:
             scopes = await self._repo.list_scopes_with_runnable_jobs()
         except Exception as exc:  # noqa: BLE001 - one bad read never kills the loop
             self._fail(RunnerFailure.SCOPE_ENUMERATION_FAILED, exc)
-            scopes = []
-        for scope in scopes:
-            await self._run_scope(scope, now)
-        note_sweep(now)  # Task 2.6 heartbeat, once per pass
+            # Nothing was swept: do not feed the heartbeat (would mask a stall).
+            return []
+        swept = [await self._run_scope(scope, now) for scope in scopes]
+        # Task 2.6 heartbeat, once per pass, only when sweeping really happened
+        # (an empty successful enumeration counts; all-scopes-failed does not).
+        if not scopes or any(swept):
+            note_sweep(now)
         return list(scopes)
 
-    async def _run_scope(self, scope: str, now: datetime) -> None:
+    async def _run_scope(self, scope: str, now: datetime) -> bool:
+        """Sweep + drain one scope. Returns True when its sweep succeeded."""
         try:
             worker = self._factory(scope)
         except Exception as exc:  # noqa: BLE001 - isolate per scope
             self._fail(RunnerFailure.WORKER_BUILD_FAILED, exc)
-            return
+            return False
+        swept = True
         recorder = getattr(worker, "record_incomplete", None)
         try:
             await sweep_once(
@@ -143,10 +150,12 @@ class MailSecurityPipelineRunner:
             )
         except Exception as exc:  # noqa: BLE001 - still try to drain
             self._fail(RunnerFailure.SCOPE_SWEEP_FAILED, exc)
+            swept = False
         try:
             await worker.process_available()
         except Exception as exc:  # noqa: BLE001 - isolate per scope
             self._fail(RunnerFailure.SCOPE_DRAIN_FAILED, exc)
+        return swept
 
     def start(self) -> asyncio.Task[None] | None:
         """Start the loop explicitly. ``None`` (nothing started) when the flag
