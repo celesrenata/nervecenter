@@ -89,6 +89,12 @@ from backend.mail_security.parser import (
     evidence_fidelity_for,
     parse_mime_evidence,
 )
+from backend.mail_security.policy import (
+    POLICY_VERSION,
+    PolicyEvidence,
+    PolicyResult,
+    decide_policy,
+)
 
 #: Default-off feature flag for the NerveShield mail-security plane. Defined
 #: here for later phases; NOT read by any existing runtime path (Phase 1).
@@ -103,6 +109,7 @@ __all__ = [
     "NERVE_MAIL_SECURITY_ENABLED",
     "NO_AUTH_EVIDENCE_CAPTURED",
     "PARSER_VERSION",
+    "POLICY_VERSION",
     "SCHEMA_VERSION",
     "AcquisitionMode",
     "AttachmentDescriptor",
@@ -140,6 +147,8 @@ __all__ = [
     "ParsedEvidence",
     "ParserLimits",
     "PolicyDisposition",
+    "PolicyEvidence",
+    "PolicyResult",
     "ProcessingState",
     "RequestType",
     "RequestUrgency",
@@ -155,6 +164,7 @@ __all__ = [
     "assessment_id",
     "build_auth_evidence",
     "classify_authentication",
+    "decide_policy",
     "evidence_fidelity_for",
     "inspect_message",
     "inspect_offline",

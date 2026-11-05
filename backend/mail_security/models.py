@@ -374,12 +374,23 @@ class AxisScore(_StrictModel):
     ``CALIBRATED_PROBABILITY``. ``NOT_EVALUATED`` must carry a null value and
     null calibration id (schema ``score`` allOf); ``CALIBRATED_PROBABILITY``
     requires both a numeric value and a calibration id.
+
+    Schema-parity note (Task 1.6, carried-forward from Task 1.1): the JSON
+    ``score`` object lists ``value``, ``semantics``, ``calibration_id`` and
+    ``evidence_refs`` as *required keys*. ``value`` and ``calibration_id`` may
+    be ``null`` where the schema allows null, but the keys must be *present* —
+    a payload that omits them is rejected by the JSON schema. To keep
+    model-validation aligned with that required-key contract these three fields
+    carry **no default** and must be supplied explicitly (``evidence_refs`` may
+    be an empty list, ``value``/``calibration_id`` may be ``None``). This is an
+    additive tightening: it only forbids *omitting* a key the schema already
+    required, so every assessment that conformed to the schema still validates.
     """
 
-    value: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    value: Annotated[float, Field(ge=0.0, le=1.0)] | None
     semantics: ScoreSemantics
-    calibration_id: Annotated[str, StringConstraints(max_length=100)] | None = None
-    evidence_refs: list[OpaqueRef] = Field(default_factory=list, max_length=24)
+    calibration_id: Annotated[str, StringConstraints(max_length=100)] | None
+    evidence_refs: list[OpaqueRef] = Field(max_length=24)
 
     @field_validator("evidence_refs")
     @classmethod
