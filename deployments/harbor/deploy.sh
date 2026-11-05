@@ -234,5 +234,8 @@ log "web in-pod probe OK: ${web_pod}"
 
 # --- 9. done ----------------------------------------------------------------------
 log "deploy ${TAG} complete"
-kubectl -n "${NS}" get pods svc ingress
+# Comma-separated resource TYPES — `get pods svc ingress` treats svc/ingress
+# as pod NAMES ("pods \"svc\" not found") and, under set -e, exits non-zero
+# after a fully successful deploy.
+kubectl -n "${NS}" get pods,svc,ingress
 log "ingress URL: https://${INGRESS_HOST}  (TLS via cert-manager, issuer celestium-le-production)"
