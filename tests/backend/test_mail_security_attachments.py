@@ -404,6 +404,60 @@ def test_module_imports_no_network_or_subprocess():
     }
 
 
+# The ONE deliberate local-IPC module in backend/mail_security: the clamd client
+# (owner-requested Task 2.4 amendment) talks to a local UNIX socket / loopback
+# only (enforced at construction; see test_mail_security_clamav.py). Every other
+# module, attachments.py included, must stay free of socket/connection code.
+LOCAL_IPC_EXEMPT_MODULES = frozenset({"clamav.py"})
+# urllib.parse (pure string parsing, used by intel.py) is not network I/O.
+_NET_IMPORTS = {
+    "socket", "ssl", "http", "urllib.request", "requests", "httpx", "aiohttp", "subprocess",
+}  # fmt: skip
+_NET_CALLS = {
+    "open_connection", "open_unix_connection", "create_connection", "start_server",
+    "start_unix_server", "create_unix_connection", "create_datagram_endpoint",
+    "getaddrinfo", "gethostbyname", "create_subprocess_exec", "create_subprocess_shell",
+}  # fmt: skip
+
+
+def _net_usage(path: Path) -> set[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    used: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names = [a.name for a in node.names]
+        elif isinstance(node, ast.ImportFrom):
+            mod = node.module or ""
+            names = [mod, *(f"{mod}.{a.name}" for a in node.names)]
+        else:
+            names = []
+        for name in names:
+            used |= {b for b in _NET_IMPORTS if name == b or name.startswith(b + ".")}
+        if isinstance(node, ast.Call):
+            f = node.func
+            name = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", "")
+            if name in _NET_CALLS:
+                used.add(name)
+    return used
+
+
+def test_only_clamav_module_may_use_local_ipc_everything_else_offline():
+    root = Path(att.__file__).resolve().parent
+    modules = sorted(p for p in root.glob("*.py"))
+    assert Path(att.__file__).resolve() in modules
+    offenders = {
+        p.name: _net_usage(p) for p in modules if p.name not in LOCAL_IPC_EXEMPT_MODULES
+    }
+    assert {k: v for k, v in offenders.items() if v} == {}
+    # the exemption is exact: one module, and it really is the one using the primitives
+    assert LOCAL_IPC_EXEMPT_MODULES == {"clamav.py"}
+    assert (root / "clamav.py") in modules
+    assert {"open_connection", "open_unix_connection"} <= _net_usage(root / "clamav.py")
+    # attachments.py itself is explicitly not exempt
+    assert "attachments.py" not in LOCAL_IPC_EXEMPT_MODULES
+    assert _net_usage(Path(att.__file__)) == set()
+
+
 def test_malformed_container_fuzz_terminates():
     rng = random.Random(1234)
     base = real_zip({"a.txt": b"hello", "word/vbaProject.bin": b"x"})
