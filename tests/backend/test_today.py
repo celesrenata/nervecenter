@@ -262,6 +262,69 @@ class TestTodayWired:
         assert all(c["kind"] == "calendar" for c in body["coming_up"])
         assert body["coming_up"][0]["deadline_at"]
 
+    async def test_coming_up_query_quotes_reserved_word_columns(self, wired):
+        """Regression: the raw ``coming_up`` query MUST double-quote the
+        ``calendar_events`` column identifiers.
+
+        The durable table (migration 010) names its columns ``start`` and
+        ``end`` — both RESERVED SQL keywords in Postgres. The provider builds a
+        raw ``text()`` query (not an ORM statement, so SQLAlchemy's automatic
+        identifier quoting does not apply), and an UNQUOTED ``end`` makes
+        asyncpg fail with ``syntax error at or near "end"`` — the exact
+        production failure (``today.calendar_probe_failed``). A SQLite test DB
+        tolerates the unquoted keyword, so this asserts the generated SQL
+        directly instead of relying on the backend to reject it: every
+        selected/filtered identifier is wrapped in double quotes.
+        """
+        from unittest.mock import patch
+
+        from backend.api.endpoints.today import _CalendarProvider
+
+        captured: dict[str, str] = {}
+
+        real_text = __import__(
+            "backend.api.endpoints.today", fromlist=["text"]
+        ).text
+
+        def _capture(sql: str):  # noqa: ANN202 - test shim
+            captured["sql"] = sql
+            return real_text(sql)
+
+        app, registry = wired
+        ctx_now = NOW
+        provider = _CalendarProvider()
+
+        # Seed one event so the query actually runs end-to-end.
+        engine = app.state._test_engine
+        account = CalendarAccountRow(
+            id=str(uuid4()), provider="google", label="Personal",
+            account_ref="x@example.com", timezone="UTC",
+        )
+        await _insert(engine, account)
+        await _insert(
+            engine,
+            CalendarEventRow(
+                id=str(uuid4()), account_id=account.id, ical_uid="uid-q",
+                start=NOW + timedelta(hours=2), end=NOW + timedelta(hours=3),
+                title="Reserved-word probe",
+            ),
+        )
+
+        class _Ctx:
+            def __init__(self, reg, now):
+                self.registry = reg
+                self.now = now
+
+        with patch("backend.api.endpoints.today.text", _capture):
+            rows = await provider.coming_up(_Ctx(registry, ctx_now))
+
+        sql = captured.get("sql", "")
+        # The real column names (start/end) must appear double-quoted, never bare.
+        assert '"start"' in sql, f"start not quoted in: {sql}"
+        assert '"end"' in sql, f"end not quoted in: {sql}"
+        # And the query still returns the in-window event.
+        assert any(r.get("title") == "Reserved-word probe" for r in rows)
+
     async def test_handled_cap_and_24h_window(self, wired):
         app, _ = wired
         engine = app.state._test_engine

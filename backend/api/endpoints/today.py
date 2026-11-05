@@ -415,12 +415,20 @@ class _CalendarProvider:
                 # columns; the alias below is what the out-construction reads,
                 # so select the REAL column name and alias it (a literal
                 # `end_at` reference would 500-degrade on the real schema).
+                # `start`/`end` are RESERVED SQL keywords in Postgres, so the
+                # real column names MUST be double-quoted as identifiers or the
+                # query fails with `syntax error at or near "end"`. The names
+                # come from the live table's column list / fixed candidate
+                # lists (never user input), and quoting is applied uniformly.
+                q_title = f'"{title_col}"'
+                q_start = f'"{start_col}"'
+                q_end = f'"{end_col}"' if end_col else None
                 stmt = text(
-                    f"SELECT id, {title_col} AS title, {start_col} AS start_at, "
-                    f"{end_col + ' AS end_at' if end_col else 'NULL AS end_at'} "
+                    f"SELECT id, {q_title} AS title, {q_start} AS start_at, "
+                    f"{q_end + ' AS end_at' if q_end else 'NULL AS end_at'} "
                     f"FROM calendar_events "
-                    f"WHERE {start_col} >= :lo AND {start_col} <= :hi "
-                    f"ORDER BY {start_col} ASC"
+                    f"WHERE {q_start} >= :lo AND {q_start} <= :hi "
+                    f"ORDER BY {q_start} ASC"
                 )
                 result = await session.execute(
                     stmt, {"lo": ctx.now, "hi": ctx.now + COMING_UP_WINDOW}
