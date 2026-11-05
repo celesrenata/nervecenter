@@ -628,24 +628,30 @@ class CommunicationPipeline:
     ) -> dict[str, Any]:
         """Map a finding onto durable ``attention_items`` columns.
 
-        Carries metadata/reason/suggested-action/entity refs only — never the
-        raw body text or tokens (§7). Mirrors the in-memory
-        :meth:`DetectionService._attention_payload` field choices so the
-        durable row and the in-memory item describe the same thing.
+        Carries metadata/suggested-action/entity refs only — never the raw
+        body text or tokens (§7). The title is *fully templated* from the
+        finding's kind, sender, and a due timestamp (never the detector's
+        quoted body fragments ``finding.matched`` / ``finding.due_info.expr``,
+        which stay on the live in-memory finding only — the same P0-I policy
+        :meth:`_persist_one_commitment` applies to the durable commitment
+        text). The in-memory :meth:`DetectionService._attention_payload` may
+        quote the fragment in its ephemeral ``reason``; the durable plane must
+        not, so the field choices are mirrored in *shape* (what each kind
+        means) but the durable title carries no body substring.
         """
         kind = finding.kind
         sender = communication.sender or "unknown"
+        due_iso = finding.due.isoformat() if finding.due is not None else None
         if kind == "commitment":
-            title = f"Follow through: {finding.matched or 'own commitment'}"
+            title = "Follow through on your commitment"
             importance = 7
             recommended = "Complete the commitment"
         elif kind == "request":
-            title = f"Respond to {sender}: {finding.matched or 'incoming request'}"
+            title = f"Respond to {sender}"
             importance = 8
             recommended = "Reply to the request"
         else:  # deadline
-            expr = finding.due_info.expr if finding.due_info else "due date"
-            title = f"Deadline: {expr}"
+            title = f"Deadline due {due_iso}" if due_iso else "Upcoming deadline"
             importance = 8
             recommended = "Meet the deadline"
 

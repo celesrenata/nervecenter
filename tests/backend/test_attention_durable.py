@@ -151,9 +151,21 @@ async def test_detected_finding_writes_durable_attention_row(tmp_path: Path):
     rows = await registry.attention.list_attention_items(state="active")
     assert len(rows) == 1, rows
     row = rows[0]
-    # §7: metadata/refs only — never the raw body text.
+    # §7: metadata/refs only — never the raw body text NOR the detector's
+    # quoted body fragment (``finding.matched``). The leaking value is the
+    # signal fragment, not just the full sentence, so assert BOTH are absent
+    # and that the title is the purely templated request form (no body
+    # substring interpolated into it).
     assert TEXT not in (row.body or "")
     assert TEXT not in row.title
+    report = pipeline.detection.report_for(COMM_ID)
+    request_finding = next(f for f in report.findings if f.kind == "request")
+    matched = request_finding.matched
+    assert matched, "the request finding must carry a matched fragment to guard"
+    assert matched not in row.title, f"§7: body fragment leaked into title: {row.title!r}"
+    assert matched not in (row.body or "")
+    # The request title is fully templated from kind + sender only.
+    assert row.title == "Respond to dana@example.com"
     assert f"communication:{COMM_ID}" in row.source_refs
     assert any(r.startswith("finding:") for r in row.source_refs)
     assert row.recommended_action == "Reply to the request"
