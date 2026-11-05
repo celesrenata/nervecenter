@@ -194,13 +194,32 @@ kubectl -n "${NS}" wait --for=condition=Ready pod --selector=app=nats     --time
 # --- 8. in-pod health probes -----------------------------------------------------
 # python:slim has no curl — use the python stdlib. nginx:alpine has busybox wget.
 wait_pod() { # $1=label selector  $2=max seconds
-  local pod="" i
+  # Select a Running pod whose Ready condition is True — NOT `items[0]`, which
+  # during a rollout can be the OLD terminating replica. Grabbing that name
+  # races the `exec` below (the pod vanishes → "pod not found"). The
+  # field-selector drops terminating/pending pods; the jsonpath filter keeps
+  # only a Ready one, so the probe always targets the freshly rolled pod.
+  # kubectl jsonpath cannot express a nested condition filter (Ready==True),
+  # so select by two robust primitives instead: a field-selector drops
+  # non-Running pods, and a per-pod line of
+  # "<name> <deletionTimestamp> <Ready-condition>" lets us skip any pod that
+  # is terminating (deletionTimestamp set) or not Ready. First survivor wins.
+  local pod="" i line name deletion ready
   for i in $(seq 1 $(( $2 / 5 ))); do
-    pod="$(kubectl -n "${NS}" get pod -l "$1" -o jsonpath='{.items[0].metadata.name}' 2>/dev/null || true)"
+    pod=""
+    while IFS=';' read -r name deletion ready; do
+      [[ -z "${name}" ]] && continue
+      [[ -n "${deletion}" ]] && continue   # terminating old replica — skip
+      [[ "${ready}" == "True" ]] || continue
+      pod="${name}"
+      break
+    done < <(kubectl -n "${NS}" get pod -l "$1" --field-selector=status.phase=Running \
+      -o jsonpath='{range .items[*]}{.metadata.name}{";"}{.metadata.deletionTimestamp}{";"}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' \
+      2>/dev/null || true)
     [[ -n "${pod}" ]] && break
     sleep 5
   done
-  [[ -n "${pod}" ]] || fail "no pod found for selector $1"
+  [[ -n "${pod}" ]] || fail "no Running/Ready pod found for selector $1"
   echo "${pod}"
 }
 api_pod="$(wait_pod "app=api" 60)"
