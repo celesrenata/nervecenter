@@ -582,6 +582,11 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
         # Global threat-intel store: read-only live lookups; None (unavailable)
         # means no intel and nothing else changes (R-004.5).
         intel_store = getattr(registry, "mail_intel", None)
+        # Optional local clamd scanner (NS-ADR-014): environment-only, built
+        # only here (flag ON). Unset/invalid config => None (no socket opened).
+        from backend.mail_security.attachment_wiring import scanner_from_env
+
+        attachment_scanner = scanner_from_env()
 
         def make_worker(scope: str) -> MailSecurityWorker:
             return MailSecurityWorker(
@@ -590,6 +595,7 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
                 account_scope=scope,
                 analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
                 intel_store=intel_store,
+                attachment_scanner=attachment_scanner,
             )
 
         try:

@@ -314,6 +314,11 @@ class AttachmentDescriptor:
     double_extension: bool
     magic_mismatch: bool
     is_archive: bool
+    #: Transient decoded bytes, set ONLY when the caller asked the parser to
+    #: retain them (an attachment scanner is configured) and the decode was not
+    #: truncated. Never persisted, logged or repr'd; the worker clears it right
+    #: after scanning. Default ``None``: the parser retains nothing.
+    payload: bytes | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass
@@ -431,6 +436,7 @@ class _ParseState:
 
     def __init__(self, limits: ParserLimits) -> None:
         self.limits = limits
+        self.retain_attachment_payloads = False
         self.total_decoded = 0
         self.part_count = 0
         self.component_count = 0
@@ -464,8 +470,13 @@ def parse_mime_evidence(
     source: bytes,
     *,
     limits: ParserLimits = DEFAULT_LIMITS,
+    retain_attachment_payloads: bool = False,
 ) -> ParsedEvidence:
     """Parse ``source`` MIME bytes into bounded, structured evidence.
+
+    ``retain_attachment_payloads`` (default ``False``) keeps each untruncated
+    decoded attachment (already bounded by ``max_part_decoded_bytes``) on its
+    descriptor, transiently, so an explicitly configured scanner can scan it.
 
     This is a pure function of ``(source, limits)``: it performs no network,
     file-system or subprocess I/O and never executes attachment or script
@@ -481,6 +492,7 @@ def parse_mime_evidence(
 
     sha = hashlib.sha256(source).hexdigest()
     state = _ParseState(limits)
+    state.retain_attachment_payloads = retain_attachment_payloads
     evidence = ParsedEvidence(source_sha256=sha, source_bytes=len(source))
     state.evidence = evidence
 
@@ -780,6 +792,17 @@ def _handle_attachment(
         and not _types_compatible(sniffed, content_type)
     )
 
+    truncated_decode = any(
+        n.reason is IncompleteReason.DECODED_BYTES_EXCEEDED
+        and n.evidence_ref == evidence_ref
+        for n in state.evidence.incomplete_notes
+    )
+    retained = (
+        decoded
+        if state.retain_attachment_payloads and decoded is not None and not truncated_decode
+        else None
+    )
+
     state.evidence.attachments.append(
         AttachmentDescriptor(
             evidence_ref=evidence_ref,
@@ -793,6 +816,7 @@ def _handle_attachment(
             double_extension=_has_double_extension(raw_filename),
             magic_mismatch=magic_mismatch,
             is_archive=is_archive,
+            payload=retained,
         )
     )
 

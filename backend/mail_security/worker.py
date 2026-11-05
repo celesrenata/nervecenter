@@ -92,6 +92,10 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
+from backend.mail_security.attachment_wiring import (
+    AttachmentAssessment,
+    collect_attachment_results,
+)
 from backend.mail_security.auth_evidence import (
     SenderAddresses,
     TrustedReceiverBoundary,
@@ -255,8 +259,13 @@ class MailSecurityWorker:
         latency_sink: Callable[[str, float], None] | None = None,
         latency_clock: Callable[[], float] | None = None,
         intel_store: Any | None = None,
+        attachment_scanner: Any | None = None,
     ) -> None:
         self._repo = repository
+        # Optional local attachment scanner (NS-ADR-014). ``None`` (default)
+        # means no scanner: attachments get static inspection only and an
+        # explicit ATTACHMENT_SCAN_NOT_RUN note. No socket is ever opened.
+        self._attachment_scanner = attachment_scanner
         # Optional global threat-intel store (read-only ``lookup``). ``None``
         # means no intel: nothing changes (UNKNOWN, never safe: R-004.5).
         self._intel_store = intel_store
@@ -452,6 +461,9 @@ class MailSecurityWorker:
             store=self._intel_store,
             now=self._clock(),
         )
+        attachment_result = await collect_attachment_results(
+            evidence, scanner=self._attachment_scanner
+        )
         assessment = self._assess(
             account_scope=account_scope,
             source_key=source_key,
@@ -459,6 +471,7 @@ class MailSecurityWorker:
             evidence=evidence,
             flags=flags,
             intel_findings=intel_findings,
+            attachment_result=attachment_result,
         )
         lap = self._lap(LatencyStage.ASSESS, lap)
 
@@ -518,7 +531,11 @@ class MailSecurityWorker:
         fails typed and the assessment is INCOMPLETE, never clean (T-18).
         """
         start = self._monotonic()
-        evidence = parse_mime_evidence(content, limits=self._limits)
+        evidence = parse_mime_evidence(
+            content,
+            limits=self._limits,
+            retain_attachment_payloads=self._attachment_scanner is not None,
+        )
         if (
             self._scan_deadline_seconds is not None
             and (self._monotonic() - start) > self._scan_deadline_seconds
@@ -537,6 +554,7 @@ class MailSecurityWorker:
         evidence: ParsedEvidence,
         flags: dict[str, Any],
         intel_findings: list[SecurityFinding] | None = None,
+        attachment_result: AttachmentAssessment | None = None,
     ) -> SecurityAssessment:
         """Run auth -> inspections -> intel evidence -> policy and build the metadata-only
         assessment for a fully-resolved, scanned message."""
@@ -551,19 +569,29 @@ class MailSecurityWorker:
         findings.extend(inspect_message(evidence, addresses=addresses))
         # Live threat-intel matches are evidence for the policy only (R-006.2).
         findings.extend(intel_findings or [])
+        attachments = attachment_result or AttachmentAssessment()
+        # Static attachment findings (and any scanner result) are ordinary
+        # evidence for the policy (NS-ADR-014 a).
+        findings.extend(attachments.findings)
+        # Only a configured scanner/static failure makes inspection incomplete;
+        # "no scanner configured" is a recorded not-run check only (b, c).
+        inspection_complete = evidence.inspection_complete and not attachments.incomplete_codes
+        reason_codes = list(
+            dict.fromkeys([*evidence.completeness_codes(), *attachments.incomplete_codes])
+        )
 
         policy_evidence = PolicyEvidence(
             authentication=auth.authentication,
             findings=findings,
-            inspection_complete=evidence.inspection_complete,
-            incomplete_reason_codes=list(evidence.completeness_codes()),
+            inspection_complete=inspection_complete,
+            incomplete_reason_codes=reason_codes,
             bulk_mail=bool(flags.get("bulk") or flags.get("no_reply")),
         )
         result = decide_policy(policy_evidence, clock=self._clock)
 
         processing_state = (
             ProcessingState.ASSESSED
-            if evidence.inspection_complete
+            if inspection_complete
             else ProcessingState.INCOMPLETE
         )
         return self._build_assessment(
@@ -574,7 +602,14 @@ class MailSecurityWorker:
             completeness=Completeness(
                 available=[],
                 missing=[],
-                checks_not_run=list(evidence.completeness_codes()),
+                checks_not_run=list(
+                    dict.fromkeys(
+                        [
+                            *reason_codes,
+                            *attachments.checks_not_run,
+                        ]
+                    )
+                ),
             ),
             authentication=auth.authentication,
             findings=findings,

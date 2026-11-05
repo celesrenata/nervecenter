@@ -625,7 +625,7 @@ class TestIntelWiring:
             assert code in refs
         assert _INTEL_HOST not in repr(f)
         assert "THREAT_INTEL_MATCH" in policy["reason_codes"]
-        assert policy["policy_version"] == "mail-security-policy@2"
+        assert policy["policy_version"] == "mail-security-policy@3"
         # evidence only: SHADOW grants no capability, no action (R-006.2)
         assert policy["action_capabilities"] == []
         assert policy["mode"] == "SHADOW"
@@ -838,4 +838,593 @@ class TestIntelCanary:
              generate_latest(reg).decode(), " ".join(str(e) for e in logs)]
         )
         for n in (*needles, "friendly-corp", H.CANARY):
+            assert n not in blob, f"leak: {n!r}"
+
+
+# --------------------------------------------------------------------------
+# Item 3: attachments wired into assessments (NS-ADR-014, PROPOSED)
+# --------------------------------------------------------------------------
+import base64  # noqa: E402
+import shutil  # noqa: E402
+import tempfile  # noqa: E402
+from datetime import UTC, datetime  # noqa: E402
+
+from test_mail_security_attachments import make_zip  # noqa: E402
+from test_mail_security_clamav import (  # noqa: E402
+    STALE_VERSION,
+    FakeClamd,
+)
+
+from backend.mail_security import attachment_wiring as aw  # noqa: E402
+from backend.mail_security import attachments as att  # noqa: E402
+from backend.mail_security.attachments import ScanOutcome, ScanStatus  # noqa: E402
+from backend.mail_security.clamav import ClamdScanner  # noqa: E402
+from backend.mail_security.parser import parse_mime_evidence  # noqa: E402
+
+_ATT_CANARY = "CANARYFILE9z-secret"
+_CLAM_NOW = datetime(2026, 5, 1, 12, 0, 0, tzinfo=UTC)  # fresh vs FRESH_VERSION
+_PDF = b"%PDF-1.4\n%benign\n%%EOF\n"
+
+
+def _att_mime(
+    filename: str,
+    data: bytes,
+    ctype: str = "application/octet-stream",
+    *,
+    subject: str = "hello",
+    sender: str = "Friend <friend@friendly-corp.example>",
+    msgid: str = "att-1@friendly-corp.example",
+    body: str = "plain body",
+) -> bytes:
+    b64 = base64.encodebytes(data).decode()
+    return (
+        f"From: {sender}\r\nTo: user@example.com\r\nSubject: {subject}\r\n"
+        f"Message-ID: <{msgid}>\r\nDate: Mon, 27 Oct 2026 09:00:00 +0000\r\n"
+        'MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="Bq"\r\n\r\n'
+        f"--Bq\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n{body}\r\n"
+        f"--Bq\r\nContent-Type: {ctype}\r\n"
+        f'Content-Disposition: attachment; filename="{filename}"\r\n'
+        f"Content-Transfer-Encoding: base64\r\n\r\n{b64}\r\n--Bq--\r\n"
+    ).encode()
+
+
+class _FakeScanner:
+    """Task 2.4-style scripted scanner (an ``AttachmentScanner``)."""
+
+    def __init__(
+        self,
+        status: ScanStatus = ScanStatus.CLEAN_ENGINE_VERDICT,
+        *,
+        engine: str = "clamav",
+        version: str = "1.4.2-sig27800-20260430",
+        sigs: tuple[str, ...] = (),
+        raises: bool = False,
+        hang: bool = False,
+    ) -> None:
+        self.outcome = ScanOutcome(status, engine, version, sigs)
+        self.raises = raises
+        self.hang = hang
+        self.payloads: list[bytes] = []
+
+    async def scan(self, payload: bytes, *, deadline_seconds: float) -> ScanOutcome:
+        self.payloads.append(payload)
+        if self.hang:
+            await asyncio.sleep(3600)
+        if self.raises:
+            raise RuntimeError(f"boom {_ATT_CANARY}")
+        return self.outcome
+
+
+async def _assess_att(harness, monkeypatch, body: bytes, *, uid: int = 5, **worker_kw):
+    await H.ingest(
+        harness, monkeypatch, H.mailitem(f"<m{uid}@friendly-corp.example>", body), uid=uid
+    )
+    await H.security_worker(harness, **worker_kw).process_one()
+    rows = await harness.registry.mail_security.list_assessments(harness.scope)
+    assert len(rows) == 1
+    row = rows[0]
+    findings = await harness.registry.mail_security.get_findings(
+        harness.scope, row.assessment_id
+    )
+    return row, findings
+
+
+def _checks_not_run(row) -> list[str]:
+    return row.assessment["completeness"]["checks_not_run"]
+
+
+def _assessment_findings(row, rule_id: str) -> list[dict]:
+    return [f for f in row.assessment["findings"] if f["rule_id"] == rule_id]
+
+
+def _rule_ids(findings) -> set[str]:
+    return {f.rule_id for f in findings}
+
+
+class TestAttachmentStaticFindings:
+    """(a) Static findings always run and reach the policy."""
+
+    @pytest.mark.parametrize(
+        ("filename", "ctype", "data", "rule", "expected"),
+        [
+            ("setup.exe", "application/octet-stream", b"MZ\x90\x00" * 8,
+             att.RULE_DANGEROUS_TYPE, "REVIEW"),
+            ("run.js", "application/javascript", b"var a=1;",
+             att.RULE_DANGEROUS_TYPE, "REVIEW"),
+            ("invoice.pdf.exe", "application/octet-stream", b"MZ\x90\x00" * 8,
+             att.RULE_DOUBLE_EXTENSION, "REVIEW"),
+            ("report.pdf", "application/pdf", b"MZ\x90\x00" * 8,
+             att.RULE_EXECUTABLE_DISGUISED, "RESTRICTED"),
+            ("photo.jpg", "image/jpeg", _PDF, att.RULE_TYPE_MISMATCH, "REVIEW"),
+        ],
+    )
+    async def test_descriptor_findings_raise_disposition_without_scanner(
+        self, harness, monkeypatch, filename, ctype, data, rule, expected
+    ) -> None:
+        row, findings = await _assess_att(
+            harness, monkeypatch, _att_mime(filename, data, ctype)
+        )
+        assert rule in _rule_ids(findings)
+        assert row.disposition == expected
+        # no scanner => not-run is recorded but did not force INCOMPLETE
+        assert aw.CODE_SCAN_NOT_RUN in _checks_not_run(row)
+
+    @pytest.mark.parametrize(
+        ("filename", "data", "rule"),
+        [
+            ("budget.xlsx",
+             make_zip([("[Content_Types].xml", 10, 10, 0), ("xl/vbaProject.bin", 10, 10, 0)]),
+             att.RULE_MACRO_CAPABLE),
+            ("data.zip",
+             make_zip([(f"f{i}.bin", 10, 4_000_000_000, 0) for i in range(5)]),
+             att.RULE_ARCHIVE_BOMB),
+            ("old.doc",
+             b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1" + b"V\x00B\x00A\x00" + b"\x00" * 64,
+             att.RULE_MACRO_CAPABLE),
+            ("a.pdf", b"%PDF-1.4\n<</OpenAction<</S/JavaScript/JS(x)>>>>", att.RULE_PDF_ACTIVE),
+        ],
+    )
+    async def test_payload_findings_reach_policy_when_scanner_supplies_bytes(
+        self, harness, monkeypatch, filename, data, rule
+    ) -> None:
+        scanner = _FakeScanner()
+        row, findings = await _assess_att(
+            harness, monkeypatch, _att_mime(filename, data), attachment_scanner=scanner
+        )
+        assert rule in _rule_ids(findings)
+        assert row.disposition in ("REVIEW", "RESTRICTED")
+        assert scanner.payloads == [data]
+
+    async def test_benign_attachment_without_scanner_is_low_priority_not_run_noted(
+        self, harness, monkeypatch
+    ) -> None:
+        row, findings = await _assess_att(
+            harness, monkeypatch, _att_mime("doc.pdf", _PDF, "application/pdf")
+        )
+        assert row.disposition == "LOW_PRIORITY"
+        assert row.processing_state == "ASSESSED"
+        assert _checks_not_run(row) == [aw.CODE_SCAN_NOT_RUN]
+        assert "ATTACHMENT_SCAN_INCOMPLETE" not in _rule_ids(findings)
+
+    async def test_message_without_attachments_has_no_not_run_note(
+        self, harness, monkeypatch
+    ) -> None:
+        await H.ingest(harness, monkeypatch, H.mailitem("<n1@x.example>", _intel_mime()))
+        await H.security_worker(harness).process_one()
+        row = (await harness.registry.mail_security.list_assessments(harness.scope))[0]
+        assert aw.CODE_SCAN_NOT_RUN not in _checks_not_run(row)
+
+    async def test_attachment_findings_carry_no_filename_or_bytes(
+        self, harness, monkeypatch
+    ) -> None:
+        row, findings = await _assess_att(
+            harness, monkeypatch, _att_mime(f"{_ATT_CANARY}.exe", b"MZ" * 16)
+        )
+        assert att.RULE_DANGEROUS_TYPE in _rule_ids(findings)
+        assert _ATT_CANARY not in repr(row.assessment) + repr([f.__dict__ for f in findings])
+
+
+class TestScannerConfiguredOutcomes:
+    """(c)/(d): configured scanner failures are INCOMPLETE; clean is evidence."""
+
+    @pytest.mark.parametrize(
+        "scanner",
+        [
+            _FakeScanner(ScanStatus.ERROR),
+            _FakeScanner(ScanStatus.TIMEOUT),
+            _FakeScanner(ScanStatus.UNAVAILABLE),
+            _FakeScanner(ScanStatus.TOO_LARGE),
+            _FakeScanner(ScanStatus.NOT_RUN),
+            _FakeScanner(raises=True),
+            _FakeScanner(ScanStatus.CLEAN_ENGINE_VERDICT, engine="", version=""),
+        ],
+        ids=["error", "timeout", "unavailable", "too_large", "not_run", "raises", "no_version"],
+    )
+    async def test_scanner_failure_is_incomplete_never_clean(
+        self, harness, monkeypatch, scanner
+    ) -> None:
+        row, findings = await _assess_att(
+            harness,
+            monkeypatch,
+            _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=scanner,
+        )
+        assert row.disposition == "INCOMPLETE"
+        assert row.processing_state == "INCOMPLETE"
+        assert "ATTACHMENT_SCAN_INCOMPLETE" in _rule_ids(findings)
+        assert "ATTACHMENT_SCAN_INCOMPLETE" in row.assessment["policy"]["reason_codes"]
+        assert "ATTACHMENT_SCAN_INCOMPLETE" in _checks_not_run(row)
+        assert aw.CODE_SCAN_NOT_RUN not in _checks_not_run(row)
+        assert row.disposition not in ("SAFE_TO_PROCESS", "LOW_PRIORITY")
+        assert _ATT_CANARY not in repr(row.assessment)
+
+    async def test_hanging_scanner_times_out_incomplete(self) -> None:
+        ev = parse_mime_evidence(
+            _att_mime("doc.pdf", _PDF, "application/pdf"), retain_attachment_payloads=True
+        )
+        out = await aw.collect_attachment_results(
+            ev, scanner=_FakeScanner(hang=True), timeout_seconds=0.05
+        )
+        assert out.incomplete_codes == [aw.CODE_SCAN_INCOMPLETE]
+        codes = [
+            f.explanation_code for f in out.findings if f.rule_id == att.RULE_SCAN_INCOMPLETE
+        ]
+        assert codes == ["SCANNER_TIMEOUT"]
+
+    async def test_scanner_failure_with_threat_finding_is_review_not_clean(
+        self, harness, monkeypatch
+    ) -> None:
+        row, _ = await _assess_att(
+            harness,
+            monkeypatch,
+            _att_mime("setup.exe", b"MZ" * 16),
+            attachment_scanner=_FakeScanner(ScanStatus.ERROR),
+        )
+        assert row.disposition == "REVIEW"
+
+    async def test_engine_clean_is_evidence_with_versions_not_safe(
+        self, harness, monkeypatch
+    ) -> None:
+        row, findings = await _assess_att(
+            harness,
+            monkeypatch,
+            _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=_FakeScanner(),
+        )
+        clean = _assessment_findings(row, att.RULE_ENGINE_CLEAN)
+        assert len(clean) == 1
+        assert clean[0]["detector_version"] == "clamav@1.4.2-sig27800-20260430"
+        assert clean[0]["explanation_code"] == "ENGINE_CLEAN_VERDICT_NOT_SAFETY"
+        assert row.disposition == "LOW_PRIORITY"  # never SAFE_TO_PROCESS
+        assert row.processing_state == "ASSESSED"
+        assert aw.CODE_SCAN_NOT_RUN not in _checks_not_run(row)
+
+    async def test_clean_does_not_clear_static_findings(self, harness, monkeypatch):
+        row, _ = await _assess_att(
+            harness,
+            monkeypatch,
+            _att_mime("setup.exe", b"MZ" * 16),
+            attachment_scanner=_FakeScanner(),
+        )
+        assert row.disposition == "REVIEW"
+
+    async def test_scanner_detection_is_restricted(self, harness, monkeypatch):
+        row, findings = await _assess_att(
+            harness,
+            monkeypatch,
+            _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=_FakeScanner(ScanStatus.DETECTED, sigs=("Eicar.Test",)),
+        )
+        assert att.RULE_SCANNER_DETECTION in _rule_ids(findings)
+        assert row.disposition == "RESTRICTED"
+        assert "MALWARE_FINDING" in row.assessment["policy"]["reason_codes"]
+        assert row.assessment["policy"]["action_capabilities"] == []
+
+    async def test_payloads_are_cleared_after_collect(self) -> None:
+        ev = parse_mime_evidence(
+            _att_mime("doc.pdf", _PDF, "application/pdf"), retain_attachment_payloads=True
+        )
+        assert ev.attachments[0].payload == _PDF
+        assert "payload" not in repr(ev.attachments[0])
+        await aw.collect_attachment_results(ev, scanner=_FakeScanner())
+        assert ev.attachments[0].payload is None
+
+    def test_parser_retains_nothing_by_default(self) -> None:
+        ev = parse_mime_evidence(_att_mime("doc.pdf", _PDF, "application/pdf"))
+        assert ev.attachments[0].payload is None
+
+    async def test_truncated_decode_is_not_retained_or_scanned(self) -> None:
+        from backend.mail_security.parser import ParserLimits
+
+        limits = ParserLimits(max_part_decoded_bytes=64)
+        ev = parse_mime_evidence(
+            _att_mime("doc.pdf", _PDF + b"x" * 500, "application/pdf"),
+            limits=limits,
+            retain_attachment_payloads=True,
+        )
+        assert ev.attachments[0].payload is None
+        scanner = _FakeScanner()
+        out = await aw.collect_attachment_results(ev, scanner=scanner)
+        assert scanner.payloads == []
+        assert aw.CODE_SCAN_INCOMPLETE in out.incomplete_codes
+
+
+class _ClamdFixture:
+    def __init__(self) -> None:
+        self.dir = tempfile.mkdtemp(prefix="nc", dir="/tmp")
+        self.fake = FakeClamd()
+        self.fake.path = f"{self.dir}/clamd.sock"
+        self.env = {aw.ENV_CLAMD_SOCKET: self.fake.path}
+
+    async def start(self) -> None:
+        self.fake.server = await asyncio.start_unix_server(self.fake._handle, path=self.fake.path)
+
+    async def stop(self) -> None:
+        self.fake.server.close()
+        await self.fake.server.wait_closed()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+@pytest.fixture
+async def clamd():
+    c = _ClamdFixture()
+    await c.start()
+    try:
+        yield c
+    finally:
+        await c.stop()
+
+
+class TestFakeClamdEndToEnd:
+    """Real ClamdScanner + real local socket against the Task 2.x fake clamd.
+    Real clamd behavior is NOT VERIFIED (none installed)."""
+
+    def _scanner(self, clamd) -> ClamdScanner:
+        scanner = aw.scanner_from_env(clamd.env, clock=lambda: _CLAM_NOW)
+        assert isinstance(scanner, ClamdScanner)
+        return scanner
+
+    async def test_fresh_ok_is_clean_evidence_with_signature_version(
+        self, harness, monkeypatch, clamd
+    ) -> None:
+        row, findings = await _assess_att(
+            harness, monkeypatch, _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=self._scanner(clamd),
+        )
+        clean = _assessment_findings(row, att.RULE_ENGINE_CLEAN)
+        assert len(clean) == 1
+        assert clean[0]["detector_version"].startswith("clamav@1.4.2-sig27800-")
+        assert row.disposition == "LOW_PRIORITY"
+        assert any(_PDF in t for t in clamd.fake.transcripts)  # only the retained bytes
+
+    async def test_stale_signatures_incomplete(self, harness, monkeypatch, clamd) -> None:
+        clamd.fake.version_reply = STALE_VERSION
+        row, findings = await _assess_att(
+            harness, monkeypatch, _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=self._scanner(clamd),
+        )
+        assert row.disposition == "INCOMPLETE"
+        assert "ATTACHMENT_SCAN_INCOMPLETE" in _rule_ids(findings)
+        assert att.RULE_ENGINE_CLEAN not in _rule_ids(findings)
+
+    async def test_found_is_restricted(self, harness, monkeypatch, clamd) -> None:
+        clamd.fake.instream_reply = b"stream: Eicar-Test-Signature FOUND\0"
+        row, findings = await _assess_att(
+            harness, monkeypatch, _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=self._scanner(clamd),
+        )
+        assert att.RULE_SCANNER_DETECTION in _rule_ids(findings)
+        assert row.disposition == "RESTRICTED"
+
+    async def test_unavailable_clamd_is_incomplete(self, harness, monkeypatch, clamd) -> None:
+        scanner = self._scanner(clamd)
+        clamd.fake.server.close()  # daemon gone
+        await clamd.fake.server.wait_closed()
+        row, _ = await _assess_att(
+            harness, monkeypatch, _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=scanner,
+        )
+        assert row.disposition == "INCOMPLETE"
+
+    async def test_bad_reply_is_incomplete(self, harness, monkeypatch, clamd) -> None:
+        clamd.fake.instream_reply = b"garbage\0"
+        row, _ = await _assess_att(
+            harness, monkeypatch, _att_mime("doc.pdf", _PDF, "application/pdf"),
+            attachment_scanner=self._scanner(clamd),
+        )
+        assert row.disposition == "INCOMPLETE"
+
+
+class TestScannerConfig:
+    """(e): env-only; absent/invalid => no scanner; flag off => nothing built."""
+
+    @pytest.mark.parametrize("env", [{}, {aw.ENV_CLAMD_PORT: "3310"}, {aw.ENV_CLAMD_HOST: " "}])
+    def test_absent_config_means_no_scanner_and_no_log(self, env) -> None:
+        from structlog.testing import capture_logs
+
+        with capture_logs() as logs:
+            assert aw.scanner_from_env(env) is None
+        assert logs == []
+
+    @pytest.mark.parametrize(
+        "env",
+        [
+            {aw.ENV_CLAMD_SOCKET: "/run/clamav/clamd.ctl"},
+            {aw.ENV_CLAMD_HOST: "127.0.0.1", aw.ENV_CLAMD_PORT: "3311"},
+            {aw.ENV_CLAMD_HOST: "localhost"},
+            {aw.ENV_CLAMD_HOST: "::1"},
+        ],
+    )
+    def test_valid_local_config_builds_scanner_without_opening_a_socket(
+        self, env, monkeypatch
+    ) -> None:
+        def boom(*a, **k):
+            raise AssertionError("socket opened at construction")
+
+        monkeypatch.setattr(asyncio, "open_connection", boom)
+        monkeypatch.setattr(asyncio, "open_unix_connection", boom)
+        assert isinstance(aw.scanner_from_env(env), ClamdScanner)
+
+    @pytest.mark.parametrize(
+        ("env", "reason"),
+        [
+            ({aw.ENV_CLAMD_HOST: "10.1.2.3"}, "HOST_NOT_LOOPBACK"),
+            ({aw.ENV_CLAMD_HOST: "clam.corp.example"}, "HOST_NOT_LOOPBACK"),
+            ({aw.ENV_CLAMD_HOST: "8.8.8.8", aw.ENV_CLAMD_PORT: "3310"}, "HOST_NOT_LOOPBACK"),
+            ({aw.ENV_CLAMD_HOST: "127.0.0.1", aw.ENV_CLAMD_PORT: "abc"}, "PORT_INVALID"),
+            ({aw.ENV_CLAMD_HOST: "127.0.0.1", aw.ENV_CLAMD_PORT: "0"}, "PORT_INVALID"),
+            ({aw.ENV_CLAMD_SOCKET: "relative/clamd.sock"}, "SOCKET_PATH_INVALID"),
+            (
+                {aw.ENV_CLAMD_SOCKET: "/run/clamd.sock", aw.ENV_CLAMD_HOST: "127.0.0.1"},
+                "ENDPOINT_AMBIGUOUS",
+            ),
+        ],
+    )
+    def test_invalid_config_yields_no_scanner_and_safe_log(self, env, reason) -> None:
+        from structlog.testing import capture_logs
+
+        with capture_logs() as logs:
+            assert aw.scanner_from_env(env) is None
+        ev = [e for e in logs if e["event"] == "mail_security.attachment_scanner_config_invalid"]
+        assert len(ev) == 1
+        assert ev[0]["code"] == "ATTACHMENT_SCANNER_CONFIG_INVALID" and ev[0]["reason"] == reason
+        blob = repr(logs)
+        for v in env.values():
+            if v not in ("3310", "abc", "0"):
+                assert v not in blob  # the rejected value is never logged
+
+    async def test_wiring_flag_off_never_builds_a_scanner(self, harness, monkeypatch):
+        from backend.api import wiring
+
+        monkeypatch.delenv(ENV_MAIL_SECURITY_ENABLED, raising=False)
+        monkeypatch.setenv(aw.ENV_CLAMD_HOST, "127.0.0.1")
+        monkeypatch.setattr(
+            aw, "scanner_from_env", lambda *a, **k: pytest.fail("scanner built with flag off")
+        )
+        monkeypatch.setattr(wiring, "_mail_security_object_store", lambda: harness.store)
+        target = SimpleNamespace(state=SimpleNamespace(repository_registry=harness.registry))
+        assert wiring.start_mail_security_runner(target) is None
+
+    async def test_wiring_flag_on_passes_scanner_and_invalid_config_means_none(
+        self, harness, monkeypatch
+    ) -> None:
+        from backend.api import wiring
+        from backend.mail_security import pipeline_runner as pr
+
+        seen: list[Any] = []
+        real = pr.MailSecurityPipelineRunner
+
+        class Spy(real):  # type: ignore[misc, valid-type]
+            def __init__(self, *, worker_factory, **kw: Any) -> None:
+                seen.append(worker_factory("conn:x")._attachment_scanner)
+                super().__init__(worker_factory=worker_factory, **kw)
+
+        monkeypatch.setattr(pr, "MailSecurityPipelineRunner", Spy)
+        monkeypatch.setenv(ENV_MAIL_SECURITY_ENABLED, "1")
+        monkeypatch.setattr(wiring, "_mail_security_object_store", lambda: harness.store)
+        target = SimpleNamespace(state=SimpleNamespace(repository_registry=harness.registry))
+        for env, expect_scanner in (
+            ({}, False),
+            ({aw.ENV_CLAMD_HOST: "203.0.113.9"}, False),  # remote => rejected => none
+            ({aw.ENV_CLAMD_SOCKET: "/run/clamd.sock"}, True),
+        ):
+            for k in (aw.ENV_CLAMD_SOCKET, aw.ENV_CLAMD_HOST, aw.ENV_CLAMD_PORT):
+                monkeypatch.delenv(k, raising=False)
+            for k, v in env.items():
+                monkeypatch.setenv(k, v)
+            task = wiring.start_mail_security_runner(target)
+            assert task is not None
+            await wiring.stop_mail_security_runner(target)
+            assert (seen[-1] is not None) is expect_scanner
+        assert len(seen) == 3
+
+    def test_default_worker_has_no_scanner(self, harness) -> None:
+        assert H.security_worker(harness)._attachment_scanner is None
+
+
+class TestAttachmentCanary:
+    async def test_whole_run_canaries_absent_everywhere(self, harness, monkeypatch):
+        import httpx
+        from fastapi import FastAPI
+        from prometheus_client import CollectorRegistry, generate_latest
+        from sqlalchemy import text
+        from structlog.testing import capture_logs
+
+        import backend.api.auth_service as auth_service
+        from backend.api.auth_service import AuthContext
+        from backend.api.endpoints import mail_security as api
+        from backend.mail_security import observability as obs
+
+        subject = "SUBJCANARY-4d1e"
+        sender = "Boss <sendercanary8c2@canary-corp.example>"
+        msgid = "msgidcanary-77ab@canary-corp.example"
+        filename = f"{_ATT_CANARY}.exe"
+        body = _att_mime(
+            filename, b"MZ" * 16, subject=subject, sender=sender, msgid=msgid,
+            body=f"visit {_INTEL_URL} now",
+        )
+        await _promote(harness, _record(), _record(_INTEL_URL, kind="URL_SHA256"))
+        with capture_logs() as logs:
+            await H.ingest(harness, monkeypatch, H.mailitem(f"<{msgid}>", body, sender=sender))
+            worker = H.security_worker(
+                harness,
+                intel_store=harness.registry.mail_intel,
+                attachment_scanner=_FakeScanner(raises=True),
+            )
+            await worker.process_one()
+            snapshot = await obs.collect_snapshot(
+                harness.registry.mail_security, [harness.scope], now=_NOW, env=_ON
+            )
+        row = (await harness.registry.mail_security.list_assessments(harness.scope))[0]
+        assert row.disposition == "REVIEW"
+        reg = CollectorRegistry()
+        obs.publish_metrics(snapshot, obs.HealthThresholds(), registry=reg)
+        view = obs.health_view(snapshot, obs.HealthThresholds())
+
+        needles = (
+            _ATT_CANARY, subject, "sendercanary8c2", "canary-corp", msgid,
+            "msgidcanary", _INTEL_HOST, "canaryintel7f3a", "login?x=1", H.CANARY,
+        )
+        async with harness.engine.connect() as conn:
+            for table in (
+                "mail_security_jobs", "mail_evidence",
+                "mail_security_assessments", "mail_security_findings",
+            ):
+                dumped = repr((await conn.execute(text(f"SELECT * FROM {table}"))).fetchall())  # noqa: S608
+                for n in needles:
+                    assert n not in dumped, (table, n)
+
+        ctx = AuthContext(
+            secret="unit-secret-" + "a" * 60,
+            issuer="https://auth.test.local/realms/nervecenter",
+            client_id="unit", local_admin_enabled=False,
+            local_admin_password=None, session_factory=None,
+        )
+        auth_service.reset_memory_store()
+        token, exp, claims = ctx._mint(
+            sub="u", typ="access", roles=["admin"], ttl=auth_service.ACCESS_TOKEN_TTL,
+            extra={"account_scopes": [harness.scope]},
+        )
+        await auth_service.record_session(
+            ctx, jti=claims["jti"], sub="u", typ="access", expires_at=exp, source="test"
+        )
+        app = FastAPI()
+        app.include_router(api.router)
+        app.state.auth_ctx = ctx
+        app.state.repository_registry = harness.registry
+        headers = {"Authorization": f"Bearer {token}"}
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://t"
+        ) as client:
+            lst = await client.get("/api/mail-security/assessments", headers=headers)
+            det = await client.get(
+                f"/api/mail-security/assessments/{row.assessment_id}", headers=headers
+            )
+            hl = await client.get("/api/mail-security/health", headers=headers)
+        assert lst.status_code == 200 and det.status_code == 200
+        blob = "\n".join(
+            [lst.text, det.text, hl.text, repr(view), repr(snapshot),
+             generate_latest(reg).decode(), " ".join(str(e) for e in logs)]
+        )
+        for n in needles:
             assert n not in blob, f"leak: {n!r}"

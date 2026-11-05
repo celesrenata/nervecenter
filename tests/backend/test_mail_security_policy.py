@@ -471,8 +471,9 @@ def _decide(findings: list[SecurityFinding], *, complete: bool = True):
     )
 
 
-def test_policy_version_bumped_for_intel_semantics() -> None:
-    assert POLICY_VERSION == "mail-security-policy@2"
+def test_policy_version_bumped_for_attachment_semantics() -> None:
+    # @2 added live intel matches; @3 (Item 3) adds attachment/malware rules.
+    assert POLICY_VERSION == "mail-security-policy@3"
 
 
 @pytest.mark.parametrize(
@@ -509,3 +510,70 @@ def test_intel_with_credential_ask_records_reason() -> None:
     result = _decide([_credential_ask_finding(), _intel_finding(FindingSeverity.UNKNOWN)])
     assert result.policy.disposition is Disposition.REVIEW
     assert "THREAT_INTEL_MATCH" in result.policy.reason_codes
+
+
+# -- (k) policy@3: attachment / malware findings -------------------------------
+def _decide_with(*findings: SecurityFinding, complete: bool = True):
+    return decide_policy(
+        PolicyEvidence(
+            authentication=_auth_provider_pass(),
+            findings=list(findings),
+            inspection_complete=complete,
+        ),
+        clock=_clock,
+    )
+
+
+D, C, S = Disposition, FindingCategory, FindingSeverity
+
+
+@pytest.mark.parametrize(
+    ("category", "severity", "expected", "reason"),
+    [
+        (C.MALWARE, S.HIGH, D.RESTRICTED, "MALWARE_FINDING"),
+        (C.MALWARE, S.MEDIUM, D.REVIEW, "MALWARE_FINDING"),
+        (C.ATTACHMENT, S.HIGH, D.REVIEW, "ATTACHMENT_FINDING"),
+        (C.ATTACHMENT, S.MEDIUM, D.REVIEW, "ATTACHMENT_FINDING"),
+        (C.ATTACHMENT, S.CRITICAL, D.RESTRICTED, "ATTACHMENT_FINDING"),
+    ],
+)
+def test_attachment_and_malware_findings_raise_by_severity(
+    category, severity, expected, reason
+) -> None:
+    result = _decide_with(
+        _finding(key="att-0", category=category, severity=severity, explanation_code="X_CODE")
+    )
+    assert result.policy.disposition is expected
+    assert reason in result.policy.reason_codes
+
+
+@pytest.mark.parametrize("severity", [FindingSeverity.INFO, FindingSeverity.UNKNOWN])
+def test_informational_attachment_findings_stay_inert(severity) -> None:
+    result = _decide_with(
+        _finding(
+            key="att-1",
+            category=FindingCategory.ATTACHMENT,
+            severity=severity,
+            status=FindingStatus.NOT_EVALUATED,
+            explanation_code="ENGINE_CLEAN_VERDICT_NOT_SAFETY",
+        )
+    )
+    assert result.policy.disposition is Disposition.LOW_PRIORITY
+
+
+def test_scanner_failure_is_incomplete_never_clean_and_never_lowers_a_threat() -> None:
+    fail = _finding(
+        key="att-2",
+        category=FindingCategory.SCANNER_FAILURE,
+        severity=FindingSeverity.UNKNOWN,
+        status=FindingStatus.INCOMPLETE,
+        explanation_code="SCANNER_ERROR",
+    )
+    assert _decide_with(fail, complete=False).policy.disposition is Disposition.INCOMPLETE
+    mal = _finding(
+        key="att-3",
+        category=FindingCategory.MALWARE,
+        severity=FindingSeverity.HIGH,
+        explanation_code="SCANNER_DETECTION",
+    )
+    assert _decide_with(fail, mal, complete=False).policy.disposition is Disposition.RESTRICTED
