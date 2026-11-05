@@ -42,6 +42,8 @@ Tables
 - :class:`MailEvidenceRow`            — ``mail_evidence``.
 - :class:`MailSecurityAssessmentRow`  — ``mail_security_assessments``.
 - :class:`MailSecurityFindingRow`     — ``mail_security_findings``.
+- :class:`MailIntelIndicatorRow`      — ``mail_intel_indicators`` (Task 2.2).
+- :class:`MailIntelOverrideRow`       — ``mail_intel_overrides`` (Task 2.2).
 """
 
 from __future__ import annotations
@@ -50,6 +52,7 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Index,
     Integer,
@@ -350,8 +353,113 @@ class MailSecurityFindingRow(Base):
     )
 
 
+class MailIntelIndicatorRow(Base):
+    """A time-limited, versioned threat-intelligence indicator (Task 2.2).
+
+    Table ``mail_intel_indicators``. Indicators are **global** threat intel
+    (not per-mailbox), so there is deliberately no ``account_scope`` column;
+    account isolation applies to user overrides (:class:`MailIntelOverrideRow`).
+    Only a canonical value (domain / IP literal) or a SHA-256 hash (URL / file)
+    is stored. Nothing is derived from user mail and there is no free-text
+    column (R-006, R-015.1, T-19).
+
+    Rows are never deleted: expiry, disable, supersession and rollback only
+    change *liveness* (R-006.3 — stale intel is invalidated without erasing
+    historical audit evidence).
+
+    - ``promotion_version`` — the store version in which the row was promoted.
+    - ``superseded_in_version`` — set when a later promotion replaced the row
+      for the same ``(indicator_type, canonical_indicator, source)`` key;
+      cleared again if that later version is rolled back.
+    - ``rolled_back`` — set when the row's promotion was rolled back.
+    """
+
+    __tablename__ = "mail_intel_indicators"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+    schema_version: Mapped[str] = mapped_column(String(16), default="v0")
+    indicator_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    canonical_indicator: Mapped[str] = mapped_column(String(255), nullable=False)
+    source: Mapped[str] = mapped_column(String(100), nullable=False)
+    confidence_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    license: Mapped[str] = mapped_column(String(64), nullable=False)
+    provenance: Mapped[str] = mapped_column(String(200), nullable=False)
+    scope: Mapped[str] = mapped_column(String(16), default="GLOBAL", nullable=False)
+    feed_version: Mapped[str] = mapped_column(String(64), nullable=False)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    last_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    promotion_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    superseded_in_version: Mapped[int | None] = mapped_column(
+        Integer, nullable=True
+    )
+    rolled_back: Mapped[bool] = mapped_column(
+        Boolean, default=False, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_mail_intel_indicators_lookup",
+            "indicator_type",
+            "canonical_indicator",
+        ),
+        Index("ix_mail_intel_indicators_version", "promotion_version"),
+        Index("ix_mail_intel_indicators_expires_at", "expires_at"),
+    )
+
+
+class MailIntelOverrideRow(Base):
+    """An account-scoped, expiring user override of an intel match (Task 2.2).
+
+    Table ``mail_intel_overrides``. Scoped by **account + sender + indicator +
+    expiry** and requires an opaque ``approval_ref`` (R-006.4, T-30, R-023).
+    ``sender_key`` is an opaque hash, never an email address. The override only
+    suppresses the match for that exact tuple; it is never a global allowlist.
+    """
+
+    __tablename__ = "mail_intel_overrides"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+    schema_version: Mapped[str] = mapped_column(String(16), default="v0")
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    sender_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    indicator_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    canonical_indicator: Mapped[str] = mapped_column(String(255), nullable=False)
+    approval_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    __table_args__ = (
+        Index("ix_mail_intel_overrides_account_scope", "account_scope"),
+        Index(
+            "ix_mail_intel_overrides_scope_lookup",
+            "account_scope",
+            "sender_key",
+            "indicator_type",
+            "canonical_indicator",
+        ),
+    )
+
+
 __all__ = [
     "MailEvidenceRow",
+    "MailIntelIndicatorRow",
+    "MailIntelOverrideRow",
     "MailSecurityAssessmentRow",
     "MailSecurityFindingRow",
     "MailSecurityJobRow",

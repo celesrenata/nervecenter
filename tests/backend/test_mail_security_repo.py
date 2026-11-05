@@ -306,14 +306,14 @@ def test_migration_up_then_down(tmp_path):
 
 
 def test_migration_single_head(tmp_path):
-    """Adding 016 keeps the alembic script tree at a single head."""
+    """The alembic script tree has a single head (017 chained on 016)."""
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory.from_config(
         _alembic_config(f"sqlite:///{tmp_path / 'noop.db'}")
     )
     heads = script.get_heads()
-    assert list(heads) == ["016_mail_security"], (
+    assert list(heads) == ["017_mail_intel"], (
         f"expected one head, got {heads}"
     )
 

@@ -171,6 +171,10 @@ TABLES_WITH_ID = frozenset(
         "mail_evidence",
         "mail_security_assessments",
         "mail_security_findings",
+        # NerveShield threat-intel store, Alembic 017 (Phase 2 Task 2.2 —
+        # global expiring indicators + account-scoped overrides).
+        "mail_intel_indicators",
+        "mail_intel_overrides",
     }
 )
 
