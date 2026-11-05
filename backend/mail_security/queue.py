@@ -53,6 +53,7 @@ from backend.mail_security.ingestion_seam import (
     mail_security_enabled,
     scan_missing_jobs,
 )
+from backend.mail_security.telemetry import note_sweep, safe_trace_id
 
 log = structlog.get_logger(__name__)
 
@@ -246,8 +247,7 @@ async def reclaim_expired_leases(
             await incomplete_recorder(moved, CODE_LEASE_EXPIRED)
         log.warning(
             "mail_security.lease_reclaimed",
-            account_scope=account_scope,
-            job_id=job.id,
+            trace_id=safe_trace_id(job.id),
             attempts=attempts,
             dead_letter=exhausted,
         )
@@ -288,6 +288,7 @@ async def sweep_once(
             analysis_profile_version=analysis_profile_version,
         )
         result.created = [r.id for r in rows if r.outbox_job_key not in existing]
+    note_sweep(now)  # heartbeat timestamp only (flag-gated, Task 2.6)
     return result
 
 
@@ -381,7 +382,6 @@ class MailSecurityQueueRunner:
             except Exception as exc:  # noqa: BLE001 - loop must survive a bad pass
                 log.warning(
                     "mail_security.runner_pass_failed",
-                    account_scope=self._scope,
                     error_type=type(exc).__name__,
                 )
             await self._sleep(self._interval)

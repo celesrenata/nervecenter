@@ -77,7 +77,8 @@ Never clean on failure (I-02, T-18, the tasks "never mark complete" list):
 Privacy (T-14, I-05): the worker may hold decoded content transiently in
 memory to scan it, but nothing raw is persisted or logged — only the Task 1.7
 metadata-only models (opaque refs + safe codes). Log lines carry safe codes and
-the account scope / job id only, never a body fragment.
+a safe trace id (a one-way hash of the job id) only -- never the account scope,
+a message id or a body fragment (Task 2.6).
 """
 
 from __future__ import annotations
@@ -135,6 +136,7 @@ from backend.mail_security.queue import (
     claim_next_job,
     lease_expired,
 )
+from backend.mail_security.telemetry import LatencyStage, safe_trace_id
 
 log = structlog.get_logger(__name__)
 
@@ -244,6 +246,8 @@ class MailSecurityWorker:
         monotonic: Callable[[], float] | None = None,
         scan_deadline_seconds: float | None = None,
         env: dict[str, str] | None = None,
+        latency_sink: Callable[[str, float], None] | None = None,
+        latency_clock: Callable[[], float] | None = None,
     ) -> None:
         self._repo = repository
         self._resolver = content_resolver
@@ -263,6 +267,14 @@ class MailSecurityWorker:
         self._monotonic = monotonic if monotonic is not None else time.monotonic
         self._scan_deadline_seconds = scan_deadline_seconds
         self._env = dict(env) if env is not None else None
+        # Task 2.6 stage-latency hook. ``None`` (default) means NO timing code
+        # runs and the injected ``monotonic`` above is never touched. The sink
+        # receives ``(stage_name, seconds)`` -- a fixed stage enum value and a
+        # number, nothing else.
+        self._latency_sink = latency_sink
+        self._latency_clock = (
+            latency_clock if latency_clock is not None else time.monotonic
+        )
 
     @property
     def enabled(self) -> bool:
@@ -343,8 +355,7 @@ class MailSecurityWorker:
         if held is None:
             log.warning(
                 "mail_security.lease_lost",
-                account_scope=job.account_scope,
-                job_id=job.id,
+                trace_id=safe_trace_id(job.id),
             )
         return held is not None
 
@@ -373,7 +384,27 @@ class MailSecurityWorker:
 
     # -- process one claimed job -------------------------------------------
 
+    def _lap(self, stage: LatencyStage, started: float | None) -> float | None:
+        """Report ``stage`` latency to the sink (numbers only) and restart the
+        lap. Never raises into the pipeline; a no-op when no sink is set."""
+        if self._latency_sink is None or started is None:
+            return None
+        now = self._latency_clock()
+        try:
+            self._latency_sink(stage.value, max(0.0, now - started))
+        except Exception:  # noqa: BLE001 - telemetry must never affect a verdict
+            pass
+        return now
+
     async def _process_job(self, job: Any) -> Any:
+        """Process one claimed job, recording total latency (Task 2.6)."""
+        started = self._latency_clock() if self._latency_sink is not None else None
+        try:
+            return await self._process_job_inner(job, started)
+        finally:
+            self._lap(LatencyStage.TOTAL, started)
+
+    async def _process_job_inner(self, job: Any, lap: float | None) -> Any:
         """Run the deterministic plane for one claimed job and persist the
         verdict, then ack the job — committing the verdict first."""
         account_scope = job.account_scope
@@ -384,6 +415,7 @@ class MailSecurityWorker:
 
         try:
             content = await self._resolve_content(account_scope, content_ref)
+            lap = self._lap(LatencyStage.RESOLVE, lap)
         except Exception:  # noqa: BLE001 - resolution failure is INCOMPLETE, never clean
             return await self._fail_job(
                 job, attempts, code=_CODE_RESOLUTION_FAILED,
@@ -403,6 +435,7 @@ class MailSecurityWorker:
 
         try:
             evidence = self._scan(content)
+            lap = self._lap(LatencyStage.SCAN, lap)
         except SecurityScanTimeout:
             return await self._fail_job(
                 job, attempts, code=_CODE_SCAN_TIMEOUT,
@@ -432,6 +465,7 @@ class MailSecurityWorker:
             evidence=evidence,
             flags=flags,
         )
+        lap = self._lap(LatencyStage.ASSESS, lap)
 
         if not await self._still_owner(job):
             return job  # stale worker: reclaimed by another; write nothing
@@ -459,10 +493,10 @@ class MailSecurityWorker:
             if_attempts=attempts,
             if_lease_owner=self._worker_id,
         )
+        self._lap(LatencyStage.PERSIST, lap)
         log.info(
             "mail_security.job_done",
-            account_scope=account_scope,
-            job_id=job.id,
+            trace_id=safe_trace_id(job.id),
             disposition=assessment.policy.disposition.value,
             processing_state=assessment.processing_state.value,
         )
@@ -780,8 +814,7 @@ class MailSecurityWorker:
         )
         log.warning(
             "mail_security.job_failed",
-            account_scope=account_scope,
-            job_id=job.id,
+            trace_id=safe_trace_id(job.id),
             state=terminal,
             attempts=attempts,
             error_code=safe,

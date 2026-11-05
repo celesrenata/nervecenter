@@ -226,7 +226,6 @@ class MailSecurityIngestionSeam:
             # fragment). The message is recoverable via scan_missing_jobs.
             log.warning(
                 "mail_security.schedule_failed",
-                account_scope=self._account_scope,
                 error_type=type(exc).__name__,
             )
             return None

@@ -45,6 +45,13 @@ Hard contract (requirements/design/threat-model — stricter behavior wins):
   The cursor is an opaque base64 offset token following the repo's
   ``_meta(total/page/per_page)`` + envelope convention.
 
+A third read-only route, ``GET /api/mail-security/health`` (Task 2.6), returns
+the per-stage health summary computed by :mod:`backend.mail_security.
+observability` for the caller's authorized account scopes ONLY. A caller with no
+scopes gets the same safe ``404`` as the detail route and never sees a global
+count. The response is an allow-listed, identifier-free projection (no account,
+message or source ids, no free text).
+
 The router is always registered (like the other read routers): with no durable
 registry or no stored assessments it returns an empty list / ``404``, exposing
 nothing when the feature has produced no data.
@@ -323,6 +330,39 @@ def _repo(request: Request) -> Any | None:
 # --------------------------------------------------------------------------- #
 # routes (GET only — read-only surface)
 # --------------------------------------------------------------------------- #
+
+
+@router.get("/health")
+async def get_health(
+    request: Request,
+    claims: Annotated[dict[str, Any], Depends(current_access)],
+) -> dict[str, Any]:
+    """Per-stage health for the caller's authorized account scopes only.
+
+    Deny-by-default (R-023, T-15): no ``account_scopes`` claim, or no wired
+    durable plane, is a safe ``404`` -- the caller never sees global counts.
+    With the feature flag OFF every stage reports ``DISABLED`` and no
+    repository read happens. Read-only; the body carries enums, counts and
+    numbers only (R-017.2, R-021.4).
+    """
+    from backend.mail_security import observability as obs
+
+    repo = _repo(request)
+    scopes = _authorized_scopes(claims)
+    if repo is None or not scopes:
+        raise _safe_error(404, "not_found")
+
+    now = datetime.now(UTC)
+    feed_rows = None
+    if obs.mail_security_enabled():
+        registry = getattr(request.app.state, "repository_registry", None)
+        factory = getattr(registry, "session_factory", None)
+        if factory is not None:
+            feed_rows = await obs.collect_feed_rows(factory)
+    snapshot = await obs.collect_snapshot(
+        repo, scopes, now=now, feed_rows=feed_rows
+    )
+    return {"data": obs.health_view(snapshot)}
 
 
 @router.get("/assessments")
