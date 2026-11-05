@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, type FormEvent } from 'react'
 import { emailApi, ApiError } from '../api/client'
+import { mailSecurityApi } from '../api/mailSecurity'
+import { MailSecurityIndicator } from '../components/MailSecurityIndicator'
 
 /**
  * EmailView — the Email plane (prompt2 Phase P0).
@@ -83,6 +85,12 @@ export function EmailView() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState<'ack' | 'draft' | null>(null)
+  // NerveShield Task 1.11: the read-only SHADOW security assessment id for the
+  // selected thread, resolved from the Task 1.10 read API. Fail-closed: the
+  // API is deny-by-default today (no account_scopes claim minted yet), so this
+  // is normally null and the indicator shows a neutral "not assessed" state —
+  // it never gates or breaks the thread view.
+  const [securityAssessmentId, setSecurityAssessmentId] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -104,6 +112,7 @@ export function EmailView() {
   const selectThread = useCallback(async (threadId: string) => {
     setSelected(threadId)
     setDraft(null)
+    setSecurityAssessmentId(null)
     try {
       const res = await emailApi.thread(threadId)
       if (res.status >= 400) throw new ApiError(res.status, `HTTP ${res.status}`)
@@ -111,6 +120,19 @@ export function EmailView() {
     } catch (err) {
       setThread(null)
       setError(formatApiError(err))
+    }
+    // NerveShield Task 1.11 (read-only, R-020): look up the SHADOW security
+    // assessment for this thread via the Task 1.10 API. This is a separate,
+    // fail-closed concern: the list client degrades to an empty list on a
+    // deny-by-default / unwired response and never throws, so a missing
+    // assessment leaves the thread view untouched (no error banner). Security
+    // is orthogonal to relevance (steering/design §16), so it never blocks the
+    // conversation render above.
+    try {
+      const assessments = await mailSecurityApi.listAssessments({ limit: 1 })
+      setSecurityAssessmentId(assessments.data[0]?.assessment_id ?? null)
+    } catch {
+      setSecurityAssessmentId(null)
     }
   }, [])
 
@@ -241,6 +263,10 @@ export function EmailView() {
             </div>
           ) : (
             <div className="space-y-3">
+              {/* NerveShield Task 1.11: read-only SHADOW security indicator
+                  (R-020). Display-only — no action control, renders no remote
+                  resource, and is orthogonal to the thread's relevance. */}
+              <MailSecurityIndicator assessmentId={securityAssessmentId} />
               <ul className="space-y-2">
                 {thread.messages.map((m) => {
                   const sent = m.direction === 'SENT'
