@@ -308,11 +308,13 @@ class TestWorkerPoll:
         stored = await harness.store.get(payload["content_ref"].split("/", 2)[2])
         assert stored == b"Please deploy by Friday\n"
 
-        # an import job was recorded and its id pinned in the connection config
+        # an import job was recorded and its id pinned in the connection
+        # config; a successful durable poll completes it (P1-107 honest
+        # completion — the job no longer sticks in ``running``).
         assert conn.config.get("import_job_id")
         job = await harness.registry.imports.get_import_job(conn.config["import_job_id"])
         assert job is not None
-        assert job.state == "running"
+        assert job.state == "done"
 
     async def test_replay_is_deduped_by_cursor_seen_list(self, harness) -> None:
         seam = FakeSeam()

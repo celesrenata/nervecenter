@@ -328,9 +328,21 @@ async def wire_dependencies(target: FastAPI) -> None:
                     set_commitment_store,
                 )
                 from backend.followups.service import get_followup_service
+                from backend.ingest.mail_worker import (
+                    set_communications_store,
+                )
 
                 set_commitment_store(
                     target.state.repository_registry.commitments
+                )
+                # P1-107 step 2: bind the durable communications store onto the
+                # process-wide ingest seam so BOTH the mail worker and the
+                # ``POST /api/communications/ingest`` endpoint persist people +
+                # communications to Postgres (not only the in-memory mirror).
+                # Extend-only; unbinding happens on teardown. No-DB deploys
+                # never reach here, so the seam stays in-memory-only there.
+                set_communications_store(
+                    target.state.repository_registry.communications
                 )
                 # Extend-only: hand the durable registry to the follow-up
                 # service singleton too, so its follow-up / attention
@@ -529,6 +541,16 @@ async def teardown_dependencies(target: FastAPI) -> None:
     # drop it so a later startup rebuilds fresh repositories from the new
     # engine.
     target.state.repository_registry = None
+
+    # Unbind the durable communications store bound at startup (P1-107) so a
+    # later startup rebinds a fresh one and a no-DB restart degrades to the
+    # in-memory-only seam again.
+    try:
+        from backend.ingest.mail_worker import set_communications_store
+
+        set_communications_store(None)
+    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+        log.warning("api.wiring.communications_store_unbind_failed", error=str(exc))
 
     client = getattr(target.state, "nats_client", None)
     if client is not None:

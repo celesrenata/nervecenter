@@ -122,6 +122,7 @@ class CommunicationsRepository:
     async def create_communication(
         self,
         *,
+        id: str | None = None,
         person_id: str,
         channel: str,
         direction: str,
@@ -131,8 +132,15 @@ class CommunicationsRepository:
         received_at: datetime | None = None,
         flags: dict[str, Any] | None = None,
     ) -> CommunicationRow:
+        """Insert a communication row.
+
+        ``id`` pins the row to a deterministic id (mail ingest, P1-107) so a
+        replay reuses the same row via get-or-create; when omitted a fresh
+        UUID is generated on the ORM side.
+        """
         async with self._sessions() as session:
             row = CommunicationRow(
+                id=id,
                 person_id=person_id,
                 channel=channel,
                 direction=direction,

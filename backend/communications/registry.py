@@ -302,6 +302,68 @@ class CommunicationsService:
             "proposed_candidates": proposed_candidates,
         }
 
+    def seed_person_identity(
+        self,
+        *,
+        person_id: str,
+        kind: ContactIdentityKind | str,
+        value: Any,
+        display_name: str | None = None,
+        source: str = "personal-relay",
+        timestamp: datetime | str | None = None,
+    ) -> Person:
+        """Get-or-create a person under a *pinned* ``person_id`` and link one
+        identity value to it (mail ingest, P1-107 step 1).
+
+        Unlike :meth:`ingest_identity` — whose explicit-``person_id`` branch
+        requires the person to already exist — this get-or-creates the person
+        with the caller's deterministic id so the in-memory plane and the
+        durable ``people.id`` name the same person. Idempotent: the same
+        pinned id re-seeded updates the existing person and never duplicates
+        the identity (value-first, §6). A value that already links a
+        *different* person is left as-is (the explicit merge action owns
+        joining people); the pinned person is still returned.
+        """
+        if not isinstance(kind, ContactIdentityKind):
+            kind = ContactIdentityKind(str(kind).lower())
+        canonical = normalize_identity_value(kind, value)
+        when = _ensure_utc(timestamp, default=_now())
+        display = (display_name or "").strip() or None
+
+        person = self._people.get(person_id)
+        if person is None:
+            person = Person(
+                person_id=person_id,
+                display_name=display,
+                created_at=when,
+                updated_at=when,
+            )
+            self._people[person_id] = person
+        elif display and not person.display_name:
+            person.display_name = display
+
+        # Link the identity value to the pinned person when it is not already
+        # linked. An equal value already linked to this person refreshes
+        # last_seen; linked to another person is left to the explicit merge.
+        linked = self._identity_index.get(canonical)
+        if linked == person_id:
+            identity = next(i for i in person.identities if i.value == canonical)
+            identity.last_seen_at = when
+        elif linked is None:
+            identity = ContactIdentity(
+                kind=kind,
+                value=canonical,
+                raw_value=_clean_raw_value(kind, value),
+                display_name=display,
+                source=source,
+                first_seen_at=when,
+                last_seen_at=when,
+            )
+            person.identities.append(identity)
+            self._identity_index[canonical] = person_id
+        person.updated_at = when
+        return person
+
     # -- explicit merge (AC-R02) -------------------------------------------------
     def merge_people(self, target_person_id: str, other_person_id: str) -> Person:
         """Explicitly merge ``other`` into ``target`` (§6: merges require an

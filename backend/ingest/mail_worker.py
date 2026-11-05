@@ -164,12 +164,112 @@ class IngestSeam(Protocol):
         ...
 
 
-class DefaultIngestSeam:
-    """Production :class:`IngestSeam` over the process-wide singletons."""
+#: Process-wide durable communications store bound at startup
+#: (:func:`set_communications_store`). It is the durable
+#: :class:`~backend.persistence.repositories.communications_repo.
+#: CommunicationsRepository` that BOTH the mail worker's production seam and
+#: the ``POST /api/communications/ingest`` endpoint share, so every ingest
+#: plane persists people + communications to Postgres (P1-107 step 2). ``None``
+#: (the default / no durable engine) keeps the seam in-memory-only — the
+#: historical behavior — so unit tests and no-DB deploys are unaffected.
+_communications_store: Any = None
 
-    def __init__(self) -> None:
+
+def set_communications_store(store: Any) -> None:
+    """App seam: bind (or unbind) the durable communications sink (extend-only,
+    P1-107 step 2).
+
+    Mirrors :func:`backend.communications.detection.wiring.set_commitment_store`
+    — the app startup wiring calls this once with the
+    ``RepositoryRegistry.communications`` repository whenever a durable engine
+    exists, so the live app persists ingested people + communications. Both
+    the worker's :class:`DefaultIngestSeam` and the endpoint read the bound
+    store through :func:`get_communications_store`, so they share one durable
+    plane. Passing ``None`` restores the pure in-memory default (the no-DB
+    degradation)."""
+    global _communications_store
+    _communications_store = store
+
+
+def get_communications_store() -> Any:
+    """Return the durable communications store bound by
+    :func:`set_communications_store` (``None`` when no durable engine)."""
+    return _communications_store
+
+
+async def persist_communication_durably(
+    store: Any,
+    *,
+    person_id: str,
+    display_name: str | None,
+    identity_kind: str,
+    identity_handle: str,
+    channel: str,
+    direction: str,
+    content_ref: str,
+    subject: str | None,
+    received_at: Any,
+    communication_id: str,
+) -> None:
+    """Durably persist one person (+identity) and one communication (P1-107).
+
+    PERSON FIRST (the FK on ``communications.person_id`` is ``NOT NULL`` +
+    ``people.id``, so the person must exist before the communication insert):
+    get-or-create the person with the *pinned* deterministic ``person_id`` so
+    a replay reuses the same row, upsert the channel identity, then
+    get-or-create the communication with the *pinned* deterministic id so a
+    replay reuses the same communication row (idempotent, decision (c)). The
+    per-(person, channel) conversation is upserted alongside. Raw content is
+    never persisted — only the ``content_ref`` pointer (§7). Raises on a
+    durable failure so the caller can gate the cursor on it."""
+    if await store.get_person(person_id) is None:
+        await store.create_person(
+            id=person_id,
+            display_name=display_name or identity_handle,
+        )
+    await store.upsert_person_identity(
+        person_id=person_id,
+        channel=identity_kind,
+        handle=identity_handle,
+        resolved=True,
+    )
+    # Get-or-create the communication by its pinned id (idempotent replay).
+    existing = await store.get_communications_by_ids([communication_id])
+    if not existing:
+        await store.create_communication(
+            id=communication_id,
+            person_id=person_id,
+            channel=channel,
+            direction=direction,
+            content_ref=content_ref,
+            subject=subject,
+            received_at=received_at,
+        )
+    await store.upsert_conversation(
+        person_id=person_id,
+        channel=channel,
+        last_message_at=received_at,
+    )
+
+
+class DefaultIngestSeam:
+    """Production :class:`IngestSeam` over the process-wide singletons.
+
+    When a durable communications store is bound
+    (:func:`set_communications_store`), each ingested message is also
+    persisted durably (person + identity + communication + conversation) —
+    the P1-107 durable half of the plane. The durable write is captured and
+    surfaced through :meth:`flush_durable` so the worker's existing P0-D
+    commit-gate blocks the cursor advance on a durable failure.
+    """
+
+    def __init__(self, *, communications_store: Any = None) -> None:
         self._service: Any = None
         self._pipeline: Any = None
+        self._explicit_store = communications_store
+        #: First durable communication-write failure in the current poll, held
+        #: until :meth:`flush_durable` surfaces it (then cleared).
+        self._durable_failure: Exception | None = None
 
     @property
     def communications_service(self) -> Any:
@@ -178,6 +278,14 @@ class DefaultIngestSeam:
 
             self._service = get_communications_service()
         return self._service
+
+    @property
+    def communications_store(self) -> Any:
+        """The durable store (explicit injection wins; else the process-wide
+        one bound at startup). ``None`` keeps the seam in-memory-only."""
+        if self._explicit_store is not None:
+            return self._explicit_store
+        return get_communications_store()
 
     @property
     def pipeline(self) -> Any:
@@ -190,6 +298,40 @@ class DefaultIngestSeam:
     def ingest_communication(self, payload: dict[str, Any]) -> dict[str, Any]:
         return self.communications_service.ingest_communication(payload)
 
+    def seed_person(
+        self,
+        *,
+        person_id: str,
+        kind: str,
+        value: str,
+        display_name: str | None,
+        source: str,
+    ) -> None:
+        """Seed the in-memory identity index with a pinned person id (P1-107
+        step 1) so ``_attribute_person`` links the record to the same person
+        the durable write pins."""
+        self.communications_service.seed_person_identity(
+            person_id=person_id,
+            kind=kind,
+            value=value,
+            display_name=display_name,
+            source=source,
+        )
+
+    async def persist_durable_communication(self, spec: dict[str, Any]) -> None:
+        """Durably persist one message's person + communication (P1-107 step
+        2). A no-op when no durable store is bound. A failure is captured (not
+        raised) and surfaced by :meth:`flush_durable` so the cursor gate
+        blocks."""
+        store = self.communications_store
+        if store is None:
+            return
+        try:
+            await persist_communication_durably(store, **spec)
+        except Exception as exc:  # noqa: BLE001 - surfaced via flush_durable
+            if self._durable_failure is None:
+                self._durable_failure = exc
+
     def run_pipeline(self, communication: Communication, *, now: Any) -> Any:
         return self.pipeline.ingest(communication, now=now)
 
@@ -200,9 +342,14 @@ class DefaultIngestSeam:
         live on the process-wide pipeline / follow-up service, so the
         commit-gate awaits the composed pipeline's
         :meth:`~backend.communications.detection.wiring.CommunicationPipeline.
-        flush_durable`.
+        flush_durable`. A durable *communication* write failure captured by
+        :meth:`persist_durable_communication` is reported first (P1-107 step 3:
+        fail before cursor commit if the communication/person persist failed),
+        then cleared for the next poll.
         """
-        return await self.pipeline.flush_durable()
+        failure, self._durable_failure = self._durable_failure, None
+        pipeline_failure = await self.pipeline.flush_durable()
+        return failure if failure is not None else pipeline_failure
 
 
 def default_ingest_seam() -> IngestSeam:
@@ -261,6 +408,50 @@ def _communication_id(connection_id: str, mail_id: str) -> str:
     (same ``communication_id`` → ``created=False``), never a duplicate row."""
     digest = hashlib.sha256(f"{connection_id}:{mail_id}".encode("utf-8")).hexdigest()[:24]
     return f"comm-mail-{digest}"
+
+
+def _durable_communication_id(connection_id: str, mail_id: str) -> str:
+    """Deterministic durable ``communications.id`` for one message (P1-107).
+
+    Pinned to the (connection, mail-id) pair — the same message re-ingested
+    after a crash reuses the same durable row id, so a replay between the
+    durable write and the cursor commit is a get-or-create no-op, never a
+    duplicate row (idempotency decision (c))."""
+    digest = hashlib.sha256(
+        f"durable-comm:{connection_id}:{mail_id}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"dcomm-mail-{digest}"
+
+
+def _person_id_for_handle(kind: str, canonical: str) -> str:
+    """Deterministic person id derived from a channel-kind + canonical handle
+    (P1-107 decision (b)).
+
+    The id is a pure function of the *normalized* identity value, so the
+    in-memory service (seeded by the worker via ``ingest_identity`` with this
+    explicit ``person_id``) and the durable ``people.id`` (pinned via
+    ``create_person(id=...)``) stay the same row for the same sender — and a
+    replay after a crash resolves to the same person (no duplicate people).
+    """
+    digest = hashlib.sha256(
+        f"person:{kind}:{canonical}".encode("utf-8")
+    ).hexdigest()[:24]
+    return f"person-mail-{digest}"
+
+
+def _parse_sender(raw: str) -> tuple[str, str | None]:
+    """Split a raw ``From`` header into ``(address, display_name)``.
+
+    Uses the stdlib RFC-822 address parser; the display name is ``None`` when
+    the header carries only a bare address. The address is returned trimmed
+    and never empty (falls back to the raw header when parsing yields
+    nothing) so an identity value can always be derived."""
+    import email.utils
+
+    display, address = email.utils.parseaddr(str(raw or ""))
+    address = (address or "").strip() or str(raw or "").strip()
+    display = (display or "").strip() or None
+    return address, display
 
 
 # -- single-flight OAuth refresh (GAP 1 race guard) ---------------------------
@@ -619,20 +810,64 @@ class MailIngestWorker:
                 metadata={"account": account, "message_id": mail_id},
             )
             communication_id = _communication_id(self.connection_id, mail_id)
+            content_ref = f"content://{getattr(meta, 'key', key)}"
+            subject = item.subject_or_first_line()
+
+            # P1-107 step 1 — PERSON RESOLUTION FIRST. Parse the sender into
+            # (address, display name), derive a deterministic person id from
+            # the normalized email handle, and seed BOTH planes with that id:
+            # the in-memory identity index (so ``_attribute_person`` links the
+            # record and the read API shows the person) and — in the durable
+            # write below — a pinned ``people.id`` (so the FK is satisfiable
+            # and the two planes name the same person). The conservative
+            # "never guess" rule in ``_attribute_person`` is untouched; the
+            # worker seeds the identity instead of relaxing resolution.
+            sender_raw = str(item.headers.get("From") or account)
+            address, display_name = _parse_sender(sender_raw)
+            person_id = self._seed_person(address, display_name)
+            if person_id is not None:
+                payload_person_id = person_id
+            else:
+                payload_person_id = None
+
             payload: dict[str, Any] = {
                 "communication_id": communication_id,
+                "person_id": payload_person_id,
                 "channel": CommunicationChannel.EMAIL,
                 "direction": CommunicationDirection.INCOMING,
-                "sender": str(item.headers.get("From") or account),
+                "sender": sender_raw,
                 "recipients": [account] if account else [],
                 "timestamp": item.timestamp,
                 "thread_id": item.headers.get("In-Reply-To") or communication_id,
-                "content_ref": f"content://{getattr(meta, 'key', key)}",
+                "content_ref": content_ref,
                 "sensitivity": "PERSONAL",
                 "source": f"mail-{self.cursor_kind}",
-                "classification": {"subject": item.subject_or_first_line()},
+                "classification": {"subject": subject},
             }
             result = self._seam.ingest_communication(payload)
+            # P1-107 step 2 — persist the durable person + communication. The
+            # pinned durable ids keep a replay idempotent; a failure here is
+            # captured and surfaced through the seam's ``flush_durable`` so the
+            # P0-D commit-gate blocks the cursor advance (step 3). A seam
+            # double without the durable hook (unit tests) is a no-op.
+            persist = getattr(self._seam, "persist_durable_communication", None)
+            if persist is not None and person_id is not None:
+                await persist(
+                    {
+                        "person_id": person_id,
+                        "display_name": display_name,
+                        "identity_kind": CommunicationChannel.EMAIL.value,
+                        "identity_handle": address,
+                        "channel": CommunicationChannel.EMAIL.value,
+                        "direction": CommunicationDirection.INCOMING.value,
+                        "content_ref": content_ref,
+                        "subject": subject,
+                        "received_at": item.timestamp,
+                        "communication_id": _durable_communication_id(
+                            self.connection_id, mail_id
+                        ),
+                    }
+                )
             communication = result["communication"]
             # P0-C: hand detection the body this worker just stored —
             # read it back out of the object store and register it
@@ -659,6 +894,34 @@ class MailIngestWorker:
             else:
                 duplicates += 1
         return ingested, duplicates, seen
+
+    def _seed_person(self, address: str, display_name: str | None) -> str | None:
+        """Derive the deterministic person id for a sender and seed the
+        in-memory identity index with it (P1-107 step 1).
+
+        Returns the pinned person id so the payload links the record and the
+        durable write pins the same ``people.id``; returns ``None`` when the
+        seam exposes no seeding hook (unit-test doubles) so the legacy
+        unlinked behavior is preserved for those paths.
+        """
+        from backend.communications.registry import normalize_identity_value
+
+        seed = getattr(self._seam, "seed_person", None)
+        if seed is None:
+            return None
+        try:
+            canonical = normalize_identity_value("email", address)
+        except ValueError:
+            return None
+        person_id = _person_id_for_handle("email", canonical)
+        seed(
+            person_id=person_id,
+            kind="email",
+            value=address,
+            display_name=display_name,
+            source=f"mail-{self.cursor_kind}",
+        )
+        return person_id
 
     # -- helpers -----------------------------------------------------------
 
@@ -811,10 +1074,23 @@ class MailIngestWorker:
 
         The job id is persisted in the connection's non-secret ``config``
         (``import_job_id``) so a restart resumes the same job row instead of
-        opening a new one (§4: explicit initial-history import)."""
+        opening a new one (§4: explicit initial-history import).
+
+        Honest completion (P1-107): this runs only AFTER the P0-D commit-gate
+        in ``_poll`` cleared (the durable person + communication writes
+        settled), so ``ingested`` here reflects messages that actually
+        persisted durably — not merely fetched items. On a successful durable
+        poll the job is moved to the terminal ``done`` state (the frozen
+        ``VALID_JOB_STATES`` spelling of "completed") instead of sticking in
+        ``running``; a later poll with new mail reopens a fresh job row.
+        """
         config = dict(getattr(conn, "config", None) or {})
         job_id = str(config.get("import_job_id") or "").strip()
         job = await self._imports.get_import_job(job_id) if job_id else None
+        # A finished (``done``/``failed``) job from a previous poll is not
+        # reused — open a fresh running job for this poll's progress.
+        if job is not None and str(getattr(job, "state", "")) in ("done", "failed"):
+            job = None
         if job is None:
             job = await self._imports.create_import_job(
                 self.connection_id, self.cursor_kind, state="running"
@@ -825,3 +1101,7 @@ class MailIngestWorker:
         progress = dict(cursor_row.cursor_value or {}) if cursor_row is not None else {}
         progress["ingested"] = int(progress.get("ingested", 0) or 0) + ingested
         await self._imports.update_import_job_progress(job.id, progress=progress)
+        # Successful durable poll → the import job is complete (§4 explicit
+        # initial-history import; the two-axis status model keeps the
+        # connection row's own healthy/authenticated axes separate).
+        await self._imports.finish_import_job(job.id, state="done")

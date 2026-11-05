@@ -44,8 +44,8 @@ from backend.connectors.registry import (
 from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
 from backend.ingest.mail_worker import (
     CURSOR_KINDS,
+    DefaultIngestSeam,
     MailIngestWorker,
-    default_ingest_seam,
     ingest_enabled,
 )
 from backend.persistence.repositories.registry import RepositoryRegistry
@@ -114,7 +114,18 @@ class MailIngestSupervisor:
         self._registry = registry
         self._object_store = object_store
         self._env = env
-        self._seam = seam if seam is not None else default_ingest_seam()
+        # P1-107 step 2: the production seam persists people + communications
+        # durably. Thread this supervisor's durable ``communications``
+        # repository into the default seam so both the worker loop and the
+        # one-shot ``sync_once`` path share one durable store with the
+        # ``POST /api/communications/ingest`` endpoint (which reads the same
+        # process-wide binding via ``set_communications_store``). An injected
+        # seam (tests) is used as-is.
+        self._seam = (
+            seam
+            if seam is not None
+            else DefaultIngestSeam(communications_store=registry.communications)
+        )
         self._poll_interval_s = float(poll_interval_s)
         self._backoff_base_s = float(backoff_base_s)
         self._backoff_max_s = float(backoff_max_s)

@@ -506,12 +506,14 @@ class TestSyncOnce:
         )
         assert cursor is not None
         assert f"{_ACCOUNT}:sync-1@corp.com" in cursor.cursor_value.get("seen", [])
-        # A real import job row was opened and its progress updated.
+        # A real import job row was opened and its progress updated; a
+        # successful durable poll moves it to the terminal ``done`` state
+        # (P1-107 honest completion — it no longer sticks in ``running``).
         job = await harness.registry.imports.get_import_job(
             str((stored.config or {}).get("import_job_id"))
         )
         assert job is not None
-        assert job.state == "running"
+        assert job.state == "done"
         assert int((job.progress or {}).get("ingested", 0)) == 1
         # sync_once leaves no worker behind (no loop task spawned).
         assert harness.conn.id not in supervisor.workers

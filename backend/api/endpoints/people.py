@@ -159,11 +159,104 @@ class ReminderRequest(BaseModel):
 # -- endpoints -----------------------------------------------------------------
 
 
+def _durable_row_to_person(row: Any, identities: list[Any]) -> dict[str, Any]:
+    """Map a durable :class:`PersonRow` (+ its identities) into the frozen
+    :class:`Person` response shape (P1-107 step 4 — restart reads)."""
+    from backend.communications.models import (
+        ContactIdentity,
+        ContactIdentityKind,
+        Person,
+    )
+
+    def _kind(channel: str) -> ContactIdentityKind:
+        try:
+            return ContactIdentityKind(str(channel).lower())
+        except ValueError:
+            return ContactIdentityKind.CONTACT
+
+    links = [
+        ContactIdentity(
+            kind=_kind(i.channel),
+            value=i.handle,
+            raw_value=i.handle,
+            display_name=row.display_name,
+            source="durable",
+            first_seen_at=row.created_at,
+            last_seen_at=row.updated_at,
+        )
+        for i in identities
+    ]
+    person = Person(
+        person_id=str(row.id),
+        display_name=row.display_name,
+        is_vip=bool(row.vip),
+        identities=links,
+        created_at=row.created_at,
+        updated_at=row.updated_at,
+    )
+    return person.model_dump(mode="json")
+
+
+async def _durable_first_people(
+    request: Request, svc: CommunicationsService
+) -> list[dict[str, Any]] | None:
+    """Durable-first merge of people (P1-107 decision (a)).
+
+    Precedence: the durable store is authoritative for existence. Every
+    durable person is returned; when the same person id is live in memory the
+    richer in-memory record (its merged identities) is preferred, otherwise
+    the person is reconstructed from the durable row + identities. In-memory
+    -only people (not yet durably settled) are merged in afterward. A
+    restarted pod — cold in-memory plane — serves exactly the persisted
+    people. Returns ``None`` when no durable plane is wired (pure in-memory
+    fallback, unchanged no-DB / unit-test contract).
+    """
+    registry = getattr(request.app.state, "repository_registry", None)
+    if not isinstance(registry, RepositoryRegistry):
+        return None
+    store = registry.communications
+    durable_people = await store.list_people()
+    in_memory = {p.person_id: p for p in svc.list_people()}
+
+    merged: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for row in durable_people:
+        pid = str(row.id)
+        seen_ids.add(pid)
+        live = in_memory.get(pid)
+        if live is not None:
+            merged.append(live.model_dump(mode="json"))
+        else:
+            identities = await store.list_identities(pid)
+            merged.append(_durable_row_to_person(row, identities))
+    for pid, person in in_memory.items():
+        if pid not in seen_ids:
+            merged.append(person.model_dump(mode="json"))
+
+    merged.sort(
+        key=lambda p: (
+            str(p.get("display_name") or p.get("person_id") or "").lower(),
+            str(p.get("person_id") or ""),
+        )
+    )
+    return merged
+
+
 @router.get("")
 async def list_people(request: Request):
-    """List all canonical persons (stable, display-name ordering)."""
+    """List all canonical persons (stable, display-name ordering).
+
+    Durable-first (P1-107 step 4): when the durable plane is wired the
+    response merges the durable people with the in-memory registry (durable
+    authoritative for existence; in-memory representation preferred when a
+    person is live in both). A restarted pod serves exactly the people it
+    persisted. Without a durable plane this is the pure in-memory read
+    (unchanged).
+    """
     svc = _service(request)
-    people = [p.model_dump(mode="json") for p in svc.list_people()]
+    people = await _durable_first_people(request, svc)
+    if people is None:
+        people = [p.model_dump(mode="json") for p in svc.list_people()]
     return ListResponse(data=people, meta=_meta(total=len(people)))
 
 
