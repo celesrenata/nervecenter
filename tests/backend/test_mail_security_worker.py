@@ -529,40 +529,39 @@ class TestIdempotentReplay:
         assert len(keys) == len(set(keys))
 
     async def test_verdict_committed_before_ack(self, harness, monkeypatch) -> None:
-        """A repo that records call order proves the assessment is committed
-        before the job is marked DONE (design §4.4 step 5)."""
+        """The verdict rows are written before the job is acked DONE, inside
+        ONE fenced transaction (design §4.4 step 5; Item 1 gap closure)."""
+        from sqlalchemy import event
+
         await _ingest(harness, monkeypatch, _item(
             "<order@corp>", _BENIGN_MIME, sender="Newsletter <news@example-news.com>"
         ))
-        real = harness.registry.mail_security
-        order: list[str] = []
+        seen: list[str] = []
+        commits: list[int] = []
 
-        class _OrderingRepo:
-            async def list_jobs(self, *a: Any, **k: Any) -> Any:
-                return await real.list_jobs(*a, **k)
+        def on_exec(_c: Any, _cur: Any, statement: str, *_r: Any) -> None:
+            seen.append(statement.strip().lower())
 
-            async def mark_job_state(self, *a: Any, **k: Any) -> Any:
-                if k.get("state") == JOB_STATE_DONE:
-                    order.append("ack")
-                return await real.mark_job_state(*a, **k)
-
-            async def upsert_evidence(self, *a: Any, **k: Any) -> Any:
-                return await real.upsert_evidence(*a, **k)
-
-            async def upsert_assessment(self, *a: Any, **k: Any) -> Any:
-                order.append("verdict")
-                return await real.upsert_assessment(*a, **k)
-
-        worker = MailSecurityWorker(
-            repository=_OrderingRepo(),
-            content_resolver=ObjectStoreContentResolver(object_store=harness.store),
-            account_scope=harness.scope,
-            analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
-            clock=lambda: _CLOCK,
-            env={ENV_MAIL_SECURITY_ENABLED: "1"},
+        sync_engine = harness.engine.sync_engine
+        event.listen(sync_engine, "before_cursor_execute", on_exec)
+        event.listen(sync_engine, "commit", lambda _c: commits.append(len(seen)))
+        try:
+            done = await _security_worker(harness).process_one()
+        finally:
+            event.remove(sync_engine, "before_cursor_execute", on_exec)
+        assert done is not None and done.state == JOB_STATE_DONE
+        verdict = max(
+            i for i, s in enumerate(seen)
+            if s.startswith("insert into mail_security_assessments")
         )
-        await worker.process_one()
-        assert order == ["verdict", "ack"], order
+        ack = max(
+            i for i, s in enumerate(seen)
+            if s.startswith("update mail_security_jobs") and "state" in s
+        )
+        assert verdict < ack
+        # No commit lands between the verdict write and the ack: one commit
+        # covers both, so there is no window between them.
+        assert not [c for c in commits if verdict < c <= ack]
 
 
 # ---------------------------------------------------------------------------

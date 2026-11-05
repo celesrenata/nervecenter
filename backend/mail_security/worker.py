@@ -88,7 +88,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
@@ -137,6 +137,11 @@ from backend.mail_security.queue import (
     lease_expired,
 )
 from backend.mail_security.telemetry import LatencyStage, safe_trace_id
+
+if TYPE_CHECKING:
+    from backend.persistence.repositories.mail_security_repo import (
+        VerdictWriteOutcome,
+    )
 
 log = structlog.get_logger(__name__)
 
@@ -333,31 +338,9 @@ class MailSecurityWorker:
             policy=self._policy,
         )
 
-    async def _still_owner(self, job: Any) -> bool:
-        """Fencing check: re-assert our lease token before writing a verdict.
-
-        A guarded no-op update that matches only while ``(lease_owner,
-        attempts)`` is still ours. ``False`` means the lease was reclaimed and
-        this worker is stale: it must write nothing (R-018, T-17).
-        """
-        held = await self._repo.mark_job_state(
-            job.account_scope,
-            job.id,
-            state=JOB_STATE_RUNNING,
-            attempts=int(job.attempts or 0),
-            lease_owner=self._worker_id,
-            lease_expires_at=job.lease_expires_at,
-            last_error_code=None,
-            if_state=JOB_STATE_RUNNING,
-            if_attempts=int(job.attempts or 0),
-            if_lease_owner=self._worker_id,
-        )
-        if held is None:
-            log.warning(
-                "mail_security.lease_lost",
-                trace_id=safe_trace_id(job.id),
-            )
-        return held is not None
+    def _note_lease_lost(self, job: Any) -> None:
+        """Log a rejected fenced write (safe trace id only)."""
+        log.warning("mail_security.lease_lost", trace_id=safe_trace_id(job.id))
 
     async def record_incomplete(self, job: Any, code: str) -> None:
         """Record an honest INCOMPLETE assessment for a job (sweeper hook).
@@ -467,32 +450,25 @@ class MailSecurityWorker:
         )
         lap = self._lap(LatencyStage.ASSESS, lap)
 
-        if not await self._still_owner(job):
-            return job  # stale worker: reclaimed by another; write nothing
-
-        # --- verdict BEFORE ack (design §4.4 step 5, T-16/T-17) -------------
-        # Persist evidence + assessment + findings and commit, THEN mark the
-        # job DONE. A crash between the two leaves a re-claimable job whose
-        # idempotent assessment id yields exactly one assessment on replay.
-        await self._persist_verdict(
-            account_scope=account_scope,
-            source_key=source_key,
+        # --- verdict + ack in ONE fenced transaction (design §4.4 step 5) ---
+        # The fencing token (lease_owner, attempts) is compared inside the same
+        # database transaction as the evidence/assessment/findings writes and
+        # the DONE transition, so a stale worker is rejected atomically with
+        # nothing written (T-16/T-17). The verdict is written before the ack
+        # and both become visible together at commit; replay of a job whose
+        # commit never happened yields exactly one assessment (idempotent id).
+        outcome = await self._commit_verdict(
+            job,
             content_ref=content_ref,
             evidence=evidence,
             assessment=assessment,
-        )
-        done = await self._repo.mark_job_state(
-            account_scope,
-            job.id,
             state=JOB_STATE_DONE,
-            attempts=attempts,
-            lease_owner=None,
             lease_expires_at=None,
             last_error_code=None,
-            if_state=JOB_STATE_RUNNING,
-            if_attempts=attempts,
-            if_lease_owner=self._worker_id,
         )
+        if not outcome.committed:
+            return job  # stale worker: reclaimed by another; nothing written
+        done = outcome.job
         self._lap(LatencyStage.PERSIST, lap)
         log.info(
             "mail_security.job_done",
@@ -724,6 +700,44 @@ class MailSecurityWorker:
         await self._repo.upsert_evidence(manifest)
         await self._repo.upsert_assessment(assessment)
 
+    async def _commit_verdict(
+        self,
+        job: Any,
+        *,
+        content_ref: str | None,
+        evidence: ParsedEvidence | None,
+        assessment: SecurityAssessment,
+        state: str,
+        lease_expires_at: datetime | None,
+        last_error_code: str | None,
+    ) -> VerdictWriteOutcome:
+        """Fenced verdict write + job transition in one transaction.
+
+        Rejected (``STALE_FENCE``) when ``(lease_owner, attempts)`` no longer
+        matches this claim; in that case nothing is written (R-018, T-17).
+        """
+        manifest = self._build_manifest(
+            account_scope=job.account_scope,
+            source_key=job.source_key,
+            content_ref=content_ref,
+            evidence=evidence,
+            evidence_fidelity=assessment.evidence_fidelity,
+        )
+        outcome = await self._repo.commit_verdict_fenced(
+            job.account_scope,
+            job.id,
+            fence_owner=self._worker_id,
+            fence_attempts=int(job.attempts or 0),
+            manifest=manifest,
+            assessment=assessment,
+            state=state,
+            lease_expires_at=lease_expires_at,
+            last_error_code=last_error_code,
+        )
+        if not outcome.committed:
+            self._note_lease_lost(job)
+        return outcome
+
     def _build_manifest(
         self,
         *,
@@ -773,8 +787,6 @@ class MailSecurityWorker:
         a restrictive disposition by construction.
         """
         safe = _safe_code(code)
-        if not await self._still_owner(job):
-            return job  # stale worker: reclaimed by another; write nothing
         assessment = self._assess_incomplete(
             account_scope=account_scope,
             source_key=source_key,
@@ -782,25 +794,17 @@ class MailSecurityWorker:
             evidence=None,
             code=safe,
         )
-        await self._persist_verdict(
-            account_scope=account_scope,
-            source_key=source_key,
-            content_ref=content_ref,
-            evidence=None,
-            assessment=assessment,
-        )
-
         terminal = (
             JOB_STATE_DEAD_LETTER
             if attempts >= self._max_attempts
             else JOB_STATE_ERROR_RETRYABLE
         )
-        updated = await self._repo.mark_job_state(
-            account_scope,
-            job.id,
+        outcome = await self._commit_verdict(
+            job,
+            content_ref=content_ref,
+            evidence=None,
+            assessment=assessment,
             state=terminal,
-            attempts=attempts,
-            lease_owner=None,
             # While RETRYABLE (no owner) this holds the backoff "not before".
             lease_expires_at=(
                 None
@@ -808,10 +812,10 @@ class MailSecurityWorker:
                 else self._policy.not_before(self._clock(), attempts)
             ),
             last_error_code=safe,
-            if_state=JOB_STATE_RUNNING,
-            if_attempts=attempts,
-            if_lease_owner=self._worker_id,
         )
+        if not outcome.committed:
+            return job  # stale worker: reclaimed by another; nothing written
+        updated = outcome.job
         log.warning(
             "mail_security.job_failed",
             trace_id=safe_trace_id(job.id),

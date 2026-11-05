@@ -36,7 +36,9 @@ Privacy contract (steering, T-14):
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import delete, select, update
@@ -57,6 +59,27 @@ _MAX_REPLAY_HISTORY = 20
 
 #: ``processing_state`` value of a not-yet-complete assessment placeholder.
 _INCOMPLETE = "INCOMPLETE"
+
+
+class VerdictWriteStatus(StrEnum):
+    """Typed outcome of a fenced verdict write."""
+
+    COMMITTED = "COMMITTED"
+    #: The fencing token ``(lease_owner, attempts)`` no longer matches: the
+    #: lease was reclaimed or the job already finished. Nothing was written.
+    STALE_FENCE = "STALE_FENCE"
+
+
+@dataclass(frozen=True)
+class VerdictWriteOutcome:
+    """Result of :meth:`MailSecurityRepository.commit_verdict_fenced`."""
+
+    status: VerdictWriteStatus
+    job: MailSecurityJobRow | None = None
+
+    @property
+    def committed(self) -> bool:
+        return self.status is VerdictWriteStatus.COMMITTED
 
 
 class MailSecurityRepository:
@@ -285,31 +308,39 @@ class MailSecurityRepository:
         on replay for a fixed revision.
         """
         async with self._sessions() as session:
-            stmt = select(MailEvidenceRow).where(
-                MailEvidenceRow.account_scope == manifest.account_scope,
-                MailEvidenceRow.source_id == manifest.source_id,
-                MailEvidenceRow.revision == manifest.source_revision,
-            )
-            result = await session.execute(stmt)
-            row = result.scalar_one_or_none()
-            if row is not None:
-                return row
-            row = MailEvidenceRow(
-                account_scope=manifest.account_scope,
-                source_id=manifest.source_id,
-                revision=manifest.source_revision,
-                provider=manifest.provider,
-                acquisition_mode=str(manifest.acquisition_mode.value),
-                evidence_fidelity=str(manifest.evidence_fidelity.value),
-                raw_content_ref=manifest.raw_content_ref,
-                normalized_content_ref=manifest.normalized_content_ref,
-                sha256=manifest.sha256,
-                missing_parts=[str(code) for code in manifest.missing_parts],
-                meta={},
-            )
-            session.add(row)
+            row = await self._upsert_evidence_in(session, manifest)
             await session.commit()
             return row
+
+    @staticmethod
+    async def _upsert_evidence_in(
+        session: Any, manifest: MessageEvidenceManifest
+    ) -> MailEvidenceRow:
+        """Get-or-create the manifest row inside the caller's transaction."""
+        stmt = select(MailEvidenceRow).where(
+            MailEvidenceRow.account_scope == manifest.account_scope,
+            MailEvidenceRow.source_id == manifest.source_id,
+            MailEvidenceRow.revision == manifest.source_revision,
+        )
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is not None:
+            return row
+        row = MailEvidenceRow(
+            account_scope=manifest.account_scope,
+            source_id=manifest.source_id,
+            revision=manifest.source_revision,
+            provider=manifest.provider,
+            acquisition_mode=str(manifest.acquisition_mode.value),
+            evidence_fidelity=str(manifest.evidence_fidelity.value),
+            raw_content_ref=manifest.raw_content_ref,
+            normalized_content_ref=manifest.normalized_content_ref,
+            sha256=manifest.sha256,
+            missing_parts=[str(code) for code in manifest.missing_parts],
+            meta={},
+        )
+        session.add(row)
+        return row
 
     async def get_evidence(
         self, account_scope: str, source_id: str, revision: int
@@ -342,47 +373,135 @@ class MailSecurityRepository:
         content — T-14).
         """
         async with self._sessions() as session:
-            stmt = select(MailSecurityAssessmentRow).where(
-                MailSecurityAssessmentRow.account_scope == assessment.account_scope,
-                MailSecurityAssessmentRow.assessment_id == assessment.assessment_id,
-            )
-            result = await session.execute(stmt)
-            row = result.scalar_one_or_none()
-            if row is not None:
-                # Idempotent replay keeps the existing row, with ONE exception
-                # (Task 2.1): an INCOMPLETE placeholder written by a failed
-                # attempt is upgraded in place by a later complete verdict, so
-                # a retry can actually land. The reverse never happens: a
-                # complete verdict is never downgraded by a stale/failed
-                # worker (fencing at the data layer, R-018, T-17).
-                if not (
-                    row.processing_state == _INCOMPLETE
-                    and str(assessment.processing_state.value) != _INCOMPLETE
-                ):
-                    return row
-                await session.execute(
-                    delete(MailSecurityFindingRow).where(
-                        MailSecurityFindingRow.account_scope
-                        == assessment.account_scope,
-                        MailSecurityFindingRow.assessment_id
-                        == assessment.assessment_id,
-                    )
-                )
-                self._fill_assessment_row(row, assessment)
-                self._add_findings(session, assessment)
-                await session.commit()
-                return row
-
-            row = MailSecurityAssessmentRow(
-                assessment_id=assessment.assessment_id,
-                account_scope=assessment.account_scope,
-                source_id=assessment.source_ref,
-            )
-            self._fill_assessment_row(row, assessment)
-            session.add(row)
-            self._add_findings(session, assessment)
+            row = await self._upsert_assessment_in(session, assessment)
             await session.commit()
             return row
+
+    async def _upsert_assessment_in(
+        self, session: Any, assessment: SecurityAssessment
+    ) -> MailSecurityAssessmentRow:
+        """Get-or-create the assessment inside the caller's transaction."""
+        stmt = select(MailSecurityAssessmentRow).where(
+            MailSecurityAssessmentRow.account_scope == assessment.account_scope,
+            MailSecurityAssessmentRow.assessment_id == assessment.assessment_id,
+        )
+        result = await session.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is not None:
+            # Idempotent replay keeps the existing row, with ONE exception
+            # (Task 2.1): an INCOMPLETE placeholder written by a failed
+            # attempt is upgraded in place by a later complete verdict, so
+            # a retry can actually land. The reverse never happens: a
+            # complete verdict is never downgraded by a stale/failed
+            # worker (fencing at the data layer, R-018, T-17).
+            if not (
+                row.processing_state == _INCOMPLETE
+                and str(assessment.processing_state.value) != _INCOMPLETE
+            ):
+                return row
+            await session.execute(
+                delete(MailSecurityFindingRow).where(
+                    MailSecurityFindingRow.account_scope
+                    == assessment.account_scope,
+                    MailSecurityFindingRow.assessment_id
+                    == assessment.assessment_id,
+                )
+            )
+            self._fill_assessment_row(row, assessment)
+            self._add_findings(session, assessment)
+            return row
+
+        row = MailSecurityAssessmentRow(
+            assessment_id=assessment.assessment_id,
+            account_scope=assessment.account_scope,
+            source_id=assessment.source_ref,
+        )
+        self._fill_assessment_row(row, assessment)
+        session.add(row)
+        self._add_findings(session, assessment)
+        return row
+
+    async def commit_verdict_fenced(
+        self,
+        account_scope: str,
+        job_id: str,
+        *,
+        fence_owner: str,
+        fence_attempts: int,
+        manifest: MessageEvidenceManifest,
+        assessment: SecurityAssessment,
+        state: str,
+        lease_expires_at: datetime | None = None,
+        last_error_code: str | None = None,
+    ) -> VerdictWriteOutcome:
+        """Write the verdict and move the job, fenced, in ONE transaction.
+
+        Closes the stale-worker window (R-018, T-16/T-17): the fencing token
+        ``(lease_owner, attempts)`` is evaluated by conditional ``UPDATE ...
+        WHERE`` statements INSIDE the same transaction as the evidence,
+        assessment and findings writes.
+
+        1. A fence-assert ``UPDATE`` (state RUNNING, our attempts and owner)
+           matches zero rows for a stale worker and takes the row lock for a
+           live one, so a concurrent reclaim cannot interleave (SQLite
+           serializes writers; Postgres READ COMMITTED re-evaluates the
+           reclaim's ``WHERE`` after our commit and it matches nothing).
+        2. Evidence + assessment + findings are upserted (deterministic ids,
+           idempotent; INCOMPLETE never downgrades a complete verdict).
+        3. The job transition (``DONE`` / retry / dead letter) is a second
+           fenced ``UPDATE``; if it does not match exactly one row the whole
+           transaction is rolled back.
+
+        A stale worker therefore gets ``STALE_FENCE`` with no rows written, no
+        newer result overwritten and no forged completion. The verdict is
+        written before the ack inside the transaction and both become visible
+        atomically at commit (no verdict-without-ack or ack-without-verdict).
+        """
+        if (
+            manifest.account_scope != account_scope
+            or assessment.account_scope != account_scope
+        ):
+            raise ValueError("verdict scope does not match the job account scope")
+
+        def fenced(stmt: Any) -> Any:
+            return stmt.where(
+                MailSecurityJobRow.id == job_id,
+                MailSecurityJobRow.account_scope == account_scope,
+                MailSecurityJobRow.state == "RUNNING",
+                MailSecurityJobRow.attempts == fence_attempts,
+                MailSecurityJobRow.lease_owner == fence_owner,
+            )
+
+        async with self._sessions() as session:
+            asserted = await session.execute(
+                fenced(update(MailSecurityJobRow)).values(lease_owner=fence_owner)
+            )
+            if getattr(asserted, "rowcount", 0) != 1:
+                await session.rollback()
+                return VerdictWriteOutcome(VerdictWriteStatus.STALE_FENCE)
+            await self._upsert_evidence_in(session, manifest)
+            await self._upsert_assessment_in(session, assessment)
+            await session.flush()  # verdict rows hit the DB before the ack
+            moved = await session.execute(
+                fenced(update(MailSecurityJobRow)).values(
+                    state=state,
+                    lease_owner=None,
+                    lease_expires_at=lease_expires_at,
+                    last_error_code=last_error_code,
+                )
+            )
+            if getattr(moved, "rowcount", 0) != 1:
+                await session.rollback()
+                return VerdictWriteOutcome(VerdictWriteStatus.STALE_FENCE)
+            row = (
+                await session.execute(
+                    select(MailSecurityJobRow)
+                    .where(MailSecurityJobRow.id == job_id)
+                    .execution_options(populate_existing=True)
+                )
+            ).scalar_one()
+            await session.commit()
+            return VerdictWriteOutcome(VerdictWriteStatus.COMMITTED, row)
 
     @staticmethod
     def _fill_assessment_row(
@@ -476,4 +595,8 @@ class MailSecurityRepository:
             return list(result.scalars().all())
 
 
-__all__ = ["MailSecurityRepository"]
+__all__ = [
+    "MailSecurityRepository",
+    "VerdictWriteOutcome",
+    "VerdictWriteStatus",
+]
