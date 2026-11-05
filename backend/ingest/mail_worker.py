@@ -69,8 +69,8 @@ from backend.connectors.mail.mail_transport import (
     TransportConnectError,
     TransportProviderError,
 )
-from backend.ingest.mail_flags import classify_mail_flags
 from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
+from backend.ingest.mail_flags import classify_mail_flags
 from backend.ingest.seen import (
     cursor_with_seen,
     is_seen,
