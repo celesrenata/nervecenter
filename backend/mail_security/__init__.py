@@ -60,17 +60,34 @@ from backend.mail_security.models import (
     SemanticObservation,
     TrustAxes,
 )
+from backend.mail_security.parser import (
+    DEFAULT_LIMITS,
+    PARSER_VERSION,
+    AttachmentDescriptor,
+    ImageEvidence,
+    IncompleteNote,
+    IncompleteReason,
+    LinkEvidence,
+    ParsedEvidence,
+    ParserLimits,
+    TextPart,
+    evidence_fidelity_for,
+    parse_mime_evidence,
+)
 
 #: Default-off feature flag for the NerveShield mail-security plane. Defined
 #: here for later phases; NOT read by any existing runtime path (Phase 1).
 NERVE_MAIL_SECURITY_ENABLED = 0
 
 __all__ = [
+    "DEFAULT_LIMITS",
     "HASH_ALGORITHM",
     "KEY_SCHEME_VERSION",
     "NERVE_MAIL_SECURITY_ENABLED",
+    "PARSER_VERSION",
     "SCHEMA_VERSION",
     "AcquisitionMode",
+    "AttachmentDescriptor",
     "AssessmentMode",
     "AuthObservation",
     "AuthProvenance",
@@ -90,6 +107,10 @@ __all__ = [
     "FindingSeverity",
     "FindingStatus",
     "IdentityConsistency",
+    "ImageEvidence",
+    "IncompleteNote",
+    "IncompleteReason",
+    "LinkEvidence",
     "MessageCategory",
     "MessageEvidenceManifest",
     "ModelRun",
@@ -97,6 +118,8 @@ __all__ = [
     "ObservationRequest",
     "ObserverRole",
     "OpaqueRef",
+    "ParsedEvidence",
+    "ParserLimits",
     "PolicyDisposition",
     "ProcessingState",
     "RequestType",
@@ -106,9 +129,12 @@ __all__ = [
     "SecurityAssessment",
     "SecurityFinding",
     "SemanticObservation",
+    "TextPart",
     "TrustAxes",
     "assessment_id",
+    "evidence_fidelity_for",
     "logical_source_key",
     "normalize_analysis_version",
     "outbox_job_key",
+    "parse_mime_evidence",
 ]
