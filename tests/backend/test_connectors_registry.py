@@ -821,6 +821,20 @@ class TestDiagnostics:
         assert diag["diagnosis"]["error_code"] is None
         assert "No errors recorded" in diag["diagnosis"]["fix"]
 
+    def test_provider_error_codes_have_actionable_recovery_text(self):
+        # The worker can now write these codes on a valid-token / misconfigured
+        # provider; diagnostics must have an actionable fix for each.
+        from backend.connectors.registry import (
+            DIAGNOSTICS_FIXES,
+            ERR_INSUFFICIENT_SCOPE,
+            ERR_PROVIDER_API_DISABLED,
+        )
+
+        assert ERR_PROVIDER_API_DISABLED in DIAGNOSTICS_FIXES
+        assert "Gmail API" in DIAGNOSTICS_FIXES[ERR_PROVIDER_API_DISABLED]
+        assert ERR_INSUFFICIENT_SCOPE in DIAGNOSTICS_FIXES
+        assert "scope" in DIAGNOSTICS_FIXES[ERR_INSUFFICIENT_SCOPE].lower()
+
 
 # -- relay plane --------------------------------------------------------------------
 

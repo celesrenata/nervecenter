@@ -30,10 +30,13 @@ import pytest
 
 from backend.api.models import MailConnector
 from backend.connectors.mail.mail_transport import (
+    ERR_INSUFFICIENT_SCOPE,
+    ERR_PROVIDER_API_DISABLED,
     GmailClient,
     ImapPollClient,
     TransportAuthError,
     TransportConnectError,
+    TransportProviderError,
     _b64url_decode,
     _extract_text_body,
 )
@@ -208,10 +211,15 @@ class FakeGmailClient:
 
     Mirrors the pinned contract the transport talks to:
 
-    - ``GET /users/me/history`` without ``startHistoryId`` (``{"maxResults": 1}``)
-      is the **baseline probe** (``_history_head``) and returns the current
-      mailbox ``historyId`` (``head_history_id``). There is no
-      ``history.start`` endpoint in v1.
+    - ``GET /users/me/profile`` is the **baseline probe** (``_history_head``)
+      and returns the current mailbox ``historyId`` (``head_history_id``).
+      This is the documented baseline source: ``history.list`` *requires*
+      ``startHistoryId`` and 400s without it, so a bare ``history.list`` can
+      never establish the first-ever baseline. ``profile_status`` /
+      ``profile_error`` let a test force a 401/403 (and Google error body) on
+      the baseline call. The bare ``history.list`` (no ``startHistoryId``)
+      branch 400s like the real API — proving the transport no longer uses it
+      for the baseline.
     - ``GET /users/me/history`` with ``startHistoryId`` is the **incremental
       poll**; ``startHistoryId`` is EXCLUSIVE (records strictly after it) and
       ``nextPageToken`` is the only page-continuation signal.
@@ -232,6 +240,8 @@ class FakeGmailClient:
         expired_status: int = 404,
         inbox_message_ids: list[str] | None = None,
         page_size: int = 500,
+        profile_status: int = 200,
+        profile_error: dict[str, Any] | None = None,
     ) -> None:
         self._entries = sorted(entries or [], key=lambda e: int(e["id"]))
         self._messages = dict(messages or {})
@@ -245,9 +255,13 @@ class FakeGmailClient:
         self._expired_status = expired_status
         self._inbox_ids = list(inbox_message_ids or [])
         self._page_size = page_size
+        self._profile_status = profile_status
+        self._profile_error = profile_error
         self.history_calls: list[int] = []
         self.history_params: list[dict[str, Any]] = []
         self.head_calls = 0
+        self.profile_calls = 0
+        self.bare_history_calls = 0
         self.fetched: list[str] = []
         self.inbox_calls = 0
 
@@ -270,6 +284,18 @@ class FakeGmailClient:
         params: dict[str, Any] | None = None,
     ) -> FakeGmailResp:
         p = dict(params or {})
+        if url.endswith("/users/me/profile"):
+            # Baseline probe (``_history_head``): the documented source of the
+            # current mailbox ``historyId``.
+            self.profile_calls += 1
+            self.head_calls += 1  # kept for existing assertions on head_calls
+            if self._profile_status != 200:
+                return FakeGmailResp(
+                    self._profile_status,
+                    self._profile_error
+                    or {"error": {"code": self._profile_status, "message": "denied"}},
+                )
+            return FakeGmailResp(200, {"historyId": self._head})
         if url.endswith("/users/me/history"):
             if "startHistoryId" in p:
                 start = int(p["startHistoryId"])
@@ -281,9 +307,21 @@ class FakeGmailClient:
                         {"error": {"code": self._expired_status, "message": "expired"}},
                     )
                 return FakeGmailResp(200, self._history_window(start))
-            # Baseline probe: history.list with only maxResults, no start.
-            self.head_calls += 1
-            return FakeGmailResp(200, {"historyId": self._head})
+            # Bare ``history.list`` (no ``startHistoryId``): the real Gmail v1
+            # API rejects this with 400 INVALID_ARGUMENT. The transport must
+            # NOT use it for the baseline — any hit here is a regression.
+            self.bare_history_calls += 1
+            return FakeGmailResp(
+                400,
+                {
+                    "error": {
+                        "code": 400,
+                        "status": "INVALID_ARGUMENT",
+                        "message": "Missing/invalid parameter: startHistoryId",
+                        "errors": [{"reason": "invalidArgument"}],
+                    }
+                },
+            )
         if url.endswith("/users/me/messages"):
             self.inbox_calls += 1
             return FakeGmailResp(200, {"messages": [{"id": m} for m in self._inbox_ids]})
@@ -336,8 +374,11 @@ class TestGmailInitialSync:
         items, cursor = await GmailClient().run(
             _connector(), {}, credentials={"access_token": "tok"}
         )
-        # A2: the baseline was captured with history.list (no history.start).
+        # A2: the baseline was captured from users/me/profile (NOT a bare
+        # history.list, which the real API 400s without startHistoryId).
         assert fake.head_calls == 1
+        assert fake.profile_calls == 1
+        assert fake.bare_history_calls == 0
         # the bounded full resync fetched the INBOX list before polling.
         assert fake.inbox_calls == 1
         # the saved cursor IS the captured baseline (no +1); polling is
@@ -355,6 +396,73 @@ class TestGmailInitialSync:
         }
         # the transient access_token is never in the cursor
         assert "tok" not in str(cursor)
+
+    async def test_first_sync_succeeds_when_bare_history_list_would_400(
+        self, monkeypatch: Any
+    ) -> None:
+        """Regression (first-ever sync baseline): a bare ``history.list``
+        (no ``startHistoryId``) 400s on the real Gmail API. The first sync
+        MUST still succeed by taking the baseline historyId from
+        ``users/me/profile`` and ingesting INBOX — it must NOT raise and must
+        NOT produce an ``ingest_failed``-class crash.
+
+        This is the exact production failure:
+        ``_HistoryExpired: gmail history baseline -> 400`` escaping ``run()``.
+        """
+        fake = FakeGmailClient(
+            entries=[],  # no post-baseline changes — the full sync is the payload
+            messages={
+                "mp1": (200, _gresource("mp1", 1)),
+                "mp2": (200, _gresource("mp2", 2)),
+            },
+            head_history_id=8392969,  # the live profile historyId shape
+            inbox_message_ids=["mp1", "mp2"],
+        )
+        _install_gmail(monkeypatch, fake)
+
+        items, cursor = await GmailClient().run(
+            _connector(), {}, credentials={"access_token": "tok"}
+        )
+
+        # The first sync ingested the INBOX items (did not raise / ingest_failed).
+        assert [m.message_id for m in items] == ["gmail:mp1", "gmail:mp2"]
+        # The baseline historyId came from the PROFILE endpoint, never the
+        # bare history.list (which would 400).
+        assert fake.profile_calls == 1
+        assert fake.bare_history_calls == 0
+        assert cursor["history_id"] == 8392969
+        assert cursor["account"] == _ACCOUNT.lower()
+
+    async def test_first_sync_baseline_400_degrades_to_connect_error_not_crash(
+        self, monkeypatch: Any
+    ) -> None:
+        """Defense-in-depth: if the first-sync baseline/resync path somehow
+        hits a bare ``history.list`` 400 (an internal ``_HistoryExpired``),
+        it degrades to a ``TransportConnectError`` — never an uncaught
+        ``_HistoryExpired`` bubbling out of ``run()`` as ``ingest_failed``.
+
+        We force this by making the fake 400 on the baseline fetch: the
+        profile endpoint is bypassed by routing the baseline to the bare
+        history.list (simulated here by a profile that itself raises the
+        internal expiry via a 400-shaped history.list path).
+        """
+        # Monkeypatch _history_head to raise the internal _HistoryExpired so we
+        # exercise run()'s first-sync symmetry directly (the real baseline now
+        # uses profile, so a genuine 400 here is a defense-in-depth concern).
+        import backend.connectors.mail.mail_transport as mt
+
+        fake = FakeGmailClient(messages={}, head_history_id=5, inbox_message_ids=[])
+        _install_gmail(monkeypatch, fake)
+
+        async def boom(self: Any, client: Any, token: str) -> int:
+            raise mt._HistoryExpired("gmail history baseline -> 400")
+
+        monkeypatch.setattr(mt.GmailClient, "_history_head", boom)
+
+        with pytest.raises(TransportConnectError):
+            await GmailClient().run(
+                _connector(), {}, credentials={"access_token": "tok"}
+            )
 
     async def test_incoming_from_external_sender_is_accepted(
         self, monkeypatch: Any
@@ -404,6 +512,108 @@ class TestGmailInitialSync:
         assert fake.history_calls == [40]
         assert [m.message_id for m in items] == ["gmail:m1", "gmail:m2"]
         assert cursor["history_id"] == 44
+
+
+class TestGmailAuthClassification:
+    """403 reason classification: a valid token hitting a disabled API or an
+    insufficient scope is NOT auth-expiry and must map to a distinct code
+    carrying Google's reason — while a genuine 401 still means re-auth."""
+
+    async def test_403_access_not_configured_is_provider_api_disabled(
+        self, monkeypatch: Any
+    ) -> None:
+        body = {
+            "error": {
+                "code": 403,
+                "status": "PERMISSION_DENIED",
+                "message": "Gmail API has not been used in project 123 before or it is disabled.",
+                "errors": [{"reason": "accessNotConfigured"}],
+            }
+        }
+        fake = FakeGmailClient(
+            head_history_id=5,
+            inbox_message_ids=[],
+            profile_status=403,
+            profile_error=body,
+        )
+        _install_gmail(monkeypatch, fake)
+        with pytest.raises(TransportProviderError) as excinfo:
+            await GmailClient().run(_connector(), {}, credentials={"access_token": "tok"})
+        exc = excinfo.value
+        # Distinct, non-auth code; Google's reason preserved in the message.
+        assert exc.error_code == ERR_PROVIDER_API_DISABLED
+        assert "accessNotConfigured" in str(exc)
+
+    async def test_403_insufficient_scope_is_insufficient_scope_code(
+        self, monkeypatch: Any
+    ) -> None:
+        body = {
+            "error": {
+                "code": 403,
+                "status": "PERMISSION_DENIED",
+                "message": "Request had insufficient authentication scopes.",
+                "errors": [{"reason": "insufficientPermissions"}],
+            }
+        }
+        fake = FakeGmailClient(
+            head_history_id=5,
+            inbox_message_ids=[],
+            profile_status=403,
+            profile_error=body,
+        )
+        _install_gmail(monkeypatch, fake)
+        with pytest.raises(TransportProviderError) as excinfo:
+            await GmailClient().run(_connector(), {}, credentials={"access_token": "tok"})
+        assert excinfo.value.error_code == ERR_INSUFFICIENT_SCOPE
+
+    async def test_403_scope_via_status_field_is_insufficient_scope(
+        self, monkeypatch: Any
+    ) -> None:
+        # Some scope failures surface only in the top-level status.
+        body = {
+            "error": {
+                "code": 403,
+                "status": "ACCESS_TOKEN_SCOPE_INSUFFICIENT",
+                "message": "Request had insufficient authentication scopes.",
+                "errors": [],
+            }
+        }
+        fake = FakeGmailClient(
+            head_history_id=5,
+            inbox_message_ids=[],
+            profile_status=403,
+            profile_error=body,
+        )
+        _install_gmail(monkeypatch, fake)
+        with pytest.raises(TransportProviderError) as excinfo:
+            await GmailClient().run(_connector(), {}, credentials={"access_token": "tok"})
+        assert excinfo.value.error_code == ERR_INSUFFICIENT_SCOPE
+
+    async def test_genuine_401_still_maps_to_auth_error(self, monkeypatch: Any) -> None:
+        fake = FakeGmailClient(
+            head_history_id=5,
+            inbox_message_ids=[],
+            profile_status=401,
+            profile_error={"error": {"code": 401, "message": "Invalid Credentials"}},
+        )
+        _install_gmail(monkeypatch, fake)
+        with pytest.raises(TransportAuthError):
+            await GmailClient().run(_connector(), {}, credentials={"access_token": "tok"})
+
+    async def test_generic_403_without_reason_maps_to_auth_error(
+        self, monkeypatch: Any
+    ) -> None:
+        # A 403 with no accessNotConfigured / scope reason is a
+        # permission-revoked / forbidden case → re-auth (TransportAuthError).
+        fake = FakeGmailClient(
+            head_history_id=5,
+            inbox_message_ids=[],
+            profile_status=403,
+            profile_error={"error": {"code": 403, "message": "forbidden", "errors": []}},
+        )
+        _install_gmail(monkeypatch, fake)
+        with pytest.raises(TransportAuthError):
+            await GmailClient().run(_connector(), {}, credentials={"access_token": "tok"})
 
 
 class TestGmailMultipart:
@@ -803,24 +1013,15 @@ class TestGmailBodyDecoding:
     async def test_auth_403_maps_to_transport_auth_error(
         self, monkeypatch: Any
     ) -> None:
-        """Auth 403 on the baseline probe → TransportAuthError (never a
-        resync, never a crash)."""
+        """A generic 403 (no accessNotConfigured / scope reason) on the
+        baseline probe → TransportAuthError (never a resync, never a crash)."""
         fake = FakeGmailClient(
             entries=[_gentry(0, 1, "m1")],
             messages={"m1": (200, _gresource("m1", 1))},
             head_history_id=1,
+            profile_status=403,
+            profile_error={"error": {"code": 403, "message": "auth"}},
         )
-        # force the baseline probe (the only startless history call) to 403
-        orig_get = fake.get
-
-        async def _auth403(url, **kw):
-            if url.endswith("/users/me/history") and "startHistoryId" not in (
-                kw.get("params") or {}
-            ):
-                return FakeGmailResp(403, {"error": {"code": 403, "message": "auth"}})
-            return await orig_get(url, **kw)
-
-        fake.get = _auth403
         _install_gmail(monkeypatch, fake)
         with pytest.raises(TransportAuthError):
             await GmailClient().run(

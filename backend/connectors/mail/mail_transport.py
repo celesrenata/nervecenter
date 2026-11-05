@@ -14,7 +14,12 @@ source-side relay, §47); what the backend owns is the **incremental read**:
   (REST history resource over :mod:`httpx`); tests inject
   :class:`StubMailTransport`.
 - :class:`TransportAuthError` — credential rejected (LOGIN/AUTHFAILED, or
-  Gmail 401/403); the worker maps it onto ``auth_status = auth_expired``.
+  Gmail 401 / generic 403); the worker maps it onto ``auth_status = auth_expired``.
+- :class:`TransportProviderError` — the credential is valid but the provider is
+  misconfigured (Gmail 403 ``accessNotConfigured`` → the API is disabled on the
+  GCP project; a scope reason → insufficient scope). The worker maps its
+  ``error_code`` onto ``last_error_code`` *without* flipping auth to
+  ``auth_expired`` (re-authenticating would not help).
 - :class:`TransportConnectError` — network/host/TLS failure (also a failed
   folder SELECT); the worker maps it onto ``last_error_code = connect_failed``.
 
@@ -61,10 +66,20 @@ __all__ = [
     "MailTransport",
     "TransportAuthError",
     "TransportConnectError",
+    "TransportProviderError",
+    "ERR_PROVIDER_API_DISABLED",
+    "ERR_INSUFFICIENT_SCOPE",
     "ImapPollClient",
     "GmailClient",
     "StubMailTransport",
 ]
+
+#: Stable error codes a transport may attach to a :class:`TransportProviderError`.
+#: These are NOT auth-expiry (the token is valid) — they describe a provider-side
+#: configuration fault the worker must surface distinctly from ``auth_expired``
+#: so diagnostics can show an actionable recovery step.
+ERR_PROVIDER_API_DISABLED = "provider_api_disabled"
+ERR_INSUFFICIENT_SCOPE = "insufficient_scope"
 
 
 #: Upper bound on the durable seen-list (matches ``backend.ingest.seen``).
@@ -82,6 +97,24 @@ class TransportConnectError(Exception):
     transport-level failure, not an auth failure, and must not advance the
     cursor.
     """
+
+
+class TransportProviderError(Exception):
+    """The provider rejected the request for a non-auth reason the user must fix.
+
+    Unlike :class:`TransportAuthError` (the *credential* is expired/invalid),
+    the token here is valid but the provider is misconfigured — e.g. the Gmail
+    API is disabled on the Google Cloud project (``accessNotConfigured``) or
+    the granted OAuth scopes are insufficient. The worker maps ``error_code``
+    onto ``last_error_code`` *without* flipping ``auth_status`` to
+    ``auth_expired`` (re-authenticating would not help). ``message`` is already
+    redaction-safe caller text; the worker still runs it through
+    :func:`redact_transport_error` before persisting/logging.
+    """
+
+    def __init__(self, error_code: str, message: str) -> None:
+        super().__init__(message)
+        self.error_code = error_code
 
 
 class _HistoryExpired(Exception):
@@ -464,14 +497,88 @@ def _extract_text_body(payload: dict[str, Any]) -> str:
     return ""
 
 
+#: Google error ``reason`` tokens that mean "the API/scope is not configured" —
+#: the token is valid, so this is NOT an auth-expiry. Distinguished from a
+#: genuine 401 so the worker surfaces an actionable, non-``auth_expired`` code.
+_GOOGLE_API_DISABLED_REASONS = frozenset({"accessnotconfigured"})
+_GOOGLE_SCOPE_REASONS = frozenset(
+    {"insufficientpermissions", "access_token_scope_insufficient", "insufficientscopes"}
+)
+
+
+def _google_error_detail(resp: httpx.Response) -> tuple[str, str]:
+    """Best-effort ``(reason, message)`` from a Google JSON error body.
+
+    Google wraps errors as ``{"error":{"code":403,"status":"...",
+    "message":"...","errors":[{"reason":"accessNotConfigured",...}]}}``. The
+    ``status`` field (e.g. ``PERMISSION_DENIED``,
+    ``ACCESS_TOKEN_SCOPE_INSUFFICIENT``) is also consulted so scope faults that
+    only surface there are still classified. Returns lower-cased reason and the
+    raw message; ``("", "")`` when the body is not the expected shape. The
+    message is caller-facing text only — it still goes through the worker's
+    redaction before it is persisted or logged.
+    """
+    try:
+        body = resp.json()
+    except (ValueError, TypeError):
+        return "", ""
+    err = body.get("error") if isinstance(body, dict) else None
+    if not isinstance(err, dict):
+        return "", ""
+    message = str(err.get("message") or "")
+    reason = ""
+    details = err.get("errors")
+    if isinstance(details, list):
+        for detail in details:
+            if isinstance(detail, dict) and detail.get("reason"):
+                reason = str(detail.get("reason"))
+                break
+    if not reason:
+        # Scope problems often surface only in the top-level ``status``.
+        reason = str(err.get("status") or "")
+    return reason.strip().lower(), message
+
+
+def _raise_gmail_auth(resp: httpx.Response, context: str) -> None:
+    """Classify a Gmail 401/403 and raise the right transport error.
+
+    - 401 → :class:`TransportAuthError` (the token is genuinely expired/invalid).
+    - 403 ``accessNotConfigured`` → :class:`TransportProviderError`
+      (``provider_api_disabled``): the Gmail API is disabled on the GCP project.
+    - 403 scope reason → :class:`TransportProviderError` (``insufficient_scope``).
+    - any other 403 → :class:`TransportAuthError` (permission denied / revoked).
+
+    Google's ``reason``/``message`` is preserved in the raised message so the
+    worker can surface it (after redaction) in ``last_error_message`` — never a
+    raw token (the body carries no token, and the worker redacts regardless).
+    """
+    status = resp.status_code
+    if status == 403:
+        reason, message = _google_error_detail(resp)
+        suffix = f" ({reason}: {message})" if (reason or message) else ""
+        if reason in _GOOGLE_API_DISABLED_REASONS:
+            raise TransportProviderError(
+                ERR_PROVIDER_API_DISABLED,
+                f"gmail {context} -> 403 accessNotConfigured{suffix}",
+            )
+        if reason in _GOOGLE_SCOPE_REASONS:
+            raise TransportProviderError(
+                ERR_INSUFFICIENT_SCOPE,
+                f"gmail {context} -> 403 insufficient scope{suffix}",
+            )
+        raise TransportAuthError(f"gmail {context} -> 403{suffix}")
+    raise TransportAuthError(f"gmail {context} -> {status}")
+
+
 class GmailClient:
     """Gmail history-resource incremental reader over :mod:`httpx`.
 
     Cursor shape: ``{"history_id": int, "account": str, "seen": [...]}``.
 
     - **Initial sync** (no saved id): capture the mailbox's current
-      ``historyId`` with ``history.list``, perform a bounded INBOX full sync,
-      then poll changes after that baseline.
+      ``historyId`` from ``users/me/profile`` (the documented baseline source;
+      ``history.list`` *requires* ``startHistoryId`` and 400s without it),
+      perform a bounded INBOX full sync, then poll changes after that baseline.
     - **Resume**: reuse the saved *valid* ``history_id`` (A3) — history ids
       are non-contiguous, so the cursor is never ``+1``.
     - **Expired id** (``history.list`` → 400 or 404): a bounded full resync
@@ -485,8 +592,10 @@ class GmailClient:
       (A10). A single deleted message (``messages.get`` → 404) is skipped, not
       a poll failure (A9).
 
-    401/403 → :class:`TransportAuthError`; other HTTP/transport errors →
-    :class:`TransportConnectError`.
+    401 (and generic 403) → :class:`TransportAuthError`; a 403 whose Google
+    ``reason`` is ``accessNotConfigured`` / a scope problem →
+    :class:`TransportProviderError` (a distinct, non-``auth_expired`` code);
+    other HTTP/transport errors → :class:`TransportConnectError`.
     """
 
     def __init__(
@@ -531,40 +640,62 @@ class GmailClient:
                         client, token, baseline, items, seen, account
                     )
             else:
-                # A1/A2: first sync — history.list without startHistoryId
-                # gives the current mailbox historyId. Full-sync INBOX before
-                # polling from that baseline so existing mail is not skipped.
-                baseline, seen = await self._full_resync(
-                    client, token, items, seen, account
-                )
-                if baseline:
-                    next_history, seen = await self._poll_history(
-                        client, token, baseline, items, seen, account
+                # A1/A2: first sync — the baseline historyId comes from
+                # ``users/me/profile`` (inside ``_full_resync`` →
+                # ``_history_head``), then the INBOX full sync, then polling
+                # from that fresh baseline so existing mail is not skipped.
+                #
+                # Defense-in-depth (this bug reached production as an uncaught
+                # ``_HistoryExpired`` → ``ingest_failed``): the first-sync path
+                # mirrors the resume path's ``_HistoryExpired`` handling so a
+                # baseline/resync 400 can never escape ``run()`` unhandled.
+                # The baseline here is already fresh (just read from profile),
+                # so a 400 on ``_poll_history`` is NOT a stale-cursor case —
+                # re-resyncing would be redundant and risks a loop. We degrade
+                # to an honest connect-class error instead; the items already
+                # fetched by the full sync are preserved via ``items`` and the
+                # cursor is not advanced past the fault.
+                try:
+                    baseline, seen = await self._full_resync(
+                        client, token, items, seen, account
                     )
+                    if baseline:
+                        next_history, seen = await self._poll_history(
+                            client, token, baseline, items, seen, account
+                        )
+                except _HistoryExpired as exc:
+                    raise TransportConnectError(
+                        f"gmail first-sync baseline rejected -> {exc}"
+                    ) from exc
 
         # The credential is a separate parameter: the returned cursor is
         # persisted verbatim and must stay secret-free (§4).
         return items, {"history_id": next_history, "account": account, "seen": seen}
 
     async def _history_head(self, client: httpx.AsyncClient, token: str) -> int:
-        """Return the mailbox's current history id via ``history.list``.
+        """Return the mailbox's current history id via ``users/me/profile``.
 
-        Gmail v1 has no ``history.start`` endpoint. The only safe pre-sync
-        baseline is the current mailbox ``historyId``; it is captured with a
-        minimal history list before the INBOX full sync so partial polling can
-        begin at a valid, non-expired position.
+        The Gmail v1 ``history.list`` endpoint *requires* ``startHistoryId``
+        and returns ``400 INVALID_ARGUMENT`` without it — so it cannot be used
+        to establish the first-ever baseline. The documented, correct source of
+        the current mailbox position is the ``getProfile`` response, whose
+        ``historyId`` field is exactly the baseline incremental polling must
+        start from. Capturing it here (before the INBOX full sync) lets partial
+        polling begin at a valid, non-expired position.
+
+        Error mapping follows the module convention for the profile call:
+        401 (and generic 403) → :class:`TransportAuthError`; 403
+        ``accessNotConfigured`` / scope → :class:`TransportProviderError`;
+        5xx → :class:`TransportConnectError`; ``raise_for_status`` otherwise.
         """
         resp = await client.get(
-            f"{self._base_url}/gmail/v1/users/me/history",
+            f"{self._base_url}/gmail/v1/users/me/profile",
             headers={"Authorization": f"Bearer {token}"},
-            params={"maxResults": 1},
         )
-        if resp.status_code in (400, 404):
-            raise _HistoryExpired(f"gmail history baseline -> {resp.status_code}")
         if resp.status_code in (401, 403):
-            raise TransportAuthError(f"gmail history -> {resp.status_code}")
+            _raise_gmail_auth(resp, "profile")
         if resp.status_code >= 500:
-            raise TransportConnectError(f"gmail history -> {resp.status_code}")
+            raise TransportConnectError(f"gmail profile -> {resp.status_code}")
         resp.raise_for_status()
         return int(resp.json().get("historyId") or 0)
 
@@ -589,7 +720,7 @@ class GmailClient:
             params={"q": "in:inbox", "maxResults": self._max_items},
         )
         if resp.status_code in (401, 403):
-            raise TransportAuthError(f"gmail messages -> {resp.status_code}")
+            _raise_gmail_auth(resp, "messages")
         if resp.status_code >= 500:
             raise TransportConnectError(f"gmail messages -> {resp.status_code}")
         resp.raise_for_status()
@@ -658,7 +789,7 @@ class GmailClient:
                 params=params,
             )
             if resp.status_code in (401, 403):
-                raise TransportAuthError(f"gmail history -> {resp.status_code}")
+                _raise_gmail_auth(resp, "history")
             # Real Gmail signals an expired ``startHistoryId`` with
             # ``400 INVALID_ARGUMENT`` as well as ``404``; both map to the
             # bounded full resync. The resync path is idempotent (the seen-
@@ -743,7 +874,7 @@ class GmailClient:
         if resp.status_code == 404:
             return None
         if resp.status_code in (401, 403):
-            raise TransportAuthError(f"gmail message -> {resp.status_code}")
+            _raise_gmail_auth(resp, "message")
         if resp.status_code >= 500:
             raise TransportConnectError(f"gmail message -> {resp.status_code}")
         resp.raise_for_status()

@@ -73,6 +73,12 @@ ERR_CONSENT_REQUIRED = "consent_required"
 ERR_PROBE_UNSUPPORTED = "probe_unsupported"
 ERR_TRIGGER_FAILED = "ingest_failed"
 ERR_OAUTH_AUTH_REJECTED = "oauth_auth_rejected"
+#: Provider-side misconfiguration (the credential is valid — re-auth will not
+#: help). ``provider_api_disabled``: the provider API is disabled on the cloud
+#: project (Gmail 403 ``accessNotConfigured``). ``insufficient_scope``: the
+#: granted OAuth scopes do not cover the mailbox read.
+ERR_PROVIDER_API_DISABLED = "provider_api_disabled"
+ERR_INSUFFICIENT_SCOPE = "insufficient_scope"
 
 #: Ingest cursor kinds (frozen by spec §6) — mail uses ``imap_seq`` /
 #: ``gmail_history``; the relay uses ``relay_seq``.
@@ -170,6 +176,15 @@ DIAGNOSTICS_FIXES: dict[str, str] = {
     ),
     ERR_CONNECTION_NOT_FOUND: (
         "This connection no longer exists. Re-create it from the Connection Center."
+    ),
+    ERR_PROVIDER_API_DISABLED: (
+        "The provider API is disabled for this Google Cloud project. Enable the "
+        "Gmail API for the project in the Google Cloud console, then run a sync "
+        "again. Re-authenticating will not fix this."
+    ),
+    ERR_INSUFFICIENT_SCOPE: (
+        "The granted sign-in scopes do not allow reading this mailbox. Re-run "
+        "the provider sign-in and grant mailbox read access, then verify again."
     ),
 }
 

@@ -25,7 +25,11 @@ Per poll, in order:
    updated seen list folded back into it — so a restart resumes from the
    database position.
 6. Map :class:`~backend.connectors.mail.mail_transport.TransportAuthError`
-   → ``auth_status="auth_expired"`` and
+   → ``auth_status="auth_expired"``,
+   :class:`~backend.connectors.mail.mail_transport.TransportProviderError`
+   → ``operational_status="error"`` + its carried ``last_error_code``
+   (``provider_api_disabled`` / ``insufficient_scope``) *without* touching
+   auth, and
    :class:`~backend.connectors.mail.mail_transport.TransportConnectError`
    → ``operational_status="error"`` + ``last_error_code``, then reconnect
    with bounded exponential backoff. Stored/logged failure text is always
@@ -63,6 +67,7 @@ from backend.connectors.mail.mail_transport import (
     MailTransport,
     TransportAuthError,
     TransportConnectError,
+    TransportProviderError,
 )
 from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
 from backend.ingest.seen import (
@@ -479,6 +484,27 @@ class MailIngestWorker:
                 error=detail,
             )
             return dict(base, status="error")
+        except TransportProviderError as exc:
+            # The credential is VALID — the provider is misconfigured (Gmail
+            # API disabled on the GCP project, or insufficient OAuth scope).
+            # Do NOT flip auth to ``auth_expired`` (re-authenticating would not
+            # help and misled diagnosis badly in production). Record the stable
+            # code the transport chose and the REDACTED provider reason so
+            # diagnostics can show an actionable recovery step.
+            detail = redact_transport_error(str(exc))
+            await self._connections.update_connection(
+                self.connection_id,
+                operational_status="error",
+                last_error_code=exc.error_code,
+                last_error_message=detail,
+            )
+            log.warning(
+                "mail_ingest.provider_error",
+                **base,
+                error_code=exc.error_code,
+                error=detail,
+            )
+            return dict(base, status="error", error_code=exc.error_code)
         except Exception as exc:  # noqa: BLE001 - one bad poll must not kill the loop
             detail = redact_transport_error(f"{type(exc).__name__}: {exc}")
             await self._connections.update_connection(

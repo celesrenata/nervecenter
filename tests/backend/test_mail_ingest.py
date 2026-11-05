@@ -38,12 +38,15 @@ from backend.communications.models import (
     CommunicationDirection,
 )
 from backend.connectors.mail.mail_transport import (
+    ERR_INSUFFICIENT_SCOPE,
+    ERR_PROVIDER_API_DISABLED,
     GmailClient,
     ImapPollClient,
     MailItem,
     StubMailTransport,
     TransportAuthError,
     TransportConnectError,
+    TransportProviderError,
 )
 from backend.ingest import (
     MAX_SEEN_KEYS,
@@ -406,6 +409,48 @@ class TestWorkerPoll:
         # auth status is NOT touched by a connect failure
         assert conn.auth_status == "authenticated"
 
+    async def test_provider_api_disabled_maps_to_distinct_code_not_auth_expired(
+        self, harness
+    ) -> None:
+        # Gmail 403 accessNotConfigured: the token is VALID but the Gmail API
+        # is disabled on the GCP project. The worker must NOT flip auth to
+        # auth_expired (that misled diagnosis badly in production) and must
+        # surface the redacted Google reason in last_error_message.
+        transport = StubMailTransport(
+            raise_exc=TransportProviderError(
+                ERR_PROVIDER_API_DISABLED,
+                "gmail profile -> 403 accessNotConfigured (accessNotConfigured: Gmail API disabled)",
+            )
+        )
+        worker = _worker(harness.registry, harness.store, harness.conn, transport=transport, seam=FakeSeam())
+        await worker.poll_once()
+        summary = worker.status()["last"]
+        assert summary["status"] == "error"
+        assert summary["error_code"] == ERR_PROVIDER_API_DISABLED
+        conn = await harness.registry.connections.get_connection(harness.conn.id)
+        assert conn.operational_status == "error"
+        assert conn.last_error_code == ERR_PROVIDER_API_DISABLED
+        # NOT auth_expired — re-authenticating would not help.
+        assert conn.last_error_code != "auth_expired"
+        assert conn.auth_status == "authenticated"
+        # Google's reason is preserved (redacted) for actionable diagnostics.
+        assert "accessNotConfigured" in conn.last_error_message
+
+    async def test_insufficient_scope_maps_to_distinct_code_not_auth_expired(
+        self, harness
+    ) -> None:
+        transport = StubMailTransport(
+            raise_exc=TransportProviderError(
+                ERR_INSUFFICIENT_SCOPE,
+                "gmail profile -> 403 insufficient scope (insufficientPermissions: ...)",
+            )
+        )
+        worker = _worker(harness.registry, harness.store, harness.conn, transport=transport, seam=FakeSeam())
+        await worker.poll_once()
+        conn = await harness.registry.connections.get_connection(harness.conn.id)
+        assert conn.last_error_code == ERR_INSUFFICIENT_SCOPE
+        assert conn.auth_status == "authenticated"
+
     async def test_missing_secret_is_a_connect_failure(self, harness) -> None:
         # remove the secret so _resolve_credentials raises
         await harness.registry.connections.delete_secret(
@@ -548,10 +593,14 @@ class _FakeResp:
 class _FakeGmailClient:
     """httpx.AsyncClient-shaped fake for the corrected Gmail wire contract.
 
-    ``history.list`` (no ``startHistoryId``) returns the mailbox baseline
-    ``historyId``; the same endpoint with a ``startHistoryId`` polls records
-    strictly after it; the INBOX message list serves message ids; per-message
-    fetches serve a base64url plain-text payload."""
+    ``users/me/profile`` returns the mailbox baseline ``historyId`` (the
+    documented baseline source — ``history.list`` requires ``startHistoryId``
+    and 400s without it); ``history.list`` with a ``startHistoryId`` polls
+    records strictly after it; the INBOX message list serves message ids;
+    per-message fetches serve a base64url plain-text payload.
+
+    ``history_status`` is applied to the *baseline* call (``users/me/profile``)
+    and to the incremental poll, so a test can force a 401/403 on the baseline."""
 
     def __init__(
         self,
@@ -574,13 +623,23 @@ class _FakeGmailClient:
     async def get(self, url, *, headers=None, params=None):
         auth = (headers or {}).get("Authorization", "")
         self.tok_seen.append(auth)
+        if url.endswith("/users/me/profile"):
+            # Baseline probe (``_history_head``).
+            if self._history_status != 200:
+                return _FakeResp(
+                    self._history_status,
+                    {"error": {"code": self._history_status, "message": "denied"}},
+                )
+            return _FakeResp(200, {"historyId": self._head_id})
         if url.endswith("/users/me/history"):
-            # history.list: a bare call (no startHistoryId) is the baseline
-            # probe; polling (startHistoryId set) serves the configured records.
+            # Incremental poll (startHistoryId set); a bare call (no start) is
+            # never used for the baseline any more — the real API 400s it.
             if (params or {}).get("startHistoryId"):
                 return _FakeResp(self._history_status, self._history)
             return _FakeResp(
-                self._history_status, {"historyId": self._head_id, "history": []}
+                400,
+                {"error": {"code": 400, "status": "INVALID_ARGUMENT",
+                           "message": "Missing/invalid parameter: startHistoryId"}},
             )
         if url.endswith("/users/me/messages"):
             return _FakeResp(200, {"messages": [{"id": "m1"}]})
