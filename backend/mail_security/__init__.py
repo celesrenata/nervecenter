@@ -30,6 +30,11 @@ from backend.mail_security.identifiers import (
     normalize_analysis_version,
     outbox_job_key,
 )
+from backend.mail_security.inspections import (
+    INSPECTIONS_VERSION,
+    inspect_message,
+    inspect_offline,
+)
 from backend.mail_security.models import (
     SCHEMA_VERSION,
     AcquisitionMode,
@@ -93,6 +98,7 @@ __all__ = [
     "AUTH_EVIDENCE_VERSION",
     "DEFAULT_LIMITS",
     "HASH_ALGORITHM",
+    "INSPECTIONS_VERSION",
     "KEY_SCHEME_VERSION",
     "NERVE_MAIL_SECURITY_ENABLED",
     "NO_AUTH_EVIDENCE_CAPTURED",
@@ -150,6 +156,8 @@ __all__ = [
     "build_auth_evidence",
     "classify_authentication",
     "evidence_fidelity_for",
+    "inspect_message",
+    "inspect_offline",
     "inspect_sender_provenance",
     "logical_source_key",
     "normalize_analysis_version",
