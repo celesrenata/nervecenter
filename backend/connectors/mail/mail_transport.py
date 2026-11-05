@@ -150,8 +150,12 @@ class MailItem:
 
     ``headers`` carries the minimal RFC-822 set the ingest path needs
     (``From``, ``To``, ``Subject``, ``Date``, ``Message-ID``,
-    ``In-Reply-To``); ``content_bytes`` is the raw body (transient — the
-    worker stores it in the object store and keeps only a content ref).
+    ``In-Reply-To``) plus the bulk/automated classification headers
+    (``List-Unsubscribe``, ``List-Id``, ``Precedence``, ``Auto-Submitted``)
+    the ingest worker derives flags from — all envelope/transport metadata,
+    §7-safe, never body content; ``content_bytes`` is the raw body
+    (transient — the worker stores it in the object store and keeps only a
+    content ref).
     ``timestamp`` is parsed to UTC from the ``Date`` header (server fallback
     when absent).
     """
@@ -393,7 +397,19 @@ class ImapPollClient:
                     headers={
                         k: str(v)
                         for k, v in message.items()
-                        if k in ("From", "To", "Subject", "Date", "Message-ID", "In-Reply-To")
+                        if k
+                        in (
+                            "From",
+                            "To",
+                            "Subject",
+                            "Date",
+                            "Message-ID",
+                            "In-Reply-To",
+                            "List-Unsubscribe",
+                            "List-Id",
+                            "Precedence",
+                            "Auto-Submitted",
+                        )
                     },
                     source="imap",
                 )
@@ -883,7 +899,19 @@ class GmailClient:
         headers = {
             str(h.get("name")): str(h.get("value", ""))
             for h in payload.get("headers", [])
-            if h.get("name") in ("From", "To", "Subject", "Date", "Message-ID", "In-Reply-To")
+            if h.get("name")
+            in (
+                "From",
+                "To",
+                "Subject",
+                "Date",
+                "Message-ID",
+                "In-Reply-To",
+                "List-Unsubscribe",
+                "List-Id",
+                "Precedence",
+                "Auto-Submitted",
+            )
         }
         return headers, _extract_text_body(payload)
 

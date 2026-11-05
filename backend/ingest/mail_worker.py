@@ -69,6 +69,7 @@ from backend.connectors.mail.mail_transport import (
     TransportConnectError,
     TransportProviderError,
 )
+from backend.ingest.mail_flags import classify_mail_flags
 from backend.connectors.mail.oauth_refresh import MailOAuthRefresher
 from backend.ingest.seen import (
     cursor_with_seen,
@@ -218,6 +219,7 @@ async def persist_communication_durably(
     subject: str | None,
     received_at: Any,
     communication_id: str,
+    flags: dict | None = None,
 ) -> None:
     """Durably persist one person (+identity) and one communication (P1-107).
 
@@ -269,6 +271,7 @@ async def persist_communication_durably(
                 content_ref=content_ref,
                 subject=subject,
                 received_at=received_at,
+                flags=flags or {},
             )
         except IntegrityError:
             # A concurrent writer created the same pinned communication first;
@@ -862,6 +865,10 @@ class MailIngestWorker:
             # worker seeds the identity instead of relaxing resolution.
             sender_raw = str(item.headers.get("From") or account)
             address, display_name = _parse_sender(sender_raw)
+            # Derive the compact bulk/automated classification flags from the
+            # envelope headers + sender pattern (FEAT-001). §7: only booleans
+            # are carried — never a raw header value.
+            flags = classify_mail_flags(item.headers, sender_raw)
             person_id = self._seed_person(address, display_name)
             if person_id is not None:
                 payload_person_id = person_id
@@ -880,7 +887,7 @@ class MailIngestWorker:
                 "content_ref": content_ref,
                 "sensitivity": "PERSONAL",
                 "source": f"mail-{self.cursor_kind}",
-                "classification": {"subject": subject},
+                "classification": {"subject": subject, "flags": flags},
             }
             result = self._seam.ingest_communication(payload)
             # P1-107 step 2 — persist the durable person + communication. The
@@ -901,6 +908,7 @@ class MailIngestWorker:
                         "content_ref": content_ref,
                         "subject": subject,
                         "received_at": item.timestamp,
+                        "flags": flags,
                         # ONE id across both planes (P1-107 finding #1): the
                         # same ``comm-mail-<sha>`` id the in-memory record
                         # carries is pinned as the durable ``communications.id``

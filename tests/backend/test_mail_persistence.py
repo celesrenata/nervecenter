@@ -71,18 +71,26 @@ _SECRET = "super-secret-password"
 _TS = datetime(2026, 10, 27, 9, 0, 0, tzinfo=UTC)
 
 
-def _make_item(message_id: str, *, sender: str = "Boss Person <boss@corp.com>") -> MailItem:
+def _make_item(
+    message_id: str,
+    *,
+    sender: str = "Boss Person <boss@corp.com>",
+    extra_headers: dict[str, str] | None = None,
+) -> MailItem:
+    headers = {
+        "From": sender,
+        "Message-ID": message_id,
+        "Date": "Mon, 27 Oct 2026 09:00:00 +0000",
+    }
+    if extra_headers:
+        headers.update(extra_headers)
     return MailItem(
         message_id=message_id,
         account=_ACCOUNT,
         subject="Deploy by Friday",
         content_bytes=b"Please deploy by Friday\n",
         timestamp=_TS,
-        headers={
-            "From": sender,
-            "Message-ID": message_id,
-            "Date": "Mon, 27 Oct 2026 09:00:00 +0000",
-        },
+        headers=headers,
     )
 
 
@@ -184,6 +192,74 @@ class TestDurablePersist:
         comms = await harness.registry.communications.list_communications()
         assert len(comms) == 1
         assert comms[0].person_id is not None
+
+
+# --------------------------------------------------------------------------
+# (FEAT-001) bulk/automated classification flags persist on communications.flags
+# --------------------------------------------------------------------------
+
+class TestClassificationFlags:
+    async def test_bulk_message_persists_flags(self, harness) -> None:
+        """A bulk/automated message's derived flags land on the durable
+        ``communications.flags`` row (not ``{}``) and carry only booleans."""
+        item = _make_item(
+            "<bulk1@corp>",
+            sender="Newsletter <noreply@newsletter.example>",
+            extra_headers={
+                "List-Unsubscribe": "<mailto:unsub@newsletter.example>",
+                "Precedence": "bulk",
+                "Auto-Submitted": "auto-generated",
+            },
+        )
+        transport = StubMailTransport(items=[item], next_cursor={"uid": 11})
+        worker = _worker(harness, transport=transport)
+        await worker.poll_once()
+        assert worker.status()["last"]["status"] == "ok"
+
+        comms = await harness.registry.communications.list_communications()
+        assert len(comms) == 1
+        flags = comms[0].flags
+        assert flags == {"bulk": True, "automated": True, "no_reply": True}
+        # §7: only booleans, never a raw header value.
+        assert all(isinstance(v, bool) for v in flags.values())
+
+    async def test_personal_message_has_empty_or_false_flags(self, harness) -> None:
+        """A plain personal message carries no bulk/automated/no-reply
+        signals — every flag is False."""
+        transport = StubMailTransport(items=[_make_item("<p1@corp>")], next_cursor={"uid": 12})
+        await _worker(harness, transport=transport).poll_once()
+        comms = await harness.registry.communications.list_communications()
+        assert comms[0].flags == {"bulk": False, "automated": False, "no_reply": False}
+
+    async def test_registry_preserves_nested_classification_flags(self) -> None:
+        """Regression: the in-memory registry upsert copies the whole
+        ``classification`` dict, so the nested ``flags`` key survives and the
+        detection/scoring layer can read it in-memory (FEAT-002's source)."""
+        reset_communications_service()
+        from backend.communications import get_communications_service
+
+        svc = get_communications_service()
+        result = svc.ingest_communication(
+            {
+                "communication_id": "comm-flags-1",
+                "channel": "email",
+                "direction": "incoming",
+                "sender": "noreply@newsletter.example",
+                "timestamp": _TS,
+                "content_ref": "content://mail/flags/1",
+                "classification": {
+                    "subject": "Digest",
+                    "flags": {"bulk": True, "automated": True, "no_reply": True},
+                },
+            }
+        )
+        comm = result["communication"]
+        assert comm.classification["flags"] == {
+            "bulk": True,
+            "automated": True,
+            "no_reply": True,
+        }
+        reset_communications_service()
 
 
 # --------------------------------------------------------------------------

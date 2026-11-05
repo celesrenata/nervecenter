@@ -126,6 +126,7 @@ async def _persist_communication_durably(communication: Any) -> bool:
             subject=str((communication.classification or {}).get("subject") or "") or None,
             received_at=communication.timestamp,
             communication_id=communication.communication_id,
+            flags=(communication.classification or {}).get("flags") or {},
         )
         return True
     except Exception as exc:  # noqa: BLE001 - best-effort durable mirror

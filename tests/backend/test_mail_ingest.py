@@ -56,6 +56,7 @@ from backend.ingest import (
     mark_seen,
     seen_keys,
 )
+from backend.ingest.mail_flags import classify_mail_flags
 from backend.ingest.mail_worker import _secret_kind_for
 from backend.ingest.supervisor import SUPERVISOR_STATE_KEY
 from backend.persistence.connection import make_session_factory
@@ -221,6 +222,58 @@ def _worker(
         seam=seam,
         poll_interval_s=30.0,
     )
+
+
+# --------------------------------------------------------------------------
+# 0. pure bulk/automated classification flags (FEAT-001)
+# --------------------------------------------------------------------------
+
+class TestClassifyMailFlags:
+    def test_returns_only_three_booleans(self) -> None:
+        flags = classify_mail_flags({}, "boss@corp.com")
+        assert set(flags) == {"bulk", "automated", "no_reply"}
+        assert all(isinstance(v, bool) for v in flags.values())
+
+    def test_personal_sender_is_all_false(self) -> None:
+        assert classify_mail_flags(
+            {"From": "boss@corp.com"}, "Boss <boss@corp.com>"
+        ) == {"bulk": False, "automated": False, "no_reply": False}
+
+    def test_list_unsubscribe_marks_bulk(self) -> None:
+        flags = classify_mail_flags(
+            {"List-Unsubscribe": "<mailto:u@x>"}, "news@x.com"
+        )
+        assert flags["bulk"] is True
+        assert flags["automated"] is True  # bulk implies automated
+
+    def test_list_id_marks_bulk(self) -> None:
+        assert classify_mail_flags({"List-Id": "<l.x>"}, "a@x.com")["bulk"] is True
+
+    def test_precedence_bulk_marks_bulk(self) -> None:
+        assert classify_mail_flags({"Precedence": "bulk"}, "a@x.com")["bulk"] is True
+        assert classify_mail_flags({"Precedence": "list"}, "a@x.com")["bulk"] is True
+        assert classify_mail_flags({"Precedence": "normal"}, "a@x.com")["bulk"] is False
+
+    def test_auto_submitted_marks_automated_not_bulk(self) -> None:
+        flags = classify_mail_flags({"Auto-Submitted": "auto-replied"}, "a@x.com")
+        assert flags["automated"] is True
+        assert flags["bulk"] is False
+        # RFC 3834 "no" is a human send.
+        assert classify_mail_flags({"Auto-Submitted": "no"}, "a@x.com")["automated"] is False
+
+    def test_no_reply_local_part(self) -> None:
+        assert classify_mail_flags({}, "no-reply@x.com")["no_reply"] is True
+        assert classify_mail_flags({}, "noreply@x.com")["no_reply"] is True
+        assert classify_mail_flags({}, "donotreply@x.com")["no_reply"] is True
+        assert classify_mail_flags({}, "person@x.com")["no_reply"] is False
+
+    def test_header_lookup_is_case_insensitive(self) -> None:
+        assert classify_mail_flags({"precedence": "bulk"}, "a@x.com")["bulk"] is True
+
+    def test_never_returns_raw_header_values(self) -> None:
+        secret_ish = "<mailto:unsub@x?token=super-secret>"
+        flags = classify_mail_flags({"List-Unsubscribe": secret_ish}, "a@x.com")
+        assert secret_ish not in str(flags)
 
 
 # --------------------------------------------------------------------------

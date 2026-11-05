@@ -1103,6 +1103,40 @@ class TestImapFolderSelection:
         }
 
 
+class TestImapClassificationHeaders:
+    async def test_bulk_classification_headers_are_captured(
+        self, monkeypatch: Any
+    ) -> None:
+        """FEAT-001: a message carrying the bulk/automated classification
+        headers (List-Unsubscribe / List-Id / Precedence / Auto-Submitted)
+        has those headers present in the resulting MailItem.headers so the
+        ingest worker can derive flags from them."""
+        raw = (
+            b"From: news@newsletter.example\r\n"
+            b"To: user@example.com\r\n"
+            b"Subject: Weekly digest\r\n"
+            b"Date: Mon, 27 Oct 2026 09:00:00 +0000\r\n"
+            b"Message-ID: <bulk-101@news>\r\n"
+            b"List-Unsubscribe: <mailto:unsub@newsletter.example>\r\n"
+            b"List-Id: Weekly <weekly.newsletter.example>\r\n"
+            b"Precedence: bulk\r\n"
+            b"Auto-Submitted: auto-generated\r\n"
+            b"\r\n"
+            b"body\n"
+        )
+        fake = FakeImap(folders={"INBOX": {"uids": {101: raw}}})
+        _install_imap(monkeypatch, fake)
+        items, _cursor = await ImapPollClient().run(
+            _connector(), {}, credentials={"username": _ACCOUNT, "password": _SECRET}
+        )
+        assert len(items) == 1
+        headers = items[0].headers
+        assert headers["List-Unsubscribe"] == "<mailto:unsub@newsletter.example>"
+        assert headers["List-Id"] == "Weekly <weekly.newsletter.example>"
+        assert headers["Precedence"] == "bulk"
+        assert headers["Auto-Submitted"] == "auto-generated"
+
+
 class TestImapUidvalidity:
     async def test_uidvalidity_change_resets_that_folder_fresh(
         self, monkeypatch: Any
