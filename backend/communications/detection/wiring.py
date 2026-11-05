@@ -43,12 +43,18 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol, Sequence
 
 from pydantic import BaseModel, Field
 
 from backend.attention.service import AttentionService, get_attention_service
+from backend.communications.detection.relevance import (
+    FAR_FUTURE_DAYS,
+    classify_sender,
+    relevance_importance,
+    relevance_reason,
+)
 from backend.communications.detection.service import (
     DetectionService,
     get_detection_service,
@@ -623,36 +629,68 @@ class CommunicationPipeline:
         return f"at-{digest}"
 
     @staticmethod
+    def _communication_flags(communication: Communication) -> dict[str, Any]:
+        """Read the compact FEAT-001 classification flags off the in-memory
+        communication (``classification['flags']``), defaulting to ``{}``.
+
+        FEAT-002 must be correct even when FEAT-001 never ran, so an absent
+        key is an empty-flags signal, not an error.
+        """
+        classification = getattr(communication, "classification", None) or {}
+        return dict(classification.get("flags") or {})
+
+    @classmethod
     def _attention_columns(
-        finding: Any, communication: Communication, *, now: datetime
+        cls, finding: Any, communication: Communication, *, now: datetime
     ) -> dict[str, Any]:
         """Map a finding onto durable ``attention_items`` columns.
 
+        FEAT-002 (relevance): the flat ``importance=8`` is replaced with a real
+        sender-class / finding-type / confidence / VIP score from
+        :mod:`backend.communications.detection.relevance`, a no-reply/automated
+        ``request`` is a non-actionable informational row (never a
+        'Reply to the request'), and a far-future / machine / bulk deadline is
+        down-ranked to importance 1 / urgency low.
+
         Carries metadata/suggested-action/entity refs only — never the raw
-        body text or tokens (§7). The title is *fully templated* from the
-        finding's kind, sender, and a due timestamp (never the detector's
-        quoted body fragments ``finding.matched`` / ``finding.due_info.expr``,
-        which stay on the live in-memory finding only — the same P0-I policy
-        :meth:`_persist_one_commitment` applies to the durable commitment
-        text). The in-memory :meth:`DetectionService._attention_payload` may
-        quote the fragment in its ephemeral ``reason``; the durable plane must
-        not, so the field choices are mirrored in *shape* (what each kind
-        means) but the durable title carries no body substring.
+        body text or tokens (§7). Titles and the body stay *fully templated*
+        from the finding kind, the sender, and the relevance reason (never the
+        detector's quoted body fragments ``finding.matched`` /
+        ``finding.due_info.expr``, which stay on the live in-memory finding
+        only — the S4 §7 policy).
         """
         kind = finding.kind
         sender = communication.sender or "unknown"
         due_iso = finding.due.isoformat() if finding.due is not None else None
+
+        flags = cls._communication_flags(communication)
+        subject = (getattr(communication, "classification", None) or {}).get("subject")
+        # VIP is a best-effort signal; the in-memory Communication does not
+        # carry the resolved Person, so default False (a VIP person still
+        # scores as a plain person, never lower — only the ceiling differs).
+        is_vip = bool(flags.get("is_vip", False))
+        classification = classify_sender(
+            sender, flags=flags, subject=subject, is_vip=is_vip
+        )
+        confidence = float(getattr(finding, "confidence", 0.0) or 0.0)
+        importance = relevance_importance(
+            kind, confidence, classification, is_vip=is_vip
+        )
+
         if kind == "commitment":
             title = "Follow through on your commitment"
-            importance = 7
-            recommended = "Complete the commitment"
+            recommended: str | None = "Complete the commitment"
         elif kind == "request":
-            title = f"Respond to {sender}"
-            importance = 8
-            recommended = "Reply to the request"
+            if classification.sender_class == "machine":
+                # A no-reply/automated 'request' is informational — never a
+                # 'Reply to the request' action (there is no one to reply to).
+                title = f"Saw a message from {sender}"
+                recommended = None
+            else:
+                title = f"Respond to {sender}"
+                recommended = "Reply to the request"
         else:  # deadline
             title = f"Deadline due {due_iso}" if due_iso else "Upcoming deadline"
-            importance = 8
             recommended = "Meet the deadline"
 
         # Static urgency band from the finding's due proximity at detection
@@ -669,13 +707,34 @@ class CommunicationPipeline:
                 urgency_float = 0.65
             else:
                 urgency_float = 0.55
+        urgency = _urgency_band(urgency_float)
 
-        body = f"Detected {kind} from {communication.channel.value} ({finding.model_used})."
+        # Deadline sanity rule: a deadline is only a genuine high-importance
+        # near-term obligation when it comes from a person at reasonable
+        # confidence and is due within the next FAR_FUTURE_DAYS. Otherwise the
+        # 'Deadline due 2027-…' class of row (machine/bulk sender, mis-parsed
+        # far-future date) is forced down to importance 1 / urgency low so it
+        # never sits on Today as a critical item.
+        if finding.due is not None:
+            due = finding.due
+            if due.tzinfo is None:
+                due = due.replace(tzinfo=UTC)
+            far_future = now + timedelta(days=FAR_FUTURE_DAYS)
+            genuine = (
+                classification.sender_class == "person"
+                and confidence >= 0.85
+                and now < due <= far_future
+            )
+            if not genuine:
+                importance = 1
+                urgency = "low"
+
+        body = relevance_reason(kind, classification, is_vip=is_vip)
 
         return {
             "title": title,
             "importance": importance,
-            "urgency": _urgency_band(urgency_float),
+            "urgency": urgency,
             "body": body,
             "deadline_at": finding.due,
             "source_refs": [

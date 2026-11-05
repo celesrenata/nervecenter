@@ -305,6 +305,15 @@ def test_deadline_from_incoming_communication(detection):
         ("Alice", "unsubscribe", False),  # display name, no keyword
         ("corp@example.com", "unsubscribe", False),  # bare link, no keyword
         ("offers.corp.example", "please review the contract", False),
+        # FEAT-002 — the widened gate (classify_sender(...).bulk) now suppresses
+        # the ESP / marketing-subdomain senders the two-level host-label rule
+        # above misses.
+        ("news@em.walmart.com", None, True),
+        ("deals@news.emailmarket.shein.com", None, True),
+        ("sales@email.torrid.com", None, True),
+        ("team@marketing.golo.com", None, True),
+        ("campaign@customer.ccsend.com", None, True),
+        ("newsletter@acme.com", None, True),
     ],
 )
 def test_noise_gate_precision(detection, sender, subject, suppress):

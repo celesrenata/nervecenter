@@ -173,7 +173,9 @@ class TestTodayWired:
                   deadline_at=NOW + timedelta(hours=2)),
             _item(id=str(uuid4()), title="High, due in 1h", importance=9,
                   deadline_at=NOW + timedelta(hours=1)),
-            _item(id=str(uuid4()), title="Low, overdue", importance=3,
+            # importance=4 sits exactly at the FEAT-002 Today floor
+            # (NEEDS_YOU_MIN_IMPORTANCE) so it still surfaces, and ranks last.
+            _item(id=str(uuid4()), title="Low, overdue", importance=4,
                   deadline_at=NOW - timedelta(hours=1)),
         )
         with TestClient(app) as client:

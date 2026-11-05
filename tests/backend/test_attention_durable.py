@@ -133,6 +133,48 @@ def _ingest(pipeline: CommunicationPipeline, comm: Communication) -> Any:
     return pipeline.ingest(comm, now=NOW)
 
 
+def _make_comm(
+    comm_id: str,
+    *,
+    sender: str,
+    flags: dict | None = None,
+) -> Communication:
+    """A fresh INCOMING communication with an explicit sender + FEAT-001
+    flags (carried on ``classification['flags']``, the in-memory read point)."""
+    classification: dict[str, Any] = {}
+    if flags is not None:
+        classification["flags"] = flags
+    return Communication(
+        communication_id=comm_id,
+        channel=CommunicationChannel.EMAIL,
+        direction=CommunicationDirection.INCOMING,
+        sender=sender,
+        person_id=PERSON_ID,
+        timestamp=NOW,
+        content_ref=f"cr:{comm_id}",
+        classification=classification,
+    )
+
+
+def _ingest_text(pipeline: CommunicationPipeline, comm: Communication, text: str) -> Any:
+    pipeline.detection.register_content(comm.content_ref, text)
+    return pipeline.ingest(comm, now=NOW)
+
+
+async def _needs_you_ids(registry: RepositoryRegistry) -> set[tuple[str, str]]:
+    """The (kind, id) set GET /api/today surfaces in needs_you over the
+    durable registry — the relevance floor applied."""
+    app = FastAPI()
+    from backend.api.endpoints import today
+
+    app.include_router(today.router)
+    app.state.repository_registry = registry
+    app.state._test_now = NOW
+    with TestClient(app) as client:
+        body = client.get("/api/today").json()
+    return {(it["kind"], it["id"]) for it in body["needs_you"]}
+
+
 async def test_detected_finding_writes_durable_attention_row(tmp_path: Path):
     """(i) A detected request finding writes a row to the durable
     ``attention_items`` table — not just the in-memory queue."""
@@ -281,3 +323,93 @@ async def test_no_store_is_a_noop(tmp_path: Path):
     assert result.finding_ids
     assert attention.list()  # in-memory half still fed
     assert await pipeline.flush_durable() is None  # nothing durable to flush
+
+
+# ---------------------------------------------------------------------------
+# FEAT-002 — relevance classification + scoring at the mint layer.
+# ---------------------------------------------------------------------------
+
+
+async def test_no_reply_request_is_low_importance_non_actionable(tmp_path: Path):
+    """A request from a no-reply/automated sender mints a low-importance
+    (<=2) NON-actionable row (no 'Reply to the request') that is absent from
+    GET /api/today needs_you — but still persisted (auditable)."""
+    engine = await _make_engine(tmp_path / "attn_noreply.db")
+    registry = RepositoryRegistry(make_session_factory(engine))
+    pipeline, _ = _make_pipeline(registry)
+
+    comm = _make_comm(
+        "message:noreply",
+        sender="no-reply@login.gov",
+        flags={"no_reply": True, "automated": True},
+    )
+    _ingest_text(pipeline, comm, "Can you send me the report.")
+    assert await pipeline.flush_durable() is None
+
+    rows = await registry.attention.list_attention_items()
+    request_rows = [r for r in rows if "finding:request-message:noreply" in (r.source_refs or [])]
+    assert len(request_rows) == 1, rows
+    row = request_rows[0]
+    # Low-importance, non-actionable, informational.
+    assert row.importance <= 2
+    assert row.recommended_action is None
+    assert row.title == "Saw a message from no-reply@login.gov"
+    # Persisted (auditable) but kept off the Today surface.
+    assert row.state == "active"
+    assert ("attention", row.id) not in await _needs_you_ids(registry)
+
+    await engine.dispose()
+
+
+async def test_vip_person_request_is_high_and_on_today(tmp_path: Path):
+    """A request from a VIP person scores high (9) and appears in needs_you."""
+    engine = await _make_engine(tmp_path / "attn_vip.db")
+    registry = RepositoryRegistry(make_session_factory(engine))
+    pipeline, _ = _make_pipeline(registry)
+
+    comm = _make_comm(
+        "message:vip",
+        sender="ceo@example.com",
+        flags={"is_vip": True},
+    )
+    _ingest_text(pipeline, comm, "Can you send me the report.")
+    assert await pipeline.flush_durable() is None
+
+    rows = await registry.attention.list_attention_items()
+    request_rows = [r for r in rows if "finding:request-message:vip" in (r.source_refs or [])]
+    assert len(request_rows) == 1, rows
+    row = request_rows[0]
+    # High: base person 6 + VIP 2 + actionable 1 (+1 when the detector is
+    # high-confidence). Well above the Today floor.
+    assert row.importance >= 9
+    assert row.recommended_action == "Reply to the request"
+    assert row.title == "Respond to ceo@example.com"
+    assert ("attention", row.id) in await _needs_you_ids(registry)
+
+    await engine.dispose()
+
+
+async def test_far_future_deadline_is_importance_one_and_off_today(tmp_path: Path):
+    """A far-future (>400 days) deadline is importance 1 / urgency low and
+    absent from needs_you — the 'Deadline due 2028-…' critical-row class is
+    gone."""
+    engine = await _make_engine(tmp_path / "attn_farfuture.db")
+    registry = RepositoryRegistry(make_session_factory(engine))
+    pipeline, _ = _make_pipeline(registry)
+
+    # NOW is 2026-10-20; 2028-11-02 is well over 400 days out.
+    comm = _make_comm("message:farfuture", sender="dana@example.com")
+    _ingest_text(pipeline, comm, "Please file the report due 2028-11-02.")
+    assert await pipeline.flush_durable() is None
+
+    rows = await registry.attention.list_attention_items()
+    deadline_rows = [
+        r for r in rows if "finding:deadline-message:farfuture" in (r.source_refs or [])
+    ]
+    assert len(deadline_rows) == 1, rows
+    row = deadline_rows[0]
+    assert row.importance == 1
+    assert row.urgency == "low"
+    assert ("attention", row.id) not in await _needs_you_ids(registry)
+
+    await engine.dispose()

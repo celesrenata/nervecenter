@@ -61,6 +61,7 @@ from pydantic import BaseModel
 from sqlalchemy import inspect as sa_inspect
 from sqlalchemy import select, text
 
+from backend.communications.detection.relevance import NEEDS_YOU_MIN_IMPORTANCE
 from backend.persistence.models.personal import (
     AttentionItemRow,
     CommitmentRow,
@@ -253,7 +254,13 @@ class _AttentionProvider:
         if ctx.registry is None:
             return []
         rows = await ctx.registry.attention.list_attention_items(state="active")
-        return [_attention_item_dict(r) for r in rows]
+        # FEAT-002 relevance floor: low (machine/bulk/far-future) rows stay in
+        # the durable table (auditable) but are kept off the Today surface.
+        return [
+            _attention_item_dict(r)
+            for r in rows
+            if (r.importance or 0) >= NEEDS_YOU_MIN_IMPORTANCE
+        ]
 
     async def coming_up(self, ctx: TodayContext) -> list[dict[str, Any]]:
         if ctx.registry is None:
@@ -261,6 +268,8 @@ class _AttentionProvider:
         rows = await ctx.registry.attention.list_attention_items(state="active")
         out: list[dict[str, Any]] = []
         for row in rows:
+            if (row.importance or 0) < NEEDS_YOU_MIN_IMPORTANCE:
+                continue
             deadline = _ensure_utc(row.deadline_at)
             if deadline is not None and ctx.now < deadline <= ctx.now + COMING_UP_WINDOW:
                 out.append(

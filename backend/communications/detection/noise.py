@@ -17,6 +17,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from backend.communications.detection.relevance import (
+    _sender_domain,
+    classify_sender,
+)
 from backend.communications.models import Communication
 
 # Sender-domain host labels that unambiguously mark a marketing / newsletter
@@ -73,22 +77,6 @@ class _GateHit:
     reason: str
 
 
-def _sender_domain(sender: str) -> str:
-    """Return the lower-cased domain portion of a sender address.
-
-    Works for ``name <addr>`` and bare addresses. Returns the bare string
-    when there is no ``@`` (e.g. a display name or phone handle) — those
-    never match a marketing domain.
-    """
-    s = sender.strip()
-    if "<" in s and ">" in s:
-        s = s.split("<", 1)[1].split(">", 1)[0]
-    s = s.strip()
-    if "@" in s:
-        return s.split("@", 1)[1].lower()
-    return s.lower()
-
-
 def _host_label(domain: str) -> str | None:
     """The host label of a two-level (``host.tld``) sender domain.
 
@@ -117,9 +105,36 @@ def is_marketing(communication: Communication) -> _GateHit | None:
     if label is not None and label in _MARKETING_SENDER_DOMAINS:
         return _GateHit(f"sender domain '{domain}' is a marketing/newsletter domain")
 
+    # Widen the gate with the FEAT-002 relevance classifier: a sender the
+    # two-level host-label rule above misses (an ESP registrable domain such
+    # as ``*.ccsend.com``, or a marketing *subdomain* label such as
+    # ``em.walmart.com`` / ``news.emailmarket.shein.com`` / ``p.modcloth.com``)
+    # is still bulk and must be suppressed. This reads the compact ingest flags
+    # when present, so ``List-Unsubscribe``-only bulk is caught too. A plain
+    # no-reply sender is deliberately NOT suppressed here — no-reply is a
+    # demote at the mint layer, not a drop (a no-reply request can still be a
+    # low-importance informational row).
+    subject = _subject_of(communication)
+    # Only an actual email address (with an ``@``) is classified here; a bare
+    # display-name / host-like token (``offers.corp.example``) is not an
+    # address and must not be gated by the subdomain-label rule.
+    if "@" in str(communication.sender or ""):
+        flags = (communication.classification or {}).get("flags") or {}
+        classification = classify_sender(
+            communication.sender, flags=flags, subject=subject
+        )
+        if classification.bulk:
+            return _GateHit(
+                "sender classified bulk/marketing: "
+                + (
+                    classification.reasons[0]
+                    if classification.reasons
+                    else "bulk sender"
+                )
+            )
+
     # Structural markers in the subject line only (never the body). The
     # resolver is optional; when absent we only gate on sender domain.
-    subject = _subject_of(communication)
     if subject:
         low = subject.lower()
         for marker in _MARKETING_MARKERS:
