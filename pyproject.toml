@@ -92,3 +92,6 @@ typeCheckingMode = "standard"
 testpaths = ["tests"]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
+markers = [
+    "integration: needs external infrastructure (e.g. NERVE_TEST_POSTGRES_URL scratch Postgres); skipped when absent",
+]
