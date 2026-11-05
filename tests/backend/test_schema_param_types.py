@@ -94,6 +94,7 @@ import backend.persistence.models.bills  # noqa: F401
 import backend.persistence.models.routines  # noqa: F401
 import backend.persistence.models.wellness  # noqa: F401
 import backend.persistence.models.obligations  # noqa: F401
+import backend.persistence.models.mail_security  # noqa: F401
 from schemas.relationships import TemporalWindow
 from schemas.tasks import Task as TaskSchema
 
@@ -163,6 +164,13 @@ TABLES_WITH_ID = frozenset(
         # provider + combo registry; keys stored in-band and masked on read).
         "inference_providers",
         "inference_combos",
+        # NerveShield mail-security plane, Alembic 016 (Phase 1 Task 1.7 —
+        # account-scoped job, evidence manifest, assessment/findings;
+        # metadata + opaque refs only, no raw body).
+        "mail_security_jobs",
+        "mail_evidence",
+        "mail_security_assessments",
+        "mail_security_findings",
     }
 )
 
