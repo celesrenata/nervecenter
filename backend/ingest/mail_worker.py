@@ -937,11 +937,68 @@ class MailIngestWorker:
                     body.decode("utf-8", "replace"),
                 )
             self._seam.run_pipeline(communication, now=communication.timestamp)
+            # NerveShield Task 1.8 — opt-in, flag-gated security-job seam. A
+            # no-op when ``NERVE_MAIL_SECURITY_ENABLED`` is OFF (byte-identical
+            # to today) or when no durable mail-security repo is bound. When
+            # ON it schedules one idempotent PENDING ``mail_security_jobs`` row
+            # beside the existing durable write; a failure is swallowed inside
+            # the seam so it can never fail the ingest, block the P0-D cursor
+            # gate, or mark the message safe (R-001.3, I-07). Carries only
+            # keys + the opaque content_ref + boolean flags — never raw
+            # subject/body/addresses or credentials (T-14).
+            await self._schedule_security_job(
+                conn,
+                mail_id=mail_id,
+                content_ref=content_ref,
+                flags=flags,
+            )
             if bool(result.get("created")):
                 ingested += 1
             else:
                 duplicates += 1
         return ingested, duplicates, seen
+
+    async def _schedule_security_job(
+        self,
+        conn: Any,
+        *,
+        mail_id: str,
+        content_ref: str,
+        flags: dict[str, bool],
+    ) -> None:
+        """Schedule one opt-in NerveShield security job for a fetched message
+        (Task 1.8). Inert unless the feature flag is ON *and* a durable
+        mail-security repository is bound at startup; the seam itself swallows
+        any scheduling failure (safe code logged only), so this never affects
+        cursor advancement or the existing attention path."""
+        from backend.mail_security.ingestion_seam import (
+            MailSecurityIngestionSeam,
+            get_mail_security_repository,
+            mail_security_enabled,
+        )
+
+        if not mail_security_enabled():
+            return
+        repository = get_mail_security_repository()
+        if repository is None:
+            return
+        config = getattr(conn, "config", None) or {}
+        folder = str(config.get("mailbox") or config.get("folder") or "").strip() or None
+        seam = MailSecurityIngestionSeam(
+            repository=repository,
+            # The connection id is the account-scope boundary (R-023): a
+            # UUID that matches the identifier alphabet and never carries an
+            # email address or secret.
+            account_scope=f"conn:{self.connection_id}",
+        )
+        await seam.schedule(
+            provider=str(getattr(conn, "kind", "") or self.cursor_kind),
+            provider_uid=mail_id,
+            rfc_message_id=mail_id,
+            folder=folder,
+            content_ref=content_ref,
+            flags=flags,
+        )
 
     def _seed_person(self, address: str, display_name: str | None) -> str | None:
         """Derive the deterministic person id for a sender and seed the

@@ -363,6 +363,20 @@ async def wire_dependencies(target: FastAPI) -> None:
                 get_followup_service().set_registry(
                     target.state.repository_registry
                 )
+                # NerveShield Task 1.8: bind the durable mail-security repo
+                # onto the opt-in ingestion seam ONLY when the feature flag is
+                # ON (default OFF → never bound → both ingest seam points stay
+                # a no-op, byte-identical to today). Scheduling consumes no
+                # worker and starts no scanner — Task 1.8 only schedules.
+                from backend.mail_security.ingestion_seam import (
+                    mail_security_enabled,
+                    set_mail_security_repository,
+                )
+
+                if mail_security_enabled():
+                    set_mail_security_repository(
+                        target.state.repository_registry.mail_security
+                    )
             except Exception as exc:  # noqa: BLE001
                 log.warning(
                     "api.wiring.commitment_store_failed", error=str(exc)
@@ -561,6 +575,18 @@ async def teardown_dependencies(target: FastAPI) -> None:
         set_communications_store(None)
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         log.warning("api.wiring.communications_store_unbind_failed", error=str(exc))
+
+    # Unbind the NerveShield mail-security repo (Task 1.8) so a later startup
+    # rebinds (or, with the flag OFF, leaves it unbound) and the seam returns
+    # to its inert no-op default.
+    try:
+        from backend.mail_security.ingestion_seam import (
+            set_mail_security_repository,
+        )
+
+        set_mail_security_repository(None)
+    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+        log.warning("api.wiring.mail_security_repo_unbind_failed", error=str(exc))
 
     client = getattr(target.state, "nats_client", None)
     if client is not None:

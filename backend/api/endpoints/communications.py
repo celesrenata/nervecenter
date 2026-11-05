@@ -24,6 +24,7 @@ than guessing (§6 conservative resolution).
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -132,6 +133,50 @@ async def _persist_communication_durably(communication: Any) -> bool:
     except Exception as exc:  # noqa: BLE001 - best-effort durable mirror
         log.warning("communications.durable_persist_failed", error=str(exc))
         return False
+
+
+#: Account-scope alphabet for the NerveShield identifiers (mirrors the
+#: ``_ACCOUNT_SCOPE_RE`` contract in ``backend.mail_security.identifiers``).
+_ACCOUNT_SCOPE_SAFE = re.compile(r"[^A-Za-z0-9:_-]")
+
+
+async def _schedule_security_job(communication: Any) -> None:
+    """Schedule one opt-in NerveShield security job for an API-ingested
+    communication (Task 1.8). Inert unless the feature flag is ON *and* a
+    durable mail-security repository is bound; the seam swallows any
+    scheduling failure, so this is strictly best-effort and never affects the
+    request contract or the existing attention path (R-001.3, I-07).
+
+    The API path carries no mail connection, so the account scope is derived
+    from the record's provenance ``source`` (sanitized to the identifier
+    alphabet) and the logical source identity from the (already deterministic)
+    ``communication_id`` — never a raw address or body (T-14)."""
+    from backend.mail_security.ingestion_seam import (
+        MailSecurityIngestionSeam,
+        get_mail_security_repository,
+        mail_security_enabled,
+    )
+
+    if not mail_security_enabled():
+        return
+    repository = get_mail_security_repository()
+    if repository is None:
+        return
+    raw_source = str(getattr(communication, "source", "") or "api") or "api"
+    account_scope = ("src:" + _ACCOUNT_SCOPE_SAFE.sub("_", raw_source))[:128]
+    flags = (getattr(communication, "classification", None) or {}).get("flags") or {}
+    seam = MailSecurityIngestionSeam(
+        repository=repository,
+        account_scope=account_scope,
+    )
+    await seam.schedule(
+        provider=str(getattr(communication, "channel", "api")),
+        provider_uid=str(getattr(communication, "communication_id", "") or ""),
+        rfc_message_id=str(getattr(communication, "communication_id", "") or ""),
+        folder=None,
+        content_ref=str(getattr(communication, "content_ref", "") or "") or None,
+        flags=flags if isinstance(flags, dict) else None,
+    )
 
 
 # -- request models ----------------------------------------------------------
@@ -377,6 +422,14 @@ async def ingest_communication(
     # orchestration on the process-wide singletons; a missing transient
     # content registration degrades to empty text, never an error.
     get_pipeline().ingest(communication, now=communication.timestamp)
+    # NerveShield Task 1.8 — opt-in, flag-gated security-job seam on the API
+    # path too. A no-op when ``NERVE_MAIL_SECURITY_ENABLED`` is OFF or no
+    # durable mail-security repo is bound; when ON it schedules one idempotent
+    # PENDING job beside the best-effort durable write. Like the durable
+    # mirror above this is best-effort (the endpoint's intentional asymmetry
+    # with the gated worker path): a scheduling failure never fails the
+    # request and is swallowed inside the seam (safe code logged only, T-14).
+    await _schedule_security_job(communication)
     return {
         "item": communication.model_dump(mode="json"),
         "conversation": result["conversation"].model_dump(mode="json"),

@@ -30,6 +30,16 @@ from backend.mail_security.identifiers import (
     normalize_analysis_version,
     outbox_job_key,
 )
+from backend.mail_security.ingestion_seam import (
+    DEFAULT_ANALYSIS_PROFILE_VERSION,
+    ENV_MAIL_SECURITY_ENABLED,
+    JOB_STATE_PENDING,
+    MailSecurityIngestionSeam,
+    get_mail_security_repository,
+    mail_security_enabled,
+    scan_missing_jobs,
+    set_mail_security_repository,
+)
 from backend.mail_security.inspections import (
     INSPECTIONS_VERSION,
     inspect_message,
@@ -102,9 +112,12 @@ NERVE_MAIL_SECURITY_ENABLED = 0
 
 __all__ = [
     "AUTH_EVIDENCE_VERSION",
+    "DEFAULT_ANALYSIS_PROFILE_VERSION",
     "DEFAULT_LIMITS",
+    "ENV_MAIL_SECURITY_ENABLED",
     "HASH_ALGORITHM",
     "INSPECTIONS_VERSION",
+    "JOB_STATE_PENDING",
     "KEY_SCHEME_VERSION",
     "NERVE_MAIL_SECURITY_ENABLED",
     "NO_AUTH_EVIDENCE_CAPTURED",
@@ -137,6 +150,7 @@ __all__ = [
     "IncompleteNote",
     "IncompleteReason",
     "LinkEvidence",
+    "MailSecurityIngestionSeam",
     "MessageCategory",
     "MessageEvidenceManifest",
     "ModelRun",
@@ -166,11 +180,15 @@ __all__ = [
     "classify_authentication",
     "decide_policy",
     "evidence_fidelity_for",
+    "get_mail_security_repository",
     "inspect_message",
     "inspect_offline",
     "inspect_sender_provenance",
     "logical_source_key",
+    "mail_security_enabled",
     "normalize_analysis_version",
     "outbox_job_key",
     "parse_mime_evidence",
+    "scan_missing_jobs",
+    "set_mail_security_repository",
 ]

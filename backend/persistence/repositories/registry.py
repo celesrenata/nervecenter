@@ -134,5 +134,16 @@ class RepositoryRegistry:
         """Durable unified obligation plane (P2-A — Personal Reliability)."""
         return ObligationsRepository(self._session_factory)
 
+    @property
+    def mail_security(self) -> Any:
+        """Durable NerveShield mail-security plane (NerveShield Task 1.7).
+
+        Imported lazily so the base durable plane does not depend on the
+        opt-in NerveShield package at import time (the seam is off by
+        default)."""
+        from .mail_security_repo import MailSecurityRepository
+
+        return MailSecurityRepository(self._session_factory)
+
 
 __all__ = ["RepositoryRegistry"]
