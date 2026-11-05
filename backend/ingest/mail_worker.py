@@ -221,12 +221,28 @@ async def persist_communication_durably(
     replay reuses the same communication row (idempotent, decision (c)). The
     per-(person, channel) conversation is upserted alongside. Raw content is
     never persisted — only the ``content_ref`` pointer (§7). Raises on a
-    durable failure so the caller can gate the cursor on it."""
+    durable failure so the caller can gate the cursor on it.
+
+    TOCTOU tolerance (P1-107 finding #5): the person and communication writes
+    are get-then-create, not a single atomic statement, so a concurrent
+    ingest of the same message (the gated worker and the best-effort endpoint,
+    or two workers) could both observe "absent" and both attempt the pinned
+    PK. The loser's insert raises a duplicate-key ``IntegrityError``; because
+    the ids are deterministic the row the winner wrote is exactly the row this
+    caller wanted, so the duplicate-key is swallowed as a successful
+    get-or-create no-op rather than surfaced as a durable failure."""
+    from sqlalchemy.exc import IntegrityError
+
     if await store.get_person(person_id) is None:
-        await store.create_person(
-            id=person_id,
-            display_name=display_name or identity_handle,
-        )
+        try:
+            await store.create_person(
+                id=person_id,
+                display_name=display_name or identity_handle,
+            )
+        except IntegrityError:
+            # A concurrent writer created the same pinned person first — the
+            # deterministic id guarantees it is the row we wanted (no-op).
+            pass
     await store.upsert_person_identity(
         person_id=person_id,
         channel=identity_kind,
@@ -236,15 +252,20 @@ async def persist_communication_durably(
     # Get-or-create the communication by its pinned id (idempotent replay).
     existing = await store.get_communications_by_ids([communication_id])
     if not existing:
-        await store.create_communication(
-            id=communication_id,
-            person_id=person_id,
-            channel=channel,
-            direction=direction,
-            content_ref=content_ref,
-            subject=subject,
-            received_at=received_at,
-        )
+        try:
+            await store.create_communication(
+                id=communication_id,
+                person_id=person_id,
+                channel=channel,
+                direction=direction,
+                content_ref=content_ref,
+                subject=subject,
+                received_at=received_at,
+            )
+        except IntegrityError:
+            # A concurrent writer created the same pinned communication first;
+            # the deterministic id makes this a no-op, not a durable failure.
+            pass
     await store.upsert_conversation(
         person_id=person_id,
         channel=channel,
@@ -405,22 +426,17 @@ def _content_key(connection_id: str, mail_id: str) -> str:
 
 def _communication_id(connection_id: str, mail_id: str) -> str:
     """Deterministic communication id so re-ingest is an idempotent update
-    (same ``communication_id`` → ``created=False``), never a duplicate row."""
+    (same ``communication_id`` → ``created=False``), never a duplicate row.
+
+    This is ONE id shared by both planes (P1-107 finding #1): the worker pins
+    it on the in-memory record *and* on the durable ``communications.id``, so a
+    cold-restarted pod reconstructs the same ``communication_id`` a warm
+    process returned for the same message — the identifier a client caches is
+    stable across a restart. It is a pure function of (connection, mail-id), so
+    a replay between the durable write and the cursor commit is a get-or-create
+    no-op, never a duplicate row (idempotency decision (c))."""
     digest = hashlib.sha256(f"{connection_id}:{mail_id}".encode("utf-8")).hexdigest()[:24]
     return f"comm-mail-{digest}"
-
-
-def _durable_communication_id(connection_id: str, mail_id: str) -> str:
-    """Deterministic durable ``communications.id`` for one message (P1-107).
-
-    Pinned to the (connection, mail-id) pair — the same message re-ingested
-    after a crash reuses the same durable row id, so a replay between the
-    durable write and the cursor commit is a get-or-create no-op, never a
-    duplicate row (idempotency decision (c))."""
-    digest = hashlib.sha256(
-        f"durable-comm:{connection_id}:{mail_id}".encode("utf-8")
-    ).hexdigest()[:24]
-    return f"dcomm-mail-{digest}"
 
 
 def _person_id_for_handle(kind: str, canonical: str) -> str:
@@ -863,9 +879,11 @@ class MailIngestWorker:
                         "content_ref": content_ref,
                         "subject": subject,
                         "received_at": item.timestamp,
-                        "communication_id": _durable_communication_id(
-                            self.connection_id, mail_id
-                        ),
+                        # ONE id across both planes (P1-107 finding #1): the
+                        # same ``comm-mail-<sha>`` id the in-memory record
+                        # carries is pinned as the durable ``communications.id``
+                        # so the identifier is stable across a cold restart.
+                        "communication_id": communication_id,
                     }
                 )
             communication = result["communication"]

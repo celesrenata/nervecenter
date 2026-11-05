@@ -320,6 +320,18 @@ class TestDurableFirstReads:
         transport = StubMailTransport(items=[_make_item("<1@corp>")], next_cursor={"uid": 5})
         await _worker(harness, transport=transport).poll_once()
 
+    @staticmethod
+    def _cold_restart(client) -> None:
+        """Faithfully simulate a pod restart: drop the populated in-memory
+        plane AND rebind it on ``app.state`` (a real restart builds a fresh
+        app + fresh service). Without the rebind the endpoint would keep
+        reading the stale populated singleton instead of the empty one, so the
+        durable-only read path would not be exercised."""
+        reset_communications_service()
+        from backend.communications import get_communications_service
+
+        client.app.state.communications_service = get_communications_service()
+
     async def test_communications_and_people_served_durable_first(
         self, harness, client
     ) -> None:
@@ -355,7 +367,7 @@ class TestDurableFirstReads:
     async def test_restart_cold_memory_serves_durable(self, harness, client) -> None:
         await self._ingest_one(harness)
         # simulate a pod restart: the in-memory plane is empty, durable is not
-        reset_communications_service()
+        self._cold_restart(client)
 
         res = client.get("/api/communications")
         assert res.status_code == 200
@@ -372,3 +384,77 @@ class TestDurableFirstReads:
         item = res.json()["item"]
         assert item["total"] >= 1
         assert any(c["channel"] == "email" for c in item["communications"])
+
+    async def test_communication_id_stable_across_restart(self, harness, client) -> None:
+        """Finding #1: the ``communication_id`` a client caches from a warm
+        process is identical after a cold restart (one pinned id per message,
+        not a separate ``dcomm-`` durable id)."""
+        await self._ingest_one(harness)
+        warm = client.get("/api/communications").json()["data"][0]["communication_id"]
+
+        self._cold_restart(client)
+        cold = client.get("/api/communications").json()["data"][0]["communication_id"]
+        assert cold == warm
+
+    async def test_cold_read_reconstructs_sender_from_identity(
+        self, harness, client
+    ) -> None:
+        """Finding #4: a durable-only (cold) read reconstructs the counterpart
+        ``sender`` from the person's durable channel identity handle instead of
+        returning an empty string."""
+        await self._ingest_one(harness)
+        self._cold_restart(client)
+        record = client.get("/api/communications").json()["data"][0]
+        assert record["direction"] == "incoming"
+        assert record["sender"] == "boss@corp.com"
+
+    async def test_search_is_durable_first_on_cold_restart(
+        self, harness, client
+    ) -> None:
+        """Finding #2: search returns the persisted records after a cold
+        restart (empty in-memory plane), consistent with the list route."""
+        await self._ingest_one(harness)
+        self._cold_restart(client)
+        res = client.get(
+            "/api/communications/search", params={"q": "deploy", "within_week": False}
+        )
+        assert res.status_code == 200, res.text
+        item = res.json()["item"]
+        assert item["total"] >= 1
+        assert any(c["channel"] == "email" for c in item["communications"])
+
+    async def test_endpoint_ingest_reports_durable_flag(self, harness, client) -> None:
+        """Finding #3: the ``POST /ingest`` response carries an honest
+        ``durable`` flag (the endpoint is best-effort, the gated worker path is
+        the durable-guaranteed route). A linked record persists durably → the
+        flag is ``True``."""
+        # Seed the sender as a known person so the endpoint record links (the
+        # durable FK requires a person; an unlinked record is a no-op True).
+        ingest_identity = client.post(
+            "/api/people/identities/ingest",
+            json={"kind": "email", "value": "boss@corp.com", "display_name": "Boss"},
+        )
+        assert ingest_identity.status_code in (200, 201), ingest_identity.text
+        person_id = ingest_identity.json()["person"]["person_id"]
+
+        res = client.post(
+            "/api/communications/ingest",
+            json={
+                "person_id": person_id,
+                "channel": "email",
+                "direction": "incoming",
+                "sender": "boss@corp.com",
+                "recipients": [_ACCOUNT],
+                "content_ref": "content://mail/endpoint/1",
+                "classification": {"subject": "Hi"},
+            },
+        )
+        assert res.status_code in (200, 201), res.text
+        assert res.json()["durable"] is True
+        # the durable row exists and shares the record's id (finding #1)
+        comm_id = res.json()["item"]["communication_id"]
+        rows = await harness.registry.communications.get_communications_by_ids(
+            [comm_id]
+        )
+        assert len(rows) == 1
+        assert rows[0].person_id == person_id

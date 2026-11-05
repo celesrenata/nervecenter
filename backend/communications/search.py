@@ -281,6 +281,8 @@ def search_communications(
     now: datetime | None = None,
     text_resolver: TextResolver | None = None,
     request_communication_ids: set[str] | None = None,
+    communications: list[Communication] | None = None,
+    person_names: dict[str, str] | None = None,
 ) -> CommunicationSearchResult:
     """Deterministic cross-channel search over the normalized communications.
 
@@ -308,6 +310,18 @@ def search_communications(
         the ids of R103 ``request`` findings). When given, "who asked me"
         groups only those records; when ``None`` every incoming communication
         in scope is treated as a candidate ask.
+    communications:
+        Optional explicit record set to search over (P1-107 finding #2 —
+        durable-first search). When given, search runs over this list instead
+        of resolving the in-memory singleton, so the ``/search`` endpoint can
+        feed it the same durable-first merge the list routes serve and a
+        cold-restarted pod searches the durably-persisted records. When
+        ``None`` the canonical in-memory registry is used (unchanged).
+    person_names:
+        Optional ``person_id → display_name`` map paired with
+        ``communications`` (so display-name scoping / request-group labels
+        work over the injected set). Ignored when ``communications`` is
+        ``None``.
 
     Returns
     -------
@@ -316,13 +330,20 @@ def search_communications(
     per-person request groups for "who asked me" queries.
     """
     now = _utc(now) if now is not None else datetime.now(UTC)
-    service = get_communications_service()
-    communications = service.list_communications()
-    person_names = {
-        p.person_id: (p.display_name or "")
-        for p in service.list_people()
-        if p.display_name
-    }
+    if communications is None:
+        # No injected record set → the canonical in-memory registry (the
+        # historical path). The durable-first ``/search`` endpoint injects a
+        # merged set so a cold-restarted pod searches the persisted records
+        # (P1-107 finding #2).
+        service = get_communications_service()
+        communications = service.list_communications()
+        person_names = {
+            p.person_id: (p.display_name or "")
+            for p in service.list_people()
+            if p.display_name
+        }
+    else:
+        person_names = dict(person_names or {})
 
     named_channel = _channel_from_query(query)
     effective_channel = channel if channel is not None else named_channel

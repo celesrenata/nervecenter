@@ -24,7 +24,6 @@ than guessing (§6 conservative resolution).
 
 from __future__ import annotations
 
-import hashlib
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
@@ -74,29 +73,34 @@ def _communication_not_found(communication_id: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"Communication {communication_id} not found.")
 
 
-def _durable_endpoint_communication_id(communication_id: str) -> str:
-    """Deterministic durable ``communications.id`` for an endpoint-ingested
-    record (P1-107) so a re-ingest is an idempotent get-or-create."""
-    digest = hashlib.sha256(
-        f"endpoint-comm:{communication_id}".encode("utf-8")
-    ).hexdigest()[:24]
-    return f"dcomm-ep-{digest}"
-
-
-async def _persist_communication_durably(communication: Any) -> None:
+async def _persist_communication_durably(communication: Any) -> bool:
     """Best-effort durable persist of one endpoint-ingested communication
-    (P1-107 step 2).
+    (P1-107 step 2). Returns ``True`` when the durable write succeeded (or was
+    a no-op because no durable plane / no person), ``False`` on a durable
+    failure the caller may choose to surface.
 
     No-op when no durable store is wired, or when the record did not resolve
     to a person (the durable FK is ``NOT NULL`` — an unlinked record has no
     durable home, matching the conservative §6 contract). The in-memory
-    person id is pinned as the durable ``people.id`` so the two planes agree.
-    A durable failure is logged, never raised: the request contract (the
-    in-memory upsert) is unchanged, mirroring the commitment seam.
+    person id is pinned as the durable ``people.id`` so the two planes agree,
+    and the in-memory ``communication_id`` is pinned as the durable
+    ``communications.id`` so the identifier is stable across a restart and a
+    re-ingest is an idempotent get-or-create (P1-107 finding #1).
+
+    INTENTIONAL ASYMMETRY WITH THE GATED WORKER PATH (P1-107 finding #3): the
+    worker gates its *cursor* on the durable write — a failed persist must not
+    advance the cursor, so the message is retried. The endpoint has no cursor
+    to gate: the request already carries the message, there is nothing to
+    retry from, and the in-memory upsert has already applied. A durable
+    failure is therefore logged and surfaced to the caller via the return
+    value (the endpoint annotates the response ``durable`` flag) rather than
+    failing the request — the in-memory contract (201/200 + the record) is
+    preserved, mirroring the commitment seam's best-effort mirror. Clients
+    that require durability use the gated worker path.
     """
     store = get_communications_store()
     if store is None or communication.person_id is None:
-        return
+        return True
     try:
         from backend.ingest.mail_worker import persist_communication_durably
 
@@ -121,12 +125,12 @@ async def _persist_communication_durably(communication: Any) -> None:
             content_ref=communication.content_ref,
             subject=str((communication.classification or {}).get("subject") or "") or None,
             received_at=communication.timestamp,
-            communication_id=_durable_endpoint_communication_id(
-                communication.communication_id
-            ),
+            communication_id=communication.communication_id,
         )
+        return True
     except Exception as exc:  # noqa: BLE001 - best-effort durable mirror
         log.warning("communications.durable_persist_failed", error=str(exc))
+        return False
 
 
 # -- request models ----------------------------------------------------------
@@ -159,26 +163,42 @@ class IngestCommunicationRequest(BaseModel):
 # -- endpoints -----------------------------------------------------------------
 
 
-def _durable_row_to_communication(row: Any) -> dict[str, Any]:
+def _durable_row_to_communication(
+    row: Any, *, counterpart_handle: str | None = None
+) -> dict[str, Any]:
     """Map a durable :class:`CommunicationRow` into the frozen
     :class:`Communication` response shape (P1-107 step 4 — restart reads).
 
-    The durable row keeps only the ref-shaped subset (§7). Fields the durable
-    plane does not carry (``sender`` / ``recipients`` / ``thread_id`` /
-    ``attachments``) are reconstructed conservatively — ``sender`` is not
-    stored durably, so the ``subject`` is surfaced in ``classification`` and
-    the counterpart fields default to empty. ``communication_id`` is the
-    durable row id so the shape stays a valid :class:`Communication`.
+    The durable row keeps only the ref-shaped subset (§7). The counterpart
+    fields (``sender`` / ``recipients``) are reconstructed from the person's
+    durable channel *identity handle* — the same email/phone handle the
+    ingest path persisted on ``person_identities`` (P1-107 finding #4): for an
+    ``incoming`` record the handle is the sender; for ``outgoing`` it is the
+    sole recipient. This restores the counterpart on a cold read without
+    persisting any extra field (the handle is already stored for person
+    linking, not a secret or body). ``thread_id`` / ``attachments`` are not
+    durably carried and stay empty. ``communication_id`` is the durable row
+    id, which the mail-ingest path pins equal to the warm in-memory id, so the
+    identifier is stable across a restart (finding #1).
     """
     from backend.communications.models import Communication
+
+    handle = str(counterpart_handle or "")
+    direction = CommunicationDirection(str(row.direction))
+    sender = handle if direction is CommunicationDirection.INCOMING else ""
+    recipients = (
+        [handle]
+        if handle and direction is CommunicationDirection.OUTGOING
+        else []
+    )
 
     comm = Communication(
         communication_id=str(row.id),
         person_id=row.person_id,
         channel=CommunicationChannel(str(row.channel)),
-        direction=CommunicationDirection(str(row.direction)),
-        sender="",
-        recipients=[],
+        direction=direction,
+        sender=sender,
+        recipients=recipients,
         timestamp=row.received_at,
         thread_id=None,
         content_ref=row.content_ref,
@@ -192,12 +212,22 @@ def _durable_row_to_communication(row: Any) -> dict[str, Any]:
     return comm.model_dump(mode="json")
 
 
+#: Durable read page size (P1-107 finding #6). The underlying
+#: ``list_communications`` caps at ``limit`` rows; the merge threads this
+#: through so a large mailbox's durable read page size is explicit and
+#: matches the ``?limit=`` the caller asks for (default mirrors the repo's
+#: own 200 default). The in-memory plane is unbounded, so in-memory-only
+#: records are never dropped by this cap — only the durable page is bounded.
+_DURABLE_READ_LIMIT = 200
+
+
 async def _durable_first_communications(
     request: Request,
     svc: CommunicationsService,
     *,
     person_id: str | None,
     channel: CommunicationChannel | None,
+    limit: int = _DURABLE_READ_LIMIT,
 ) -> list[dict[str, Any]] | None:
     """Durable-first merge of communications (P1-107 decision (a)).
 
@@ -209,6 +239,12 @@ async def _durable_first_communications(
     settled durably) are merged in afterward. A restarted pod — empty
     in-memory plane — therefore serves exactly the durably-persisted rows.
 
+    Pagination (P1-107 finding #6): ``limit`` is threaded into the durable
+    ``list_communications`` so the durable page size is the caller's explicit
+    ``?limit=`` (bounded, default 200) rather than a silent hard cap. For a
+    cold-read record, the person's durable channel identity handle is used to
+    reconstruct the counterpart ``sender`` / ``recipients`` (finding #4).
+
     Returns ``None`` when no durable registry is wired, so the caller falls
     back to the pure in-memory read (unchanged no-DB / unit-test contract).
     """
@@ -217,9 +253,26 @@ async def _durable_first_communications(
     if registry is None or store is None:
         return None
 
-    durable_rows = await store.list_communications(person_id=person_id)
+    durable_rows = await store.list_communications(person_id=person_id, limit=limit)
     in_memory = svc.list_communications(person_id=person_id, channel=channel)
     by_ref = {c.content_ref: c for c in in_memory}
+
+    # One identity lookup per distinct durable-only person, cached, so the
+    # counterpart handle can be reconstructed for cold reads (finding #4).
+    handle_cache: dict[str, str | None] = {}
+
+    async def _counterpart_handle(pid: str | None, chan: str) -> str | None:
+        if not pid:
+            return None
+        if pid not in handle_cache:
+            identities = await store.list_identities(pid)
+            match = next(
+                (i.handle for i in identities if str(i.channel) == chan), None
+            )
+            handle_cache[pid] = match or (
+                identities[0].handle if identities else None
+            )
+        return handle_cache[pid]
 
     merged: list[dict[str, Any]] = []
     seen_refs: set[str] = set()
@@ -231,7 +284,10 @@ async def _durable_first_communications(
             merged.append(live.model_dump(mode="json"))
             seen_refs.add(row.content_ref)
         else:
-            merged.append(_durable_row_to_communication(row))
+            handle = await _counterpart_handle(row.person_id, str(row.channel))
+            merged.append(
+                _durable_row_to_communication(row, counterpart_handle=handle)
+            )
             seen_refs.add(row.content_ref)
     # In-memory-only records (not yet durably settled) keep showing up.
     for comm in in_memory:
@@ -247,6 +303,7 @@ async def list_communications(
     request: Request,
     person_id: str | None = None,
     channel: CommunicationChannel | None = None,
+    limit: int = _DURABLE_READ_LIMIT,
 ):
     """List normalized communications, optionally filtered by person and/or
     channel (chronological order).
@@ -255,8 +312,10 @@ async def list_communications(
     response is served from the durable store merged with the in-memory
     registry (durable authoritative for existence; in-memory representation
     preferred when a record is live in both). A restarted pod serves exactly
-    what it persisted. Without a durable plane this is the pure in-memory
-    read (unchanged).
+    what it persisted. ``?limit=`` bounds the durable page (P1-107 finding
+    #6 — default 200; the in-memory plane is unbounded, so in-memory-only
+    records are never dropped by the cap). Without a durable plane this is the
+    pure in-memory read (unchanged).
     """
     svc = _service(request)
     if person_id is not None and svc.get_person(person_id) is None:
@@ -269,7 +328,7 @@ async def list_communications(
         if durable_person is None:
             raise HTTPException(status_code=404, detail=f"Person {person_id} not found.")
     data = await _durable_first_communications(
-        request, svc, person_id=person_id, channel=channel
+        request, svc, person_id=person_id, channel=channel, limit=limit
     )
     if data is None:
         communications = svc.list_communications(person_id=person_id, channel=channel)
@@ -307,8 +366,11 @@ async def ingest_communication(
     # from the normalized communication id so a re-ingest is an idempotent
     # get-or-create (no duplicate row). No durable store (no-DB) → in-memory
     # only, unchanged. A durable failure must not fail the request contract
-    # (best-effort mirror, same as the commitment seam), so it is logged.
-    await _persist_communication_durably(communication)
+    # (best-effort mirror, same as the commitment seam; the gated worker path
+    # is the durable-guaranteed route — P1-107 finding #3). The outcome is
+    # surfaced honestly via the response ``durable`` flag rather than silently
+    # reporting success on a dropped durable write.
+    durable_ok = await _persist_communication_durably(communication)
     # R106 end-to-end seam (§61): after persist, run the detection →
     # follow-up → attention pass over the normalized record. Pure
     # orchestration on the process-wide singletons; a missing transient
@@ -318,8 +380,43 @@ async def ingest_communication(
         "item": communication.model_dump(mode="json"),
         "conversation": result["conversation"].model_dump(mode="json"),
         "created": result["created"],
+        "durable": durable_ok,
         "meta": _meta(),
     }
+
+
+async def _durable_first_search_corpus(
+    request: Request, svc: CommunicationsService
+) -> tuple[list[Any], dict[str, str]] | None:
+    """Build the durable-first corpus the ``/search`` route searches over
+    (P1-107 finding #2): the same merged set the list route serves, as
+    :class:`Communication` objects plus a ``person_id → display_name`` map.
+
+    Returns ``None`` when no durable plane is wired so search falls back to
+    the pure in-memory singleton (unchanged no-DB / unit-test contract).
+    """
+    from backend.communications.models import Communication
+
+    merged = await _durable_first_communications(
+        request, svc, person_id=None, channel=None
+    )
+    if merged is None:
+        return None
+    communications = [Communication.model_validate(c) for c in merged]
+
+    # Durable-first people names (so display-name scoping / request-group
+    # labels work on a cold restart), preferring the in-memory record.
+    store = get_communications_store()
+    names: dict[str, str] = {}
+    if store is not None:
+        for row in await store.list_people():
+            if row.display_name:
+                names[str(row.id)] = row.display_name
+    # In-memory names win when a person is live in both planes.
+    for p in svc.list_people():
+        if p.display_name:
+            names[p.person_id] = p.display_name
+    return communications, names
 
 
 @router.get("/search")
@@ -332,10 +429,13 @@ async def search_endpoint(
 ):
     """R110 deterministic cross-channel search (P1-107 step 5, §50).
 
-    Delegates to :func:`backend.communications.search.search_communications`
-    over the canonical communications registry (durable-backed after step 4 —
-    the ingested records live in the in-memory plane the search reads, and the
-    durable store is their authoritative home). Declared before the
+    Durable-first (P1-107 finding #2): when the durable plane is wired, search
+    runs over the same durable-first merge the list routes serve — the durable
+    store is authoritative for existence, the in-memory representation is
+    preferred when a record is live in both — so a cold-restarted pod searches
+    exactly the records it persisted, consistent with ``GET
+    /api/communications``. Without a durable plane it delegates to the
+    canonical in-memory registry (unchanged). Declared before the
     ``/{communication_id}`` route so the literal path is not captured by the
     path parameter. Query-param names mirror the other communications routes
     (``person_id`` / ``channel``). The result is the frozen
@@ -344,10 +444,22 @@ async def search_endpoint(
     """
     # Ensure the registry is resolvable (same defensive wiring as the other
     # routes) so the module-level singleton the search service reads matches.
-    _service(request)
-    result = search_communications(
-        q, person_id=person_id, channel=channel, within_week=within_week
-    )
+    svc = _service(request)
+    corpus = await _durable_first_search_corpus(request, svc)
+    if corpus is None:
+        result = search_communications(
+            q, person_id=person_id, channel=channel, within_week=within_week
+        )
+    else:
+        communications, person_names = corpus
+        result = search_communications(
+            q,
+            person_id=person_id,
+            channel=channel,
+            within_week=within_week,
+            communications=communications,
+            person_names=person_names,
+        )
     return {"item": result.model_dump(mode="json"), "meta": _meta(total=result.total)}
 
 
