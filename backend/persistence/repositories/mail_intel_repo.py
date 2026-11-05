@@ -270,12 +270,22 @@ class MailIntelRepository:
 
     # -- lookup -------------------------------------------------------------
 
-    async def lookup(self, indicator_type: IndicatorType, value: str) -> list[IntelMatch]:
-        """Return only *live* matches. No data or invalid input → ``[]`` (UNKNOWN)."""
+    async def lookup(
+        self,
+        indicator_type: IndicatorType,
+        value: str,
+        *,
+        now: datetime | None = None,
+    ) -> list[IntelMatch]:
+        """Return only *live* matches. No data or invalid input → ``[]`` (UNKNOWN).
+
+        ``now`` lets a caller with its own injected clock (the security worker)
+        judge liveness on that single clock; default is the repository clock.
+        """
         candidates = lookup_candidates(indicator_type, value)
         if not candidates:
             return []
-        now = self._clock()
+        now = aware(now) if now is not None else self._clock()
         methods = dict(candidates)
         async with self._sessions() as session:
             rows = (

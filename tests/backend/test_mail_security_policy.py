@@ -445,3 +445,67 @@ def test_uncalibrated_model_number_cannot_make_safe() -> None:
     assert result.axes.threat_likelihood.semantics is not (
         ScoreSemantics.CALIBRATED_PROBABILITY
     )
+
+
+# -- (j) policy@2: live threat-intel match is evidence that can only RAISE ---
+
+
+def _intel_finding(severity: FindingSeverity) -> SecurityFinding:
+    return _finding(
+        key="intel-abc",
+        category=FindingCategory.INTEL_MATCH,
+        severity=severity,
+        status=FindingStatus.SUSPECTED,
+        explanation_code="INTEL_MATCH.DOMAIN",
+    )
+
+
+def _decide(findings: list[SecurityFinding], *, complete: bool = True):
+    return decide_policy(
+        PolicyEvidence(
+            authentication=_auth_provider_pass(),
+            findings=findings,
+            inspection_complete=complete,
+        ),
+        clock=_clock,
+    )
+
+
+def test_policy_version_bumped_for_intel_semantics() -> None:
+    assert POLICY_VERSION == "mail-security-policy@2"
+
+
+@pytest.mark.parametrize(
+    "severity",
+    [
+        FindingSeverity.UNKNOWN,  # UNVERIFIED feed: severity unknown, still REVIEW
+        FindingSeverity.MEDIUM,  # FEED_ASSERTED
+        FindingSeverity.HIGH,  # ANALYST_REVIEWED
+    ],
+)
+def test_live_intel_match_raises_to_review(severity: FindingSeverity) -> None:
+    clean = _decide([])
+    matched = _decide([_intel_finding(severity)])
+    assert clean.policy.disposition is Disposition.LOW_PRIORITY
+    assert matched.policy.disposition is Disposition.REVIEW
+    assert "THREAT_INTEL_MATCH" in matched.policy.reason_codes
+    assert matched.policy.action_capabilities == []  # evidence, never an action
+
+
+def test_intel_match_on_incomplete_inspection_is_review_not_clean() -> None:
+    result = _decide([_intel_finding(FindingSeverity.UNKNOWN)], complete=False)
+    assert result.policy.disposition is Disposition.REVIEW
+
+
+def test_intel_match_never_lowers_an_escalated_disposition() -> None:
+    base = [_credential_ask_finding(), _deceptive_link_finding()]
+    without = _decide(base)
+    with_match = _decide([*base, _intel_finding(FindingSeverity.HIGH)])
+    assert without.policy.disposition is Disposition.RESTRICTED
+    assert with_match.policy.disposition is Disposition.RESTRICTED
+
+
+def test_intel_with_credential_ask_records_reason() -> None:
+    result = _decide([_credential_ask_finding(), _intel_finding(FindingSeverity.UNKNOWN)])
+    assert result.policy.disposition is Disposition.REVIEW
+    assert "THREAT_INTEL_MATCH" in result.policy.reason_codes

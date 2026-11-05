@@ -145,5 +145,13 @@ class RepositoryRegistry:
 
         return MailSecurityRepository(self._session_factory)
 
+    @property
+    def mail_intel(self) -> Any:
+        """Global threat-intel store (NerveShield Phase 2; read by the worker
+        for live matches only). Lazy import, same as ``mail_security``."""
+        from .mail_intel_repo import MailIntelRepository
+
+        return MailIntelRepository(self._session_factory)
+
 
 __all__ = ["RepositoryRegistry"]

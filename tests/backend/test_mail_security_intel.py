@@ -449,13 +449,20 @@ async def test_match_to_finding_safe_codes_only(tmp_path):
         await engine.dispose()
 
 
-def test_module_not_wired_into_pipeline():
+def test_intel_wired_only_through_worker_not_policy_or_inspections():
+    """Item 2 (Phase 2 wiring) deliberately changed this guard: the worker now
+    reaches intel, but ONLY via ``intel_wiring`` (read-only lookup -> findings).
+    The pure policy and the offline inspections must still never import intel,
+    so a match stays evidence the policy consumes as a typed finding."""
     import backend.mail_security.inspections as ins
     import backend.mail_security.policy as pol
     import backend.mail_security.worker as wrk
 
-    for mod in (ins, pol, wrk):
+    for mod in (ins, pol):
         assert "mail_security.intel" not in pathlib.Path(mod.__file__).read_text()
+    text = pathlib.Path(wrk.__file__).read_text()
+    assert "mail_security.intel_wiring" in text
+    assert "mail_security.intel import" not in text
     assert intel.INTEL_VERSION
 
 

@@ -55,6 +55,7 @@ from backend.mail_security.worker import (
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
     MailEvidenceRow,
+    MailIntelIndicatorRow,
     MailSecurityAssessmentRow,
     MailSecurityFindingRow,
     MailSecurityJobRow,
@@ -105,6 +106,7 @@ TABLES = [
     MailEvidenceRow.__table__,
     MailSecurityAssessmentRow.__table__,
     MailSecurityFindingRow.__table__,
+    MailIntelIndicatorRow.__table__,
 ]
 
 

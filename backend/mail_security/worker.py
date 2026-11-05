@@ -100,6 +100,7 @@ from backend.mail_security.auth_evidence import (
 from backend.mail_security.identifiers import assessment_id as derive_assessment_id
 from backend.mail_security.ingestion_seam import mail_security_enabled
 from backend.mail_security.inspections import inspect_message
+from backend.mail_security.intel_wiring import collect_intel_findings
 from backend.mail_security.models import (
     AcquisitionMode,
     Authentication,
@@ -253,8 +254,12 @@ class MailSecurityWorker:
         env: dict[str, str] | None = None,
         latency_sink: Callable[[str, float], None] | None = None,
         latency_clock: Callable[[], float] | None = None,
+        intel_store: Any | None = None,
     ) -> None:
         self._repo = repository
+        # Optional global threat-intel store (read-only ``lookup``). ``None``
+        # means no intel: nothing changes (UNKNOWN, never safe: R-004.5).
+        self._intel_store = intel_store
         self._resolver = content_resolver
         self._account_scope = account_scope
         self._analysis_profile_version = analysis_profile_version
@@ -441,12 +446,19 @@ class MailSecurityWorker:
                 content_ref=content_ref, flags=flags,
             )
 
+        intel_findings = await collect_intel_findings(
+            evidence,
+            _sender_addresses(evidence),
+            store=self._intel_store,
+            now=self._clock(),
+        )
         assessment = self._assess(
             account_scope=account_scope,
             source_key=source_key,
             content_ref=content_ref,
             evidence=evidence,
             flags=flags,
+            intel_findings=intel_findings,
         )
         lap = self._lap(LatencyStage.ASSESS, lap)
 
@@ -524,8 +536,9 @@ class MailSecurityWorker:
         content_ref: str | None,
         evidence: ParsedEvidence,
         flags: dict[str, Any],
+        intel_findings: list[SecurityFinding] | None = None,
     ) -> SecurityAssessment:
-        """Run auth -> inspections -> policy and build the metadata-only
+        """Run auth -> inspections -> intel evidence -> policy and build the metadata-only
         assessment for a fully-resolved, scanned message."""
         addresses = _sender_addresses(evidence)
         auth = build_auth_evidence(
@@ -536,6 +549,8 @@ class MailSecurityWorker:
         findings.extend(evidence.to_findings())  # INSPECTION_INCOMPLETE notes
         findings.extend(auth.findings)
         findings.extend(inspect_message(evidence, addresses=addresses))
+        # Live threat-intel matches are evidence for the policy only (R-006.2).
+        findings.extend(intel_findings or [])
 
         policy_evidence = PolicyEvidence(
             authentication=auth.authentication,

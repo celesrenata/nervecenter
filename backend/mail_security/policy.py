@@ -83,7 +83,7 @@ from backend.mail_security.models import (
 #: Stable version of this decision policy. Any change to the fusion rules or
 #: their thresholds MUST bump this constant so a persisted verdict records which
 #: rule set produced it (R-007.4, R-011.1/.5).
-POLICY_VERSION = "mail-security-policy@1"
+POLICY_VERSION = "mail-security-policy@2"
 
 # -- deployment mode ---------------------------------------------------------
 
@@ -106,6 +106,7 @@ _R_CLEAN_BUT_UNASSESSED: Code = "CLEAN_BUT_UNASSESSED"
 _R_BULK_MAIL: Code = "BULK_MAIL"
 _R_UNCALIBRATED_MODEL_NUMBER: Code = "UNCALIBRATED_MODEL_ESTIMATE"
 _R_CLAIM_IGNORED: Code = "UNTRUSTED_AUTHORITY_CLAIM_IGNORED"
+_R_THREAT_INTEL_MATCH: Code = "THREAT_INTEL_MATCH"
 
 #: Finding categories that, at HIGH/CRITICAL severity, represent a high-impact
 #: credential/payment/phishing instruction that mandates review even when the
@@ -401,6 +402,10 @@ def _derive_disposition(
     prompt_injection = any(
         f.category is FindingCategory.PROMPT_INJECTION for f in findings
     )
+    # policy@2: ANY live threat-intel match (even a low-trust UNVERIFIED one,
+    # whose severity is UNKNOWN) is a floor of REVIEW. A match can only RAISE;
+    # its absence never lowers or clears anything (R-004.5, R-006.2).
+    intel_match = any(f.category is FindingCategory.INTEL_MATCH for f in findings)
     high_severity_finding = any(f.severity in _HIGH_SEVERITIES for f in findings)
     threat_findings_present = any(
         f.category in _DECEPTION_CATEGORIES | _HIGH_IMPACT_ASK_CATEGORIES
@@ -422,11 +427,13 @@ def _derive_disposition(
         if deceptive_or_impersonation or prompt_injection:
             reasons.extend(_deception_reasons(findings))
             return Disposition.RESTRICTED, reasons
+        if intel_match:
+            reasons.append(_R_THREAT_INTEL_MATCH)
         return Disposition.REVIEW, reasons
 
     # ---- Rule 2: a deception/impersonation/malware threat finding => REVIEW,
     # or RESTRICTED when combined with a prompt-injection attempt.
-    if deceptive_or_impersonation or prompt_injection:
+    if deceptive_or_impersonation or prompt_injection or intel_match:
         reasons.extend(_deception_reasons(findings))
         if prompt_injection and deceptive_or_impersonation:
             return Disposition.RESTRICTED, reasons
@@ -489,6 +496,8 @@ def _deception_reasons(findings: list[SecurityFinding]) -> list[Code]:
             reasons.append(_R_SENDER_IMPERSONATION)
         elif finding.category is FindingCategory.PROMPT_INJECTION:
             reasons.append(_R_PROMPT_INJECTION)
+        elif finding.category is FindingCategory.INTEL_MATCH:
+            reasons.append(_R_THREAT_INTEL_MATCH)
     return reasons
 
 
