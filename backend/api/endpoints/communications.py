@@ -438,9 +438,30 @@ async def search_endpoint(
     canonical in-memory registry (unchanged). Declared before the
     ``/{communication_id}`` route so the literal path is not captured by the
     path parameter. Query-param names mirror the other communications routes
-    (``person_id`` / ``channel``). The result is the frozen
-    :class:`~backend.communications.search.CommunicationSearchResult` shape
-    (metadata + ``content_ref`` only — never raw content, §7).
+    (``person_id`` / ``channel`` / ``within_week``).
+
+    Response envelope (list contract, consistent with ``GET
+    /api/communications``): the matched communications are surfaced under a
+    top-level ``data`` array in the canonical §7
+    :class:`~backend.communications.models.Communication` shape (metadata +
+    ``content_ref`` only — never raw content, §7). The search-specific
+    explainability extras live under ``meta.search``:
+
+    - ``meta.search.query`` — the echoed free-text query;
+    - ``meta.search.filters`` — the deterministically parsed
+      :class:`~backend.communications.search.SearchFilters`
+      (``within_week`` / ``window_start`` / ``window_end`` / ``channel`` /
+      ``request_intent`` / ``keywords``);
+    - ``meta.search.matched_keywords`` — keywords found in the resolved text
+      (echoed, never the body);
+    - ``meta.search.request_groups`` — per-person 'who asked me' groups.
+
+    ``meta.pagination.total`` carries the match count (== ``len(data)``),
+    preserving the ``total`` semantics of the pre-normalization ``item``
+    shape. The internal
+    :class:`~backend.communications.search.CommunicationSearchResult` is kept
+    intact for the backing service; only this endpoint's envelope is
+    normalized.
     """
     # Ensure the registry is resolvable (same defensive wiring as the other
     # routes) so the module-level singleton the search service reads matches.
@@ -460,7 +481,17 @@ async def search_endpoint(
             communications=communications,
             person_names=person_names,
         )
-    return {"item": result.model_dump(mode="json"), "meta": _meta(total=result.total)}
+    result_json = result.model_dump(mode="json")
+    data = result_json["communications"]
+    meta = _meta(total=result.total)
+    meta_dict = meta.model_dump(mode="json")
+    meta_dict["search"] = {
+        "query": result_json["query"],
+        "filters": result_json["filters"],
+        "matched_keywords": result_json["matched_keywords"],
+        "request_groups": result_json["request_groups"],
+    }
+    return {"data": data, "meta": meta_dict}
 
 
 @router.get("/{communication_id}")

@@ -559,6 +559,66 @@ def test_communication_records_carry_only_content_ref(client):
     assert item["content_routing"] == DEFAULT_CONTENT_ROUTING
 
 
+def test_search_endpoint_normalized_envelope_no_db(client):
+    """Gap (A): the /search envelope is the list contract — matches live under
+    a top-level ``data`` array in the canonical Communication shape, and the
+    search extras (filters/matched_keywords/request_groups) live under
+    ``meta.search``. This is the no-DB fallback path (in-memory singleton; no
+    durable plane wired), which must behave identically to the durable-first
+    path at the envelope level."""
+    alice = _ingest_identity(client)
+    person_id = alice["person"]["person_id"]
+    _ingest_communication(
+        client,
+        person_id=person_id,
+        channel="email",
+        sender="alice.n@example.com",
+        content_ref="enc://comm/deploy",
+    )
+
+    res = client.get(
+        "/api/communications/search", params={"q": "alice", "within_week": False}
+    )
+    assert res.status_code == 200, res.text
+    payload = res.json()
+
+    # (i) matches under top-level ``data`` in the canonical Communication shape
+    assert "item" not in payload  # old envelope is gone
+    data = payload["data"]
+    assert isinstance(data, list)
+    assert len(data) >= 1
+    row = data[0]
+    assert row["person_id"] == person_id
+    assert row["channel"] == "email"
+    assert row["content_ref"] == "enc://comm/deploy"
+    # §7: metadata + content_ref only, never the body.
+    assert "body" not in row
+    assert "content" not in row
+
+    # (ii) search extras under meta.search
+    search = payload["meta"]["search"]
+    assert search["query"] == "alice"
+    assert set(search) >= {"query", "filters", "matched_keywords", "request_groups"}
+    assert search["filters"]["within_week"] is False
+
+    # (iii) total == len(data)
+    assert payload["meta"]["pagination"]["total"] == len(data)
+
+
+def test_search_endpoint_empty_result_envelope_no_db(client):
+    """An unmatched query returns an honest empty ``data`` list with
+    ``total == 0`` and the search extras still present."""
+    res = client.get(
+        "/api/communications/search",
+        params={"q": "nothingmatchesthis", "within_week": False},
+    )
+    assert res.status_code == 200, res.text
+    payload = res.json()
+    assert payload["data"] == []
+    assert payload["meta"]["pagination"]["total"] == 0
+    assert "search" in payload["meta"]
+
+
 def test_unknown_person_is_404(client):
     assert client.get("/api/people/no-such-person").status_code == 404
 

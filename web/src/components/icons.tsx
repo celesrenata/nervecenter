@@ -36,6 +36,16 @@ function baseProps(size: number, extra: IconProps): SVGProps<SVGSVGElement> {
 
 /* ─── Navigation icons (Layout sidebar) ───────────────────────────────────── */
 
+/** Search — a magnifying glass (cross-channel communications search). */
+export function SearchIcon({ size = 18, ...rest }: IconProps) {
+  return (
+    <svg {...baseProps(size, rest)}>
+      <circle cx="11" cy="11" r="7" />
+      <line x1="21" y1="21" x2="16.5" y2="16.5" />
+    </svg>
+  )
+}
+
 /** Overview — dashboard tiles. */
 
 export function OverviewIcon({ size = 18, ...rest }: IconProps) {

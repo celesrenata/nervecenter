@@ -113,6 +113,7 @@ const VIEWS: Array<{ path: string; heading: string }> = [
   { path: '/email', heading: 'Email' },
   { path: '/voicemail', heading: 'Voicemail' },
   { path: '/contacts', heading: 'Contacts' },
+  { path: '/search', heading: 'Search' },
   { path: '/systems', heading: 'Systems' },
   { path: '/timeline', heading: 'Timeline' },
   { path: '/goals', heading: 'Goals' },

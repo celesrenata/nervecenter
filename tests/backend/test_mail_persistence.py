@@ -381,9 +381,20 @@ class TestDurableFirstReads:
         await self._ingest_one(harness)
         res = client.get("/api/communications/search", params={"q": "deploy", "within_week": False})
         assert res.status_code == 200, res.text
-        item = res.json()["item"]
-        assert item["total"] >= 1
-        assert any(c["channel"] == "email" for c in item["communications"])
+        payload = res.json()
+        # Normalized envelope: matches live under top-level ``data`` in the
+        # canonical Communication shape; ``total`` == len(data).
+        data = payload["data"]
+        assert len(data) >= 1
+        assert any(c["channel"] == "email" for c in data)
+        meta = payload["meta"]
+        assert meta["pagination"]["total"] == len(data)
+        # Search-specific extras live under ``meta.search``.
+        search = meta["search"]
+        assert search["query"] == "deploy"
+        assert "filters" in search
+        assert "matched_keywords" in search
+        assert "request_groups" in search
 
     async def test_communication_id_stable_across_restart(self, harness, client) -> None:
         """Finding #1: the ``communication_id`` a client caches from a warm
@@ -419,9 +430,12 @@ class TestDurableFirstReads:
             "/api/communications/search", params={"q": "deploy", "within_week": False}
         )
         assert res.status_code == 200, res.text
-        item = res.json()["item"]
-        assert item["total"] >= 1
-        assert any(c["channel"] == "email" for c in item["communications"])
+        payload = res.json()
+        data = payload["data"]
+        assert len(data) >= 1
+        assert any(c["channel"] == "email" for c in data)
+        assert payload["meta"]["pagination"]["total"] == len(data)
+        assert "search" in payload["meta"]
 
     async def test_endpoint_ingest_reports_durable_flag(self, harness, client) -> None:
         """Finding #3: the ``POST /ingest`` response carries an honest

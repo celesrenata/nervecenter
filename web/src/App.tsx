@@ -15,6 +15,7 @@ import BillsView from './views/BillsView'
 import RoutinesView from './views/RoutinesView'
 import { ContactsView } from './views/ContactsView'
 import { PeopleView } from './views/PeopleView'
+import { CommunicationsView } from './views/CommunicationsView'
 import { CalendarView } from './views/CalendarView'
 import { NowView } from './views/NowView'
 import { BriefingView } from './views/BriefingView'
@@ -81,6 +82,7 @@ function App() {
             <Route path="/voicemail" element={<VoicemailView />} />
             <Route path="/contacts" element={<ContactsView />} />
             <Route path="/people" element={<PeopleView />} />
+            <Route path="/search" element={<CommunicationsView />} />
             <Route path="/waiting-on" element={<WaitingOnView />} />
             <Route path="/wellness" element={<WellnessView />} />
             <Route path="/bills" element={<BillsView />} />
