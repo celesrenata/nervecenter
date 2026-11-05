@@ -300,6 +300,26 @@ class MailIntelRepository:
         out.sort(key=lambda m: (m.canonical_indicator, m.source, m.feed_version))
         return out
 
+    async def live_keys(self, source: str) -> frozenset[tuple[str, str]]:
+        """``(indicator_type, canonical_indicator)`` of every *live* row of
+        ``source`` (read-only; used by the Task 2.3 change-ratio guard)."""
+        now = self._clock()
+        async with self._sessions() as session:
+            rows = (
+                (
+                    await session.execute(
+                        select(MailIntelIndicatorRow).where(
+                            MailIntelIndicatorRow.source == source
+                        )
+                    )
+                )
+                .scalars()
+                .all()
+            )
+        return frozenset(
+            (r.indicator_type, r.canonical_indicator) for r in rows if _row_live(r, now)
+        )
+
     async def audit_history(
         self, indicator_type: IndicatorType, canonical_indicator: str
     ) -> list[MailIntelIndicatorRow]:
