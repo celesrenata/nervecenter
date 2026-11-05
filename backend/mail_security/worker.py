@@ -31,16 +31,21 @@ Scope and non-goals (owner-approved, do not exceed):
 Account isolation (R-017 least-privilege, T-15) — scope reconciliation:
 
   A job's ``account_scope`` is the **canonical** boundary the consumer honors.
-  Both Task 1.8 producers that actually write job rows (the worker's
-  ``_schedule_security_job`` and the API ``POST /communications/ingest``
-  helper) scope the job as ``conn:<connection_id>``; the Task 1.8 module note
-  called out that the *API* path originally used a different namespace, so this
-  consumer fixes the canonical contract: **the content resolver is handed the
-  exact ``account_scope`` recorded on the claimed job, and every repository
-  read/write uses that same scope.** The worker never reads content or writes a
-  verdict under any other scope, so a job scheduled under account A can only
-  resolve A's content and only write A's assessment (the Task 1.7 repository
-  access-checks the scope on every call, so even a forged id cannot cross).
+  The two Task 1.8 producers that actually write job rows use two *distinct,
+  non-colliding* account-scope namespaces: the worker producer
+  (``backend.ingest.mail_worker._schedule_security_job``) scopes a job as
+  ``conn:<connection_id>`` (keyed on the durable mail connection), while the
+  API producer (``backend.api.endpoints.communications._schedule_security_job``)
+  scopes as ``src:<source>`` (keyed on the sanitized ingest source). Because
+  the two prefixes never overlap, an API-ingested message and a connection-
+  ingested message can never share an account scope by accident. This consumer
+  does not reconcile or rewrite either namespace: **the content resolver is
+  handed the exact ``account_scope`` recorded on the claimed job, and every
+  repository read/write uses that same scope.** The worker never reads content
+  or writes a verdict under any other scope, so a job scheduled under account A
+  can only resolve A's content and only write A's assessment (the Task 1.7
+  repository access-checks the scope on every call, so even a forged id cannot
+  cross).
 
 Job lifecycle (R-018, design §3 state machine / §4.4 step 5):
 
