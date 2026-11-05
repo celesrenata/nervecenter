@@ -528,3 +528,49 @@ class TestTodayP2FSections:
         assert health["iMessage"]["status"] == "disconnected"
         assert health["iMessage"]["detail"] == "token expired"
         assert "Disabled" not in health
+
+    async def test_source_health_active_ingest_reports_connected(self, wired):
+        """S4 secondary fix: an authenticated connection that is actively
+        ingesting (operational ``syncing``/``healthy``) reports as connected
+        (``fresh``) even before its first ``last_success_at`` lands — it must
+        NOT be mislabeled ``disconnected`` the way the Today probe showed. A
+        genuinely-down connection still reports ``disconnected``.
+        """
+        app, _ = wired
+        engine = app.state._test_engine
+        await _insert(
+            engine,
+            # Actively syncing, authenticated, no success recorded yet.
+            _connection_row(
+                kind="gmail",
+                label="Ingesting Gmail",
+                auth_status="authenticated",
+                operational_status="syncing",
+                last_success_at=None,
+                last_attempt_at=NOW,
+            ),
+            # Healthy, authenticated, no success recorded yet (lag between the
+            # operational flip and the first last_success_at write).
+            _connection_row(
+                kind="gmail",
+                label="Healthy Gmail",
+                auth_status="authenticated",
+                operational_status="healthy",
+                last_success_at=None,
+                last_attempt_at=NOW,
+            ),
+            # Genuinely down: auth failed — still disconnected.
+            _connection_row(
+                kind="imap",
+                label="Down IMAP",
+                auth_status="auth_failed",
+                operational_status="error",
+                last_success_at=None,
+            ),
+        )
+        with TestClient(app) as client:
+            body = client.get("/api/today").json()
+        health = {h["label"]: h for h in body["source_health"]}
+        assert health["Ingesting Gmail"]["status"] == "fresh"
+        assert health["Healthy Gmail"]["status"] == "fresh"
+        assert health["Down IMAP"]["status"] == "disconnected"

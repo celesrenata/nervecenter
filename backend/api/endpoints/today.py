@@ -605,12 +605,27 @@ async def _source_health(ctx: TodayContext) -> list[dict[str, Any]]:
         if not row.enabled:
             continue
         last_success = _ensure_utc(row.last_success_at)
+        # Two-axis status is the source of truth (spec §3): the auth axis says
+        # whether we can talk to the source, the operational axis says whether
+        # ingest is actually working. A connection whose operational axis is
+        # ``syncing``/``healthy`` is actively working — report it connected
+        # even before its first ``last_success_at`` lands (the mislabel the
+        # Today probe showed: an actively-ingesting Gmail connection reported
+        # ``disconnected``). A genuine auth or operational failure still
+        # reports honestly as ``disconnected``/``stale``.
         if row.auth_status in ("unconfigured", "auth_expired", "auth_failed"):
             status = "disconnected"
+        elif row.operational_status in ("syncing", "healthy"):
+            # Actively ingesting / healthy — connected. Age it to ``stale``
+            # only once a real success is on record and older than the window.
+            if last_success is not None and ctx.now - last_success > SOURCE_STALE_AFTER:
+                status = "stale"
+            else:
+                status = "fresh"
         elif row.operational_status in ("error", "degraded"):
             status = "stale"
         elif last_success is None:
-            # Configured + authenticated but never synced.
+            # Authenticated but never synced and not currently syncing.
             status = "stale" if row.operational_status == "never_synced" else "disconnected"
         elif ctx.now - last_success <= SOURCE_STALE_AFTER:
             status = "fresh"

@@ -325,6 +325,7 @@ async def wire_dependencies(target: FastAPI) -> None:
             # happens lazily on first ingest); re-applying is safe.
             try:
                 from backend.communications.detection.wiring import (
+                    set_attention_store,
                     set_commitment_store,
                 )
                 from backend.followups.service import get_followup_service
@@ -334,6 +335,15 @@ async def wire_dependencies(target: FastAPI) -> None:
 
                 set_commitment_store(
                     target.state.repository_registry.commitments
+                )
+                # S4 durable attention seam: bind the durable attention sink
+                # onto the live CommunicationPipeline so detected findings are
+                # mirrored to the ``attention_items`` table that ``/api/today``
+                # reads. Best-effort: a durable attention write failure never
+                # blocks the worker's cursor advance (unlike the gated
+                # commitment/person write).
+                set_attention_store(
+                    target.state.repository_registry.attention
                 )
                 # P1-107 step 2: bind the durable communications store onto the
                 # process-wide ingest seam so BOTH the mail worker and the
