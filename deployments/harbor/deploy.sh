@@ -124,14 +124,53 @@ fi
 # and re-rolling the Deployments) and only then prints the YAML to stdout.
 # `kubectl kustomize` is the pure, no-side-effect render that produces the identical
 # manifest set, so the single `kubectl apply -f` below is the only cluster write.
-# Delete the old Job first so the migration re-runs on the new image
-# (alembic upgrade head is idempotent — no-op when the schema is at head).
-log "re-running migration job + applying kustomize base (image retag -> ${TAG})"
+# Delete the old Jobs first so they re-run on the new image. Both the
+# migration Job and the object-store bootstrap Job have an immutable
+# `selector`/`template` once created, so a plain re-apply fails with
+# "field is immutable" — delete-then-apply re-creates them cleanly.
+# (alembic upgrade head is idempotent — no-op when the schema is at head;
+# the bootstrap Job's bucket create + round-trip is idempotent too.)
+log "re-running migration + bootstrap jobs, applying kustomize base (image retag -> ${TAG})"
 kubectl -n "${NS}" delete job nervecenter-migrate --ignore-not-found=true
+kubectl -n "${NS}" delete job nervecenter-object-store-bootstrap --ignore-not-found=true
+# Render and retag the :latest placeholders.
 kubectl kustomize "${KUSTOMIZE_DIR}" \
   | sed "s|${API_IMAGE}:latest|${API_IMAGE}:${TAG}|g; s|${WEB_IMAGE}:latest|${WEB_IMAGE}:${TAG}|g" \
   > /tmp/rendered.yaml
-kubectl apply -f /tmp/rendered.yaml
+# A bound PVC's spec is immutable (only resources.requests /
+# volumeAttributesClassName may change), so re-applying the rendered
+# postgres-data PVC — whose `volumeName` is empty in the kustomize base —
+# fails with "spec is immutable after creation". Drop that PVC document from
+# the apply ONLY when it already exists on the cluster (its data survives
+# rollouts on longhorn); on a first-ever deploy the PVC is absent, so it is
+# kept and created normally.
+APPLY_FILE=/tmp/rendered.yaml
+if kubectl -n "${NS}" get pvc postgres-data >/dev/null 2>&1; then
+  log "postgres-data PVC exists — excluding it from the re-apply (immutable bound spec)"
+  python3 - "/tmp/rendered.yaml" > /tmp/rendered.filtered.yaml <<'PYEOF'
+import sys
+
+path = sys.argv[1]
+with open(path, "r", encoding="utf-8") as handle:
+    raw = handle.read()
+
+# Lightweight text filter (no PyYAML dependency on the deploy host): drop the
+# document that declares both the PersistentVolumeClaim kind and the
+# postgres-data name.
+kept = []
+for doc in raw.split("\n---\n"):
+    if "kind: PersistentVolumeClaim" in doc and "name: postgres-data" in doc:
+        continue
+    if doc.strip():
+        kept.append(doc)
+
+sys.stdout.write("\n---\n".join(kept))
+if kept:
+    sys.stdout.write("\n")
+PYEOF
+  APPLY_FILE=/tmp/rendered.filtered.yaml
+fi
+kubectl apply -f "${APPLY_FILE}"
 
 # --- 7. wait for workloads ------------------------------------------------------
 # Migration Job completes first (schema at head before the api is useful).
