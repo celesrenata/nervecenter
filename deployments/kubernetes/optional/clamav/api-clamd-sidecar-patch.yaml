@@ -1,0 +1,84 @@
+# DRAFT strategic-merge patch: clamd sidecar in the `api` pod (see README.md).
+# Containers and env merge by name; volumes merge by name.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: nervecenter
+spec:
+  template:
+    spec:
+      containers:
+        - name: api
+          env:
+            # Exact names read by backend/mail_security/attachment_wiring.py.
+            # The client accepts only a unix socket or a loopback address.
+            - name: NERVE_CLAMD_HOST
+              value: "127.0.0.1"
+            - name: NERVE_CLAMD_PORT
+              value: "3310"
+        - name: clamd
+          # INVALID PLACEHOLDER on purpose (.invalid never resolves). The
+          # operator must replace it with a real, pinned image (README.md).
+          image: "registry.invalid/REPLACE-ME/clamav:PIN-TAG-BEFORE-APPLY"
+          imagePullPolicy: IfNotPresent
+          ports:
+            # Informational only: no Service is created for clamd.
+            - name: clamd
+              containerPort: 3310
+          startupProbe:
+            # First start downloads signatures into an empty volume.
+            exec:
+              command: ["sh", "-c", "printf 'PING\\n' | nc -w 2 127.0.0.1 3310 | grep -q PONG"]
+            periodSeconds: 10
+            failureThreshold: 60
+          readinessProbe:
+            # clamd PING. Assumes `nc` exists in the image (verify).
+            exec:
+              command: ["sh", "-c", "printf 'PING\\n' | nc -w 2 127.0.0.1 3310 | grep -q PONG"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            # NOT MEASURED on this cluster. clamd typically needs roughly
+            # 1-2 GiB for the signature set, and a database reload can briefly
+            # hold two copies. Re-size from `kubectl top` after a real run.
+            requests:
+              memory: "1536Mi"
+              cpu: "250m"
+            limits:
+              memory: "3Gi"
+              cpu: "2"
+          securityContext:
+            runAsNonRoot: true
+            # uid/gid of the `clamav` user in the upstream image (verify for
+            # the pinned image).
+            runAsUser: 100
+            runAsGroup: 101
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: clamav-db
+              mountPath: /var/lib/clamav
+            - name: clamav-run
+              mountPath: /run/clamav
+            - name: clamav-log
+              mountPath: /var/log/clamav
+            - name: clamav-tmp
+              mountPath: /tmp
+      volumes:
+        - name: clamav-db
+          emptyDir:
+            sizeLimit: 2Gi
+        - name: clamav-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
+        - name: clamav-log
+          emptyDir:
+            sizeLimit: 128Mi
+        - name: clamav-tmp
+          emptyDir:
+            sizeLimit: 1Gi

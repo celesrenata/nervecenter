@@ -1,0 +1,15 @@
+# DRAFT, NEVER APPLIED, UNVERIFIED IN-CLUSTER. See README.md.
+#
+# Optional overlay: adds a clamd sidecar to the base `api` Deployment.
+# Deliberately NOT referenced by deployments/kubernetes/kustomization.yaml or
+# base/. The sidecar image is an invalid placeholder, so applying this as-is
+# fails with an image pull error until an operator pins a real image.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../base
+patches:
+  - path: api-clamd-sidecar-patch.yaml
+    target:
+      kind: Deployment
+      name: api
