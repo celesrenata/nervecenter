@@ -92,6 +92,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 
 import structlog
 
+from backend.mail_security.acquisition import (
+    effective_acquisition_mode,
+    fidelity_for_mode,
+    is_body_only,
+    missing_parts_for_mode,
+)
 from backend.mail_security.attachment_wiring import (
     AttachmentAssessment,
     collect_attachment_results,
@@ -377,6 +383,7 @@ class MailSecurityWorker:
             content_ref=content_ref,
             evidence=None,
             assessment=assessment,
+            acquisition_mode=effective_acquisition_mode(job.meta),
         )
 
     # -- process one claimed job -------------------------------------------
@@ -408,6 +415,9 @@ class MailSecurityWorker:
         source_key = job.source_key
         content_ref = str((job.meta or {}).get("content_ref") or "") or None
         flags = dict((job.meta or {}).get("flags") or {})
+        # Fidelity comes from the TRUSTED acquisition mode recorded by the
+        # ingest seam in the job meta, never from the content (NS-ADR-024).
+        acquisition_mode = effective_acquisition_mode(job.meta)
         attempts = int(getattr(job, "attempts", 0) or 0)
 
         try:
@@ -472,6 +482,7 @@ class MailSecurityWorker:
             flags=flags,
             intel_findings=intel_findings,
             attachment_result=attachment_result,
+            acquisition_mode=acquisition_mode,
         )
         lap = self._lap(LatencyStage.ASSESS, lap)
 
@@ -555,12 +566,17 @@ class MailSecurityWorker:
         flags: dict[str, Any],
         intel_findings: list[SecurityFinding] | None = None,
         attachment_result: AttachmentAssessment | None = None,
+        acquisition_mode: AcquisitionMode = AcquisitionMode.LEGACY_BODY_ONLY,
     ) -> SecurityAssessment:
         """Run auth -> inspections -> intel evidence -> policy and build the metadata-only
         assessment for a fully-resolved, scanned message."""
         addresses = _sender_addresses(evidence)
+        # Body-only capture: header-looking lines in the stored text are
+        # attacker-controlled body content, not captured transport headers, so
+        # they must never feed authentication evidence (T-01, T-28, I-02).
+        auth_headers = [] if is_body_only(acquisition_mode) else evidence.headers
         auth = build_auth_evidence(
-            evidence.headers, addresses=addresses, boundary=self._boundary
+            auth_headers, addresses=addresses, boundary=self._boundary
         )
 
         findings: list[SecurityFinding] = []
@@ -598,10 +614,12 @@ class MailSecurityWorker:
             account_scope=account_scope,
             source_key=source_key,
             processing_state=processing_state,
-            evidence_fidelity=evidence_fidelity_for(evidence),
+            evidence_fidelity=evidence_fidelity_for(
+                evidence, fidelity_for_mode(acquisition_mode)
+            ),
             completeness=Completeness(
                 available=[],
-                missing=[],
+                missing=missing_parts_for_mode(acquisition_mode),
                 checks_not_run=list(
                     dict.fromkeys(
                         [
@@ -732,6 +750,7 @@ class MailSecurityWorker:
         content_ref: str | None,
         evidence: ParsedEvidence | None,
         assessment: SecurityAssessment,
+        acquisition_mode: AcquisitionMode = AcquisitionMode.LEGACY_BODY_ONLY,
     ) -> None:
         """Commit the evidence manifest + assessment + findings (metadata only).
 
@@ -746,6 +765,7 @@ class MailSecurityWorker:
             content_ref=content_ref,
             evidence=evidence,
             evidence_fidelity=assessment.evidence_fidelity,
+            acquisition_mode=acquisition_mode,
         )
         await self._repo.upsert_evidence(manifest)
         await self._repo.upsert_assessment(assessment)
@@ -772,6 +792,7 @@ class MailSecurityWorker:
             content_ref=content_ref,
             evidence=evidence,
             evidence_fidelity=assessment.evidence_fidelity,
+            acquisition_mode=effective_acquisition_mode(job.meta),
         )
         outcome = await self._repo.commit_verdict_fenced(
             job.account_scope,
@@ -796,17 +817,22 @@ class MailSecurityWorker:
         content_ref: str | None,
         evidence: ParsedEvidence | None,
         evidence_fidelity: EvidenceFidelity,
+        acquisition_mode: AcquisitionMode = AcquisitionMode.LEGACY_BODY_ONLY,
     ) -> MessageEvidenceManifest:
         """Build the immutable per-revision evidence manifest (design §4.1)."""
         sha = evidence.source_sha256 if evidence is not None else None
         missing = list(evidence.completeness_codes()) if evidence is not None else []
+        # R-002.3: a body-only capture explicitly marks the evidence it lacks.
+        missing.extend(
+            code for code in missing_parts_for_mode(acquisition_mode) if code not in missing
+        )
         return MessageEvidenceManifest(
             source_id=source_key,
             account_scope=account_scope,
             source_revision=self._source_revision,
             provider=_provider_from_source_key(source_key),
             provider_uid=source_key,
-            acquisition_mode=AcquisitionMode.IMAP_RFC822,
+            acquisition_mode=acquisition_mode,
             acquired_at=self._clock(),
             raw_content_ref=_opaque_ref(content_ref),
             normalized_content_ref=None,

@@ -1076,22 +1076,31 @@ def _types_compatible(sniffed: str, claimed: str) -> bool:
 # =============================================================================
 
 
-def evidence_fidelity_for(evidence: ParsedEvidence) -> EvidenceFidelity:
-    """Classify how faithful the captured evidence is (design §4, I-05).
+def evidence_fidelity_for(
+    evidence: ParsedEvidence,
+    acquired: EvidenceFidelity = EvidenceFidelity.BODY_ONLY,
+) -> EvidenceFidelity:
+    """Fidelity of the evidence, given the TRUSTED acquisition fidelity.
 
-    We parsed real RFC822 bytes, so fidelity is ``ORIGINAL_RFC822`` when the
-    parse was complete and nothing was truncated. If a source-bytes cap
-    truncated the input, the capture is lossy and must not claim original
-    fidelity, so we drop to ``SELECTED_HEADERS_AND_BODY`` (I-05: a lossy
-    summary is never presented as original signed MIME).
+    The parser cannot know how the bytes were captured and the bytes are
+    attacker-controlled, so it never labels its own input original: ``acquired``
+    is supplied by the caller from the recorded acquisition mode (NS-ADR-024)
+    and defaults to the safe ``BODY_ONLY``. The only thing the parser may do is
+    DEMOTE: if a source-bytes cap truncated a raw-bytes capture
+    (``ORIGINAL_RFC822``/``PROVIDER_FULL``), the result is lossy, so it drops to
+    ``SELECTED_HEADERS_AND_BODY`` (I-05: a lossy summary is never presented as
+    original signed MIME). Content can never promote fidelity.
     """
     source_truncated = any(
         note.reason is IncompleteReason.SOURCE_BYTES_EXCEEDED
         for note in evidence.incomplete_notes
     )
-    if source_truncated:
+    if source_truncated and acquired in (
+        EvidenceFidelity.ORIGINAL_RFC822,
+        EvidenceFidelity.PROVIDER_FULL,
+    ):
         return EvidenceFidelity.SELECTED_HEADERS_AND_BODY
-    return EvidenceFidelity.ORIGINAL_RFC822
+    return acquired
 
 
 __all__ = [

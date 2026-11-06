@@ -976,6 +976,7 @@ class MailIngestWorker:
             get_mail_security_repository,
             mail_security_enabled,
         )
+        from backend.mail_security.models import AcquisitionMode
 
         if not mail_security_enabled():
             return
@@ -998,6 +999,9 @@ class MailIngestWorker:
             folder=folder,
             content_ref=content_ref,
             flags=flags,
+            # Trusted acquisition provenance (NS-ADR-024): this worker stores
+            # DECODED body text, not raw RFC822, so it is LEGACY_BODY_ONLY.
+            acquisition_mode=AcquisitionMode.LEGACY_BODY_ONLY.value,
         )
 
     def _seed_person(self, address: str, display_name: str | None) -> str | None:

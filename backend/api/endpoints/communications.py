@@ -176,6 +176,9 @@ async def _schedule_security_job(communication: Any) -> None:
         folder=None,
         content_ref=str(getattr(communication, "content_ref", "") or "") or None,
         flags=flags if isinstance(flags, dict) else None,
+        # Trusted acquisition provenance (NS-ADR-024): the API stores a
+        # normalized communication, never raw RFC822 -> LEGACY_BODY_ONLY.
+        acquisition_mode="LEGACY_BODY_ONLY",
     )
 
 

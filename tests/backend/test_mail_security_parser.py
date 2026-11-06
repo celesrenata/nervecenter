@@ -48,6 +48,7 @@ from backend.mail_security import (
     parse_mime_evidence,
 )
 from backend.mail_security.models import (
+    EvidenceFidelity,
     FindingStatus,
     SecurityFinding,
 )
@@ -348,7 +349,13 @@ def test_benign_messages_parse_complete(builder) -> None:
     assert isinstance(evidence, ParsedEvidence)
     assert evidence.inspection_complete is True
     assert evidence.to_findings() == []
-    assert evidence_fidelity_for(evidence).value == "ORIGINAL_RFC822"
+    # NS-ADR-024: the parser never labels its own input original; the default
+    # is the safe BODY_ONLY and only a caller-supplied (trusted) fidelity wins.
+    assert evidence_fidelity_for(evidence).value == "BODY_ONLY"
+    assert (
+        evidence_fidelity_for(evidence, EvidenceFidelity.ORIGINAL_RFC822).value
+        == "ORIGINAL_RFC822"
+    )
 
 
 def test_benign_mixed_extracts_all_component_kinds() -> None:
@@ -471,6 +478,11 @@ def test_source_bytes_cap_triggers_incomplete_and_lossy_fidelity() -> None:
     assert evidence.inspection_complete is False
     # I-05: lossy capture must not claim original RFC822 fidelity.
     assert evidence_fidelity_for(evidence).value != "ORIGINAL_RFC822"
+    # A truncated raw capture is demoted even when the caller claims original.
+    assert (
+        evidence_fidelity_for(evidence, EvidenceFidelity.ORIGINAL_RFC822).value
+        == "SELECTED_HEADERS_AND_BODY"
+    )
 
 
 def test_huge_header_triggers_header_size_cap() -> None:

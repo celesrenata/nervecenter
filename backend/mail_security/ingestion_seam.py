@@ -62,6 +62,10 @@ from typing import Any
 
 import structlog
 
+from backend.mail_security.acquisition import (
+    ACQUISITION_META_KEY,
+    trusted_mode_for_write,
+)
 from backend.mail_security.identifiers import (
     logical_source_key,
     normalize_analysis_version,
@@ -181,6 +185,7 @@ class MailSecurityIngestionSeam:
         folder: str | None = None,
         content_ref: str | None = None,
         flags: dict[str, bool] | None = None,
+        acquisition_mode: str | None = None,
     ) -> Any | None:
         """Upsert one ``PENDING`` security job for a message (idempotent).
 
@@ -219,7 +224,11 @@ class MailSecurityIngestionSeam:
                 source_key=source_key,
                 analysis_profile_version=self._analysis_profile_version,
                 state=JOB_STATE_PENDING,
-                meta=_safe_job_meta(content_ref=content_ref, flags=flags),
+                meta=_safe_job_meta(
+                    content_ref=content_ref,
+                    flags=flags,
+                    acquisition_mode=acquisition_mode,
+                ),
             )
         except Exception as exc:  # noqa: BLE001 - scheduling must never fail ingest
             # Safe code only — never the exception text (it could echo a body
@@ -232,7 +241,10 @@ class MailSecurityIngestionSeam:
 
 
 def _safe_job_meta(
-    *, content_ref: str | None, flags: dict[str, bool] | None
+    *,
+    content_ref: str | None,
+    flags: dict[str, bool] | None,
+    acquisition_mode: str | None = None,
 ) -> dict[str, Any]:
     """Build the bounded, safe ``meta`` payload for a scheduled job.
 
@@ -242,6 +254,10 @@ def _safe_job_meta(
     the flags channel.
     """
     meta: dict[str, Any] = {"requested": True}
+    # Trusted acquisition provenance (NS-ADR-024): recorded by the ingest code
+    # that stored the object. Missing/unknown/raw-without-a-raw-seam all
+    # collapse to LEGACY_BODY_ONLY; fidelity is never inferred from content.
+    meta[ACQUISITION_META_KEY] = trusted_mode_for_write(acquisition_mode).value
     if content_ref is not None:
         meta["content_ref"] = str(content_ref)
     if flags:
@@ -292,6 +308,7 @@ async def scan_missing_jobs(
             folder=source.get("folder"),
             content_ref=source.get("content_ref"),
             flags=source.get("flags"),
+            acquisition_mode=source.get("acquisition_mode"),
         )
         if row is not None:
             created.append(row)
