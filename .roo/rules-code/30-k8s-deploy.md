@@ -8,7 +8,7 @@ These are the operating rules for cluster work, not a reason to rewrite the app.
 
 1. **Namespace is fixed to `nervecenter`.** Every in-cluster DNS name (`postgres.nervecenter.svc`, `nats.nervecenter.svc`, `api.nervecenter.svc`, `mcp.nervecenter.svc`) and the Ingress TLS host assume this name. Renaming the namespace breaks the Secret values and the web proxy config.
 2. **Secrets live out-of-band.** `nervecenter-env`, `harbor-pull`, and `nervecenter-oauth` are NOT listed in the kustomization. They are created or copied by the operator and referenced via `envFrom` / `imagePullSecrets` / `secretKeyRef`, which `kubectl apply` resolves at pod runtime. Never commit real secret values.
-3. **The `mcp` Deployment is pinned to a running tag** (`registry.celestium.life/nervecenter/mcp:86a6a93`), not `:latest`. A blind `apply -k` that retags mcp to `:latest` will cause `ImagePullBackOff` because no such tag exists in Harbor. If you retag mcp, confirm the tag is present in the registry first.
+3. **The `mcp` Deployment is pinned to a running tag**, not `:latest`. The tag is whatever the committed manifest (`deployments/kubernetes/base/mcp-deployment.yaml`) and the live deployment currently pin; as of now that is `fc0bb30`. Read it from the manifest/cluster before retagging. A blind `apply -k` that retags mcp to `:latest` will cause `ImagePullBackOff` because no such tag exists in Harbor. If you retag mcp, confirm the tag is present in the registry first.
 4. **SSO gate is not wired into the Ingress by default** until the Keycloak `nervecenter` client exists and its `client-secret` is patched into the `nervecenter-oauth` Secret. The Ingress already points at `nervecenter-oauth` for `/`, so the gate is active only once both preconditions are met. `/mcp/` is intentionally open (direct to the mcp service).
 5. **Self-hosted Postgres credentials default to `nervcenter:nervcenter`** and the database is `nervcenter`, matching the app's `DEFAULT_DATABASE_URL` in `backend/persistence/connection.py`. The Secret carries both `NERVE_*` (deploy contract) and `NERVECENTER_*` (backend runtime) keys; both are injected so the app works before the env-var names are normalized.
 
@@ -22,11 +22,15 @@ The cluster runs six workloads in one namespace, plus a migration Job:
 | `nats` | Deployment | `nats:2.10-alpine` (`--jetstream`, `--http_port 8222`) | `nats:4222` | `GET /varz` on 8222 |
 | `nervecenter-migrate` | Job | same image as `api` | — (runs `backend.persistence.migrate upgrade`) | Job success/completion |
 | `api` | Deployment | `.../nervecenter/api:TAG` | `api:8000` (ClusterIP) | `GET /api/health` on 8000 |
-| `mcp` | Deployment | `.../nervecenter/mcp:86a6a93` | `mcp:8000` (ClusterIP) | `GET /mcp/health` on 8000 |
+| `mcp` | Deployment | `.../nervecenter/mcp:<pinned tag>` (`fc0bb30` as of now) | `mcp:8000` (ClusterIP) | `GET /mcp/health` on 8000 |
 | `web` | Deployment | `.../nervecenter/web:TAG` (nginx) | `web:80` (ClusterIP) | `GET /` on 80 |
 | `nervecenter-oauth` | Deployment | `quay.io/oauth2-proxy/oauth2-proxy:v7.15.4` | `nervecenter-oauth:4180` (ClusterIP) | `GET /ready` on 4180 |
 
 Routing: `Ingress (nervecenter.celestium.life)` → `/mcp/` → `mcp:8000` (open, direct); `/` → `nervecenter-oauth:4180` → `web:80` → (SPA static | `/api/` → `api:8000`). TLS is provisioned automatically by cert-manager via the `cert-manager.io/cluster-issuer: celestium-le-production` annotation on the Ingress.
+
+The `nervecenter-object-store-bootstrap` Job (`object-store-bootstrap.yaml`) does a write/read/delete probe against the object store. `deployments/harbor/deploy.sh` deletes and recreates it alongside `nervecenter-migrate` on each run.
+
+The ConfigMap can optionally carry `NERVE_MAIL_SECURITY_ENABLED` (mail security pipeline on/off; roll `api` after changing it) and `NERVE_MAIL_SECURITY_API_SCOPE_MODE` (`claim_only` or `single_tenant`; read by `backend/api/endpoints/mail_security.py`). Both are optional.
 
 Config flows from `nervcenter-config` (ConfigMap: `APP_ENV`, `LOG_LEVEL`, `TZ`, `API_PORT=8000`, `API_UPSTREAM=api.nervecenter.svc`, `NERVE_MCP_API=http://api:8000`). The web nginx reads `API_UPSTREAM`/`API_PORT` to proxy `/api/` and `/mcp/` in-cluster.
 
@@ -158,7 +162,7 @@ kubectl -n nervecenter describe ingress nervcenter-celestium
 | Symptom | Likely cause | First check |
 | --- | --- | --- |
 | `ImagePullBackOff` on a workload | Tag not in Harbor, or bad `harbor-pull` Secret | Confirm the tag exists in the registry; re-copy the pull Secret from a known-good namespace |
-| `ImagePullBackOff` on `mcp` only | `mcp` was retagged to `:latest`, which is not in Harbor | Reset `mcp` to its pinned running tag (see invariant 3) |
+| `ImagePullBackOff` on `mcp` only | `mcp` was retagged to `:latest`, which is not in Harbor | Reset `mcp` to the tag pinned in `mcp-deployment.yaml` and live (`fc0bb30` as of now; read it from the manifest/cluster, see invariant 3) |
 | API pods crash-loop, DB errors in logs | Migration not applied, or `nervecenter-env` Secret URL is wrong/stale | Run the Job; verify the decoded `NERVE_DB_URL` matches the live Postgres service |
 | `postgres` not `Ready` | PVC pending (no `longhorn` capacity), or probe failing | `kubectl get pvc -n nervecenter`; check `pg_isready` in pod logs |
 | `nats` not `Ready` | Monitoring port 8222 not reachable | Confirm `--http_port 8222` is in the container args |
