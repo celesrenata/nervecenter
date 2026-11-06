@@ -30,6 +30,13 @@ Observability: a pass that really swept advances the Task 2.6 sweeper heartbeat
 enumeration, or a pass where every scope's sweep failed, does not, so a stalled
 sweeper stays visible.
 
+Alert emission (Item D, T-24): after each pass the runner evaluates the Task 2.6
+alerts over the scopes it processed (bounded by ``MAX_ALERT_SCOPES``) and logs
+each active one as ``mail_security.alert`` (code, stage, severity, numbers
+only). An alert is logged when it first becomes active, again only after the
+quiet period while still active, and ``mail_security.alert_cleared`` when it
+clears. This emits LOG LINES ONLY; delivery to a person is not implemented.
+Alerting failures never affect job processing.
 Privacy (T-14): logs carry fixed codes and exception type names only.
 """
 
@@ -47,12 +54,20 @@ from backend.mail_security.ingestion_seam import (
     DEFAULT_ANALYSIS_PROFILE_VERSION,
     mail_security_enabled,
 )
+from backend.mail_security.observability import (
+    HealthThresholds,
+    collect_snapshot,
+    evaluate_alerts,
+)
 from backend.mail_security.queue import QueuePolicy, SourcesProvider, sweep_once
 from backend.mail_security.telemetry import note_sweep
 
 log = structlog.get_logger(__name__)
 
 DEFAULT_INTERVAL_SECONDS = 30.0
+DEFAULT_ALERT_QUIET_SECONDS = 3600.0
+#: Upper bound on scopes read for alert evaluation in one pass.
+MAX_ALERT_SCOPES = 50
 
 
 class RunnerFailure(StrEnum):
@@ -83,6 +98,8 @@ class MailSecurityPipelineRunner:
         sleep: Callable[[float], Awaitable[None]] | None = None,
         analysis_profile_version: str = DEFAULT_ANALYSIS_PROFILE_VERSION,
         env: dict[str, str] | None = None,
+        alert_quiet_seconds: float = DEFAULT_ALERT_QUIET_SECONDS,
+        alert_thresholds: HealthThresholds | None = None,
     ) -> None:
         self._repo = repository
         self._factory = worker_factory
@@ -93,6 +110,10 @@ class MailSecurityPipelineRunner:
         self._sleep = sleep if sleep is not None else asyncio.sleep
         self._profile = analysis_profile_version
         self._env = dict(env) if env is not None else None
+        self._alert_quiet = alert_quiet_seconds
+        self._alert_thresholds = alert_thresholds
+        #: (code, stage) -> time the alert was last logged.
+        self._alert_logged: dict[tuple[str, str], datetime] = {}
         self._task: asyncio.Task[None] | None = None
         self._failures: dict[RunnerFailure, int] = dict.fromkeys(RunnerFailure, 0)
 
@@ -137,7 +158,46 @@ class MailSecurityPipelineRunner:
         # (an empty successful enumeration counts; all-scopes-failed does not).
         if not scopes or any(swept):
             note_sweep(now)
+        await self._emit_alerts(list(scopes), now)
         return list(scopes)
+
+    async def _emit_alerts(self, scopes: list[str], now: datetime) -> None:
+        """Evaluate + log alerts for the processed scopes. Never raises."""
+        if not scopes:
+            return  # nothing observed: do not fire or clear anything
+        try:
+            snapshot = await collect_snapshot(
+                self._repo,
+                scopes[:MAX_ALERT_SCOPES],
+                now=now,
+                policy=self._policy,
+                env=self._env,
+            )
+            alerts = evaluate_alerts(snapshot, self._alert_thresholds)
+            active: set[tuple[str, str]] = set()
+            for alert in alerts:
+                key = (alert.code.value, alert.stage.value)
+                active.add(key)
+                last = self._alert_logged.get(key)
+                if last is not None and (now - last).total_seconds() < self._alert_quiet:
+                    continue
+                self._alert_logged[key] = now
+                log.warning(
+                    "mail_security.alert",
+                    code=alert.code.value,
+                    stage=alert.stage.value,
+                    severity=alert.severity.value,
+                    observed=alert.observed,
+                    threshold=alert.threshold,
+                )
+            for key in [k for k in self._alert_logged if k not in active]:
+                del self._alert_logged[key]
+                log.info("mail_security.alert_cleared", code=key[0], stage=key[1])
+        except Exception as exc:  # noqa: BLE001 - alerting never affects processing
+            log.warning(
+                "mail_security.alert_evaluation_failed",
+                error_type=type(exc).__name__,
+            )
 
     async def _backfill_scopes(self) -> list[str]:
         """Scopes a provider exposing ``scopes()`` wants visited (else [])."""
@@ -210,7 +270,9 @@ class MailSecurityPipelineRunner:
 
 
 __all__ = [
+    "DEFAULT_ALERT_QUIET_SECONDS",
     "DEFAULT_INTERVAL_SECONDS",
+    "MAX_ALERT_SCOPES",
     "MailSecurityPipelineRunner",
     "RunnerFailure",
 ]
