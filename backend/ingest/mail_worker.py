@@ -871,7 +871,7 @@ class MailIngestWorker:
             meta = await self._object_store.put(
                 key,
                 bytes(item.content_bytes or b""),
-                content_type="message/rfc822",
+                content_type="text/plain; charset=utf-8",
                 metadata={"account": account, "message_id": mail_id},
             )
             communication_id = _communication_id(self.connection_id, mail_id)

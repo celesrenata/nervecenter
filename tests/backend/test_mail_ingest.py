@@ -440,6 +440,19 @@ class TestWorkerPoll:
         assert meta is not None
         assert _SECRET not in str(meta.metadata)
 
+    async def test_stored_body_is_labelled_plain_text(self, harness) -> None:
+        """Stored objects are decoded body text, not RFC822 (Phase 0 finding)."""
+        seam = FakeSeam()
+        transport = StubMailTransport(items=[_make_item("<1@corp>")], next_cursor={"uid": 7})
+        worker = _worker(
+            harness.registry, harness.store, harness.conn, transport=transport, seam=seam
+        )
+        await worker.poll_once()
+        key = seam.ingests[0]["content_ref"].split("/", 2)[2]
+        meta = await harness.store.head(key)
+        assert meta is not None
+        assert meta.content_type == "text/plain; charset=utf-8"
+
     async def test_auth_error_maps_to_auth_expired(self, harness) -> None:
         transport = StubMailTransport(raise_exc=TransportAuthError("LOGIN -> AUTHENTICATIONFAILED"))
         worker = _worker(harness.registry, harness.store, harness.conn, transport=transport, seam=FakeSeam())

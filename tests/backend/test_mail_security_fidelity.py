@@ -377,3 +377,25 @@ def test_logical_key_unchanged_by_acquisition_mode() -> None:
         "conn:abc", sk, DEFAULT_ANALYSIS_PROFILE_VERSION
     )
     assert "LEGACY_BODY_ONLY" not in sk
+
+
+@pytest.mark.parametrize("content_type", ["message/rfc822", "MESSAGE/RFC822", "message/global"])
+def test_rfc822_content_type_never_promotes_fidelity(content_type: str) -> None:
+    """NS-ADR-024: fidelity is independent of any object content type.
+
+    Even if job meta (or stored object metadata) claims ``message/rfc822``, only the
+    trusted acquisition mode counts, and raw modes stay demoted (no raw seam)."""
+    import inspect
+
+    for meta in (
+        {"content_type": content_type},
+        {"content_type": content_type, ACQUISITION_META_KEY: "garbage"},
+        {"content_type": content_type, ACQUISITION_META_KEY: "LEGACY_BODY_ONLY"},
+        {"content_type": content_type, ACQUISITION_META_KEY: "IMAP_RFC822"},
+    ):
+        mode = effective_acquisition_mode(meta)
+        assert mode is AcquisitionMode.LEGACY_BODY_ONLY
+        assert fidelity_for_mode(mode) is EvidenceFidelity.BODY_ONLY
+    # No fidelity-deciding function accepts a content type at all.
+    for fn in (effective_acquisition_mode, trusted_mode_for_write, fidelity_for_mode):
+        assert not any("content_type" in p for p in inspect.signature(fn).parameters)
