@@ -355,6 +355,9 @@ _FORBIDDEN = {
     "pandas", "os",
 }  # fmt: skip
 _ALLOWED_NON_STDLIB = {"pydantic", "backend"}
+#: Only the explicit ArcForge client modules (task 3.5) may use stdlib network libraries.
+#: They are covered by their own static test; everything else stays network-free.
+_NETWORK_STDLIB = {"socket", "ssl", "http", "urllib"}
 
 
 def _imported_top_levels(path: Path) -> set[str]:
@@ -376,7 +379,10 @@ def test_new_modules_import_no_network_subprocess_or_third_party() -> None:
     }  # fmt: skip
     for path in files:
         tops = _imported_top_levels(path)
-        assert not tops & _FORBIDDEN, (path.name, tops & _FORBIDDEN)
+        forbidden = _FORBIDDEN
+        if path.name.startswith("arcforge_"):
+            forbidden = _FORBIDDEN - _NETWORK_STDLIB
+        assert not tops & forbidden, (path.name, tops & forbidden)
         for top in tops - {"__future__"}:
             assert top in sys.stdlib_module_names or top in _ALLOWED_NON_STDLIB, (path.name, top)
 
