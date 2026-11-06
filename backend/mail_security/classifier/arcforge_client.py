@@ -118,7 +118,10 @@ def parse_target(url: str, label: str = "host") -> Target:
         parts = urlsplit(url)
     except ValueError:
         raise TargetError("TARGET_INVALID") from None
-    if parts.scheme not in ("http", "https"):
+    # http only: the ArcForge service is plain HTTP on the LAN (no TLS). An
+    # https target could only ever fail to connect, so reject it at construction
+    # rather than accept a target that cannot work (orchestrator review finding).
+    if parts.scheme != "http":
         raise TargetError("TARGET_SCHEME")
     if "@" in parts.netloc:
         raise TargetError("TARGET_USERINFO")

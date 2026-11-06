@@ -86,12 +86,19 @@ def identity_of(f: F.FakeArcForge) -> C.ModelIdentity:
         "http://192.168.1.5:8100",
         "http://[::1]:8100",
         "http://[fd00::1]:8100",
-        "https://10.0.0.1:8443",
     ],
 )
 def test_private_targets_accepted(url: str) -> None:
     t = C.parse_target(url)
-    assert t.port in (8100, 8443)
+    assert t.port == 8100
+    assert t.scheme == "http"
+
+
+def test_https_scheme_refused() -> None:
+    # The ArcForge service is plain HTTP on the LAN; an https target can only
+    # fail to connect, so it is rejected at construction (orchestrator finding).
+    with pytest.raises(C.TargetError):
+        C.parse_target("https://10.0.0.1:8443")
 
 
 @pytest.mark.parametrize(
