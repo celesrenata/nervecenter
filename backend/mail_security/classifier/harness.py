@@ -72,6 +72,7 @@ HW_CPU_THIS_HOST = "MEASURED ON THIS HOST ONLY; NOT GTi14, NOT ARC"
 EXIT_OK = 0
 EXIT_NOT_AVAILABLE = 2
 EXIT_REJECTED = 3
+EXIT_ABORTED = 4
 
 REASON_CODES = frozenset(
     {
@@ -523,33 +524,56 @@ def run_harness(
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="NerveShield classifier benchmark harness")
-    parser.add_argument("--backend", choices=("cpu_baseline", "openvino"), required=True)
+    parser.add_argument(
+        "--backend", choices=("cpu_baseline", "openvino", "arcforge_http"), required=True
+    )
     parser.add_argument("--seed", type=int, default=1)
-    parser.add_argument("--train", type=int, default=2000)
-    parser.add_argument("--test", type=int, default=1000)
-    parser.add_argument("--batch-sizes", default=",".join(map(str, DEFAULT_BATCH_SIZES)))
-    parser.add_argument("--warmup", type=int, default=DEFAULT_WARMUP_RUNS)
+    parser.add_argument("--train", type=int)
+    parser.add_argument("--test", type=int)
+    parser.add_argument("--batch-sizes")
+    parser.add_argument("--warmup", type=int)
     parser.add_argument("--dataset-jsonl", type=Path)
     parser.add_argument("--attest-deidentified", action="store_true")
     parser.add_argument("--artifact", type=Path)
     parser.add_argument("--artifact-sha256")
     parser.add_argument("--device", default="GPU")
     parser.add_argument("--output", type=Path)
+    # arcforge_http only (ignored by the other backends). The service is a live, shared,
+    # UNAUTHENTICATED plain-http LAN service: nothing is sent without both of these.
+    parser.add_argument("--target", action="append", help="http://IP:PORT, repeatable")
+    parser.add_argument("--i-understand-service-is-unauthenticated", action="store_true")
+    parser.add_argument("--include-target-addresses", action="store_true")
+    parser.add_argument("--concurrencies")
+    parser.add_argument("--requests-per-cell", type=int)
+    parser.add_argument("--max-total-requests", type=int)
+    parser.add_argument("--max-wall-seconds", type=float)
+    parser.add_argument("--max-rps", type=float)
+    parser.add_argument("--p95-ceiling-ms", type=float)
+    parser.add_argument("--error-rate-threshold", type=float)
     args = parser.parse_args(argv)
     try:
-        report = run_harness(
-            args.backend,
-            seed=args.seed,
-            train_count=args.train,
-            test_count=args.test,
-            batch_sizes=tuple(int(b) for b in args.batch_sizes.split(",")),
-            warmup_runs=args.warmup,
-            dataset_path=args.dataset_jsonl,
-            attest_deidentified=args.attest_deidentified,
-            artifact_path=args.artifact,
-            expected_artifact_sha256=args.artifact_sha256,
-            device=args.device,
-        )
+        if args.backend == "arcforge_http":
+            from backend.mail_security.classifier import arcforge_bench
+
+            report = arcforge_bench.run_from_args(args)
+        else:
+            report = run_harness(
+                args.backend,
+                seed=args.seed,
+                train_count=2000 if args.train is None else args.train,
+                test_count=1000 if args.test is None else args.test,
+                batch_sizes=(
+                    tuple(int(b) for b in args.batch_sizes.split(","))
+                    if args.batch_sizes
+                    else DEFAULT_BATCH_SIZES
+                ),
+                warmup_runs=DEFAULT_WARMUP_RUNS if args.warmup is None else args.warmup,
+                dataset_path=args.dataset_jsonl,
+                attest_deidentified=args.attest_deidentified,
+                artifact_path=args.artifact,
+                expected_artifact_sha256=args.artifact_sha256,
+                device=args.device,
+            )
     except (HarnessError, ValueError) as exc:
         code = exc.code if isinstance(exc, HarnessError) else "INVALID_ARGUMENT"
         sys.stderr.write(f"REJECTED {code}\n")
@@ -559,7 +583,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.output.write_text(text)
     else:
         sys.stdout.write(text)
-    return EXIT_OK if report["status"] == "OK" else EXIT_NOT_AVAILABLE
+    if report["status"] == "OK":
+        return EXIT_OK
+    return EXIT_ABORTED if report["status"] == "ABORTED" else EXIT_NOT_AVAILABLE
 
 
 if __name__ == "__main__":
