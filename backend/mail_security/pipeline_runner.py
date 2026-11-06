@@ -9,7 +9,10 @@ Each pass (configurable interval, injected clock/sleep for tests):
 
 1. Enumerate the scopes that have runnable work via the repository's
    runner-only :meth:`list_scopes_with_runnable_jobs` -- the single deliberate
-   cross-scope read. It returns scope strings only.
+   cross-scope read. It returns scope strings only. A sources provider that
+   exposes ``scopes()`` / ``begin_pass()`` (the Defect-2 backfill provider)
+   adds its scopes (so a scope with no job yet is still visited) and has its
+   per-pass budget reset.
 2. For each scope, build a worker bound to exactly ONE scope through the
    injected ``worker_factory``, run the sweeper for that scope (reclaim expired
    leases, create missing jobs when a ``sources_provider`` is supplied), then
@@ -59,6 +62,7 @@ class RunnerFailure(StrEnum):
     WORKER_BUILD_FAILED = "WORKER_BUILD_FAILED"
     SCOPE_SWEEP_FAILED = "SCOPE_SWEEP_FAILED"
     SCOPE_DRAIN_FAILED = "SCOPE_DRAIN_FAILED"
+    BACKFILL_SCOPES_FAILED = "BACKFILL_SCOPES_FAILED"
 
 
 WorkerFactory = Callable[[str], Any]
@@ -116,18 +120,35 @@ class MailSecurityPipelineRunner:
         if not self.enabled or self._repo is None:
             return None
         now = self._clock()
+        # Backfill provider (Defect 2): reset its per-pass budget.
+        begin_pass = getattr(self._sources, "begin_pass", None)
+        if begin_pass is not None:
+            begin_pass()
         try:
             scopes = await self._repo.list_scopes_with_runnable_jobs()
         except Exception as exc:  # noqa: BLE001 - one bad read never kills the loop
             self._fail(RunnerFailure.SCOPE_ENUMERATION_FAILED, exc)
             # Nothing was swept: do not feed the heartbeat (would mask a stall).
             return []
+        # Scopes the provider can backfill but that have no runnable job yet.
+        scopes = list(dict.fromkeys([*scopes, *await self._backfill_scopes()]))
         swept = [await self._run_scope(scope, now) for scope in scopes]
         # Task 2.6 heartbeat, once per pass, only when sweeping really happened
         # (an empty successful enumeration counts; all-scopes-failed does not).
         if not scopes or any(swept):
             note_sweep(now)
         return list(scopes)
+
+    async def _backfill_scopes(self) -> list[str]:
+        """Scopes a provider exposing ``scopes()`` wants visited (else [])."""
+        lister = getattr(self._sources, "scopes", None)
+        if lister is None:
+            return []
+        try:
+            return [str(s) for s in await lister()]
+        except Exception as exc:  # noqa: BLE001 - runnable scopes still proceed
+            self._fail(RunnerFailure.BACKFILL_SCOPES_FAILED, exc)
+            return []
 
     async def _run_scope(self, scope: str, now: datetime) -> bool:
         """Sweep + drain one scope. Returns True when its sweep succeeded."""

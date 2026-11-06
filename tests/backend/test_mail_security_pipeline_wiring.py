@@ -349,6 +349,8 @@ class TestFailureIsolation:
             "WORKER_BUILD_FAILED",
             "SCOPE_SWEEP_FAILED",
             "SCOPE_DRAIN_FAILED",
+            # Defect 2: the backfill provider's scope listing failed.
+            "BACKFILL_SCOPES_FAILED",
         }
 
 

@@ -184,6 +184,28 @@ class CommunicationsRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def list_ref_identifiers(
+        self, *, ref_prefix: str, limit: int, offset: int = 0
+    ) -> list[tuple[str, str, Any]]:
+        """``(id, content_ref, flags)`` for refs starting with ``ref_prefix``,
+        newest first (NerveShield backfill). Selects identifiers and flags
+        only: never subject, sender or any content. The prefix is escaped, so
+        it can never act as a LIKE wildcard."""
+        async with self._sessions() as session:
+            stmt = (
+                select(
+                    CommunicationRow.id,
+                    CommunicationRow.content_ref,
+                    CommunicationRow.flags,
+                )
+                .where(CommunicationRow.content_ref.startswith(ref_prefix, autoescape=True))
+                .order_by(CommunicationRow.received_at.desc(), CommunicationRow.id.desc())
+                .limit(limit)
+                .offset(offset)
+            )
+            result = await session.execute(stmt)
+            return [(r[0], r[1], r[2]) for r in result.all()]
+
     # -- conversations ------------------------------------------------------
 
     async def upsert_conversation(

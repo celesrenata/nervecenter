@@ -36,9 +36,11 @@ forbids ("not license to change current cursor semantics"). So instead:
    (account scope + source identity + analysis version), the row is fully
    **reconstructable** from the committed communication. :func:`scan_missing_jobs`
    is the reconciling sweeper that (re)creates any missing ``PENDING`` job for a
-   set of already-committed sources. It is **not** started by default (no
-   background task, no high-privilege consumer wired at import) — it is a pure,
-   callable function a later phase / operator invokes.
+   set of already-committed sources. It is a pure, callable function (no
+   background task wired at import); with the flag ON the pipeline runner
+   drives it each pass through the bounded
+   :class:`~backend.mail_security.backfill.CommittedCommunicationSources`
+   provider (Defect 2), so lost jobs are actually recovered.
 
 Durability limitation (documented, design §4.4 requires honesty): a crash in
 the narrow window between the committed communication and a *best-effort* job

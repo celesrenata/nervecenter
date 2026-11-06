@@ -605,9 +605,25 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
             )
         except ValueError:
             interval = DEFAULT_INTERVAL_SECONDS
+        # Defect 2: bounded, idempotent recovery/backfill of committed
+        # communications that have no job (lost schedule window / backlog).
+        # Built only here, i.e. only with the flag ON.
+        from backend.mail_security.backfill import (
+            CommittedCommunicationSources,
+            batch_size_from_env,
+        )
+
+        sources = CommittedCommunicationSources(
+            connections=registry.connections,
+            communications=registry.communications,
+            object_store=store,
+            jobs=repo,
+            batch_size=batch_size_from_env(),
+        )
         runner = MailSecurityPipelineRunner(
             repository=repo,
             worker_factory=make_worker,
+            sources_provider=sources,
             interval_seconds=max(1.0, interval),
         )
         task = runner.start()

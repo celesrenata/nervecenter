@@ -449,6 +449,30 @@ def _content_key(connection_id: str, mail_id: str) -> str:
     return f"mail/{connection_id}/{digest}"
 
 
+def security_account_scope(connection_id: str) -> str:
+    """NerveShield account scope for a mail connection (R-023). The connection
+    id is a UUID in the identifier alphabet; never an address or secret."""
+    return f"conn:{connection_id}"
+
+
+def security_source_identity(
+    conn: Any, *, cursor_kind: str, mail_id: str
+) -> dict[str, str | None]:
+    """The Task 1.2 source identity the security seam keys a message on.
+
+    Single builder shared by the live seam (``_schedule_security_job``) and the
+    NerveShield backfill provider, so both derive the IDENTICAL outbox job key.
+    """
+    config = getattr(conn, "config", None) or {}
+    folder = str(config.get("mailbox") or config.get("folder") or "").strip() or None
+    return {
+        "provider": str(getattr(conn, "kind", "") or cursor_kind),
+        "provider_uid": mail_id,
+        "rfc_message_id": mail_id,
+        "folder": folder,
+    }
+
+
 def _communication_id(connection_id: str, mail_id: str) -> str:
     """Deterministic communication id so re-ingest is an idempotent update
     (same ``communication_id`` → ``created=False``), never a duplicate row.
@@ -983,20 +1007,14 @@ class MailIngestWorker:
         repository = get_mail_security_repository()
         if repository is None:
             return
-        config = getattr(conn, "config", None) or {}
-        folder = str(config.get("mailbox") or config.get("folder") or "").strip() or None
         seam = MailSecurityIngestionSeam(
             repository=repository,
-            # The connection id is the account-scope boundary (R-023): a
-            # UUID that matches the identifier alphabet and never carries an
-            # email address or secret.
-            account_scope=f"conn:{self.connection_id}",
+            account_scope=security_account_scope(self.connection_id),
         )
         await seam.schedule(
-            provider=str(getattr(conn, "kind", "") or self.cursor_kind),
-            provider_uid=mail_id,
-            rfc_message_id=mail_id,
-            folder=folder,
+            **security_source_identity(
+                conn, cursor_kind=self.cursor_kind, mail_id=mail_id
+            ),
             content_ref=content_ref,
             flags=flags,
             # Trusted acquisition provenance (NS-ADR-024): this worker stores
