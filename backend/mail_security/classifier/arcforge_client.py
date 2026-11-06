@@ -303,6 +303,16 @@ def _loads(body: bytes) -> Any:
     return json.loads(body.decode("utf-8"), parse_constant=_reject_constant)
 
 
+def _safe_float(value: object) -> float | None:
+    """float(value) for JSON numbers; None if not a number or not representable."""
+    if not _is_number(value):
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (OverflowError, ValueError):
+        return None
+
+
 def _is_number(value: object) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool)
 
@@ -590,9 +600,10 @@ def _validate_embeddings(
             return "IDENTITY_CHANGED"
         if "infer_s" in meta:
             v = meta["infer_s"]
-            if not _is_number(v) or not math.isfinite(v) or v < 0:
+            fv = _safe_float(v)
+            if fv is None or not math.isfinite(fv) or fv < 0:
                 return "BAD_INFER_S"
-            infer_s = float(v)
+            infer_s = fv
     out: list[tuple[float, ...]] = []
     for i, item in enumerate(data):
         if (
@@ -608,9 +619,9 @@ def _validate_embeddings(
             return "BAD_DIM"
         total = 0.0
         for v in emb:
-            if not _is_number(v):
+            f = _safe_float(v)
+            if f is None:
                 return "BAD_VALUE"
-            f = float(v)
             if not math.isfinite(f):
                 return "NON_FINITE"
             total += f * f

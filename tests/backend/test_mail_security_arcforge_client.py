@@ -276,6 +276,22 @@ def test_bad_infer_s_rejected(fake: F.FakeArcForge) -> None:
     assert pool_for(fake).embed(records(1)).code == "BAD_INFER_S"
 
 
+def _resp(emb: list[object], infer_s: object = 0.01) -> dict[str, object]:
+    return {
+        "model": "m",
+        "data": [{"index": 0, "embedding": emb}],
+        "usage": {"arcforge": {"dim": 2, "infer_s": infer_s}},
+    }
+
+
+def test_oversized_integers_are_typed_errors_not_exceptions() -> None:
+    ident = C.ModelIdentity("m", "v", 2, "GPU")
+    big = 10**400
+    assert C._validate_embeddings(_resp([1, big]), 1, ident, 0.01) == "BAD_VALUE"
+    assert C._validate_embeddings(_resp([1, -big]), 1, ident, 0.01) == "BAD_VALUE"
+    assert C._validate_embeddings(_resp([1, 0], big), 1, ident, 0.01) == "BAD_INFER_S"
+
+
 # --------------------------------------------------------------------------- #
 # transport errors
 # --------------------------------------------------------------------------- #
