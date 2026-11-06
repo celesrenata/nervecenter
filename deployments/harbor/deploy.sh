@@ -58,9 +58,36 @@ WEB_TAG="${WEB_IMAGE}:${TAG}"
 log "tag: ${TAG} (api=${API_TAG}, web=${WEB_TAG})"
 
 # --- 3. harbor login ----------------------------------------------------------
+# Returns 0 when docker already holds credentials for ${REGISTRY}: an `auths`
+# entry for it, or any credHelper/credsStore. Checks key PRESENCE only; secret
+# values are never read into output.
+docker_creds_present() {
+  local cfg="${DOCKER_CONFIG:-${HOME}/.docker}/config.json"
+  [[ -f "${cfg}" ]] || return 1
+  python3 - "${cfg}" "${REGISTRY}" <<'PYEOF'
+import json, sys
+
+try:
+    with open(sys.argv[1], "r", encoding="utf-8") as handle:
+        cfg = json.load(handle)
+except (OSError, ValueError):
+    sys.exit(1)
+if not isinstance(cfg, dict):
+    sys.exit(1)
+auths = cfg.get("auths")
+if isinstance(auths, dict) and sys.argv[2] in auths:
+    sys.exit(0)
+if cfg.get("credsStore") or cfg.get("credHelpers"):
+    sys.exit(0)
+sys.exit(1)
+PYEOF
+}
+
 if [[ -n "${HARBOR_USER:-}" && -n "${HARBOR_PASS:-}" ]]; then
   log "docker login ${REGISTRY} via HARBOR_USER/HARBOR_PASS"
   printf '%s' "${HARBOR_PASS}" | docker login "${REGISTRY}" -u "${HARBOR_USER}" --password-stdin
+elif [[ "${SKIP_DOCKER_LOGIN:-}" == "1" ]] || docker_creds_present; then
+  log "using existing docker credentials for ${REGISTRY} — skipping docker login"
 else
   log "HARBOR_USER/HARBOR_PASS not set — deriving username from an existing cluster harbor-pull secret"
   SRC_NS=""
