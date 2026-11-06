@@ -20,6 +20,16 @@ data:
   API_UPSTREAM: "api.nervecenter.svc"
   # mcp server proxies §45 tool calls to the §46 API service in-cluster.
   NERVE_MCP_API: "http://api:8000"
+  # NerveShield mail security (SHADOW mode only): scans ingested mail locally and
+  # records metadata-only verdicts. No network, no LLM, no provider writes, no
+  # change to attention. Set to "0" (and roll api) to turn it off again.
+  NERVE_MAIL_SECURITY_ENABLED: "1"
+  # Assessments API scope mode (NS-ADR-025). "single_tenant": any authenticated
+  # HUMAN access token may read metadata-only assessments for the ENABLED mail
+  # connections (device tokens excluded; a token's own account_scopes claim can
+  # only narrow). Remove this key or set "claim_only" (and roll api) to revert
+  # to deny-by-default.
+  NERVE_MAIL_SECURITY_API_SCOPE_MODE: "single_tenant"
   # NOTE: the object store (§14) is NOT configured here. Its NERVECENTER_*
   # variables (NERVECENTER_OBJECT_STORE_URL / _BUCKET / _ACCESS_KEY /
   # _SECRET_KEY / _REGION / _SECURE) belong in the out-of-band

@@ -1,0 +1,12 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "AxisScore required-key looseness",
+      "confidence": "confirmed",
+      "severity": "non-blocking",
+      "detail": "The security-assessment schema 'score' object marks value/calibration_id/evidence_refs as required (present, though value and calibration_id are nullable), but AxisScore supplies defaults (value=None, calibration_id=None, evidence_refs default factory). A JSON payload omitting those keys validates against the model though it would be rejected by the JSON schema. This loosens input acceptance in the permissive direction only; the semantics/value consistency validator still runs and no unsafe value is admitted. Consider Field(...) or a presence check if exact schema round-trip parity is required in a later task."
+    }
+  ],
+  "reviewDoc": "/Users/celes/sources/celesrenata/nervcenter/.kiro/specs/nerve-shield/evidence/task-1.1-review.md"
+}

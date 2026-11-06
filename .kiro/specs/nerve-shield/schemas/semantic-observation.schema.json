@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nervecenter.celestium.life/schemas/mail-semantic-observation/v1",
+  "title": "NerveShieldSemanticObservationV1",
+  "description": "Strict schema for an untrusted LLM observation. Not a policy decision, not a permission grant, and not an agent instruction. Store behind content-sensitive access controls, not in general audit logs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "source_ref", "observer_role", "gist", "claimed_identity", "message_category", "requests", "links", "images", "attachments", "risk_indicators", "contradictions", "missing_evidence", "evidence_refs"],
+  "properties": {
+    "schema_version": {"const": "1.0"},
+    "source_ref": {"$ref": "#/$defs/opaqueRef"},
+    "observer_role": {"enum": ["GRANITE_EXTRACTOR", "QWEN_CHALLENGER", "TEST_FIXTURE"]},
+    "gist": {"type": "string", "maxLength": 600},
+    "claimed_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["claimed_role", "entity_refs", "identity_consistency"],
+      "properties": {
+        "claimed_role": {"enum": ["PERSON", "BUSINESS", "SERVICE", "AUTOMATION", "UNKNOWN"]},
+        "entity_refs": {"type": "array", "maxItems": 24, "uniqueItems": true, "items": {"$ref": "#/$defs/opaqueRef"}},
+        "identity_consistency": {"enum": ["CONSISTENT", "INCONSISTENT", "INSUFFICIENT_EVIDENCE", "NOT_EVALUATED"]}
+      }
+    },
+    "message_category": {"enum": ["PERSONAL", "HUMAN_REQUEST", "APPOINTMENT", "BILL_OR_INVOICE", "RECEIPT", "ACCOUNT_SECURITY", "NEWSLETTER", "MARKETING", "AUTOMATED", "PHISHING_SUSPECTED", "OTHER", "UNKNOWN"]},
+    "requests": {"type": "array", "maxItems": 32, "items": {"$ref": "#/$defs/request"}},
+    "links": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/component"}},
+    "images": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/component"}},
+    "attachments": {"type": "array", "maxItems": 128, "items": {"$ref": "#/$defs/component"}},
+    "risk_indicators": {"type": "array", "maxItems": 64, "items": {"$ref": "#/$defs/indicator"}},
+    "contradictions": {"type": "array", "maxItems": 24, "items": {"$ref": "#/$defs/contradiction"}},
+    "missing_evidence": {"type": "array", "maxItems": 64, "uniqueItems": true, "items": {"$ref": "#/$defs/code"}},
+    "evidence_refs": {"type": "array", "maxItems": 256, "uniqueItems": true, "items": {"$ref": "#/$defs/opaqueRef"}}
+  },
+  "$defs": {
+    "opaqueRef": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "^[A-Za-z0-9:_-]+$"},
+    "code": {"type": "string", "minLength": 1, "maxLength": 80, "pattern": "^[A-Z][A-Z0-9_.-]*$"},
+    "component": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["evidence_ref", "risk_level", "indicator_codes", "model_confidence"],
+      "properties": {
+        "evidence_ref": {"$ref": "#/$defs/opaqueRef"},
+        "risk_level": {"enum": ["LOW", "MEDIUM", "HIGH", "UNKNOWN", "NOT_EVALUATED"]},
+        "indicator_codes": {"type": "array", "maxItems": 32, "uniqueItems": true, "items": {"$ref": "#/$defs/code"}},
+        "model_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1, "description": "Uncalibrated model estimate, not a verified probability."}
+      }
+    },
+    "request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["request_type", "claimed_urgency", "evidence_refs", "high_impact", "requires_independent_verification"],
+      "properties": {
+        "request_type": {"enum": ["READ", "REPLY", "SCHEDULE", "PAY", "CHANGE_PAYMENT_DETAILS", "SUBMIT_CREDENTIALS", "DOWNLOAD", "OPEN_LINK", "SHARE_PERSONAL_DATA", "OTHER", "UNKNOWN"]},
+        "claimed_urgency": {"enum": ["LOW", "NORMAL", "HIGH", "EMERGENCY_CLAIM", "UNKNOWN"]},
+        "evidence_refs": {"type": "array", "maxItems": 24, "uniqueItems": true, "items": {"$ref": "#/$defs/opaqueRef"}},
+        "high_impact": {"type": "boolean"},
+        "requires_independent_verification": {"type": "boolean"}
+      }
+    },
+    "indicator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["indicator_code", "evidence_refs", "model_confidence"],
+      "properties": {
+        "indicator_code": {"$ref": "#/$defs/code"},
+        "evidence_refs": {"type": "array", "maxItems": 24, "uniqueItems": true, "items": {"$ref": "#/$defs/opaqueRef"}},
+        "model_confidence": {"type": ["number", "null"], "minimum": 0, "maximum": 1}
+      }
+    },
+    "contradiction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contradiction_code", "evidence_refs"],
+      "properties": {
+        "contradiction_code": {"$ref": "#/$defs/code"},
+        "evidence_refs": {"type": "array", "maxItems": 24, "uniqueItems": true, "items": {"$ref": "#/$defs/opaqueRef"}}
+      }
+    }
+  }
+}

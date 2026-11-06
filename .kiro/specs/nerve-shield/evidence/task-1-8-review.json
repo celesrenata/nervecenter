@@ -1,0 +1,34 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "Best-effort durability window",
+      "confidence": "confirmed",
+      "severity": "informational",
+      "detail": "A crash between the committed communication and the best-effort job insert leaves no job row until scan_missing_jobs() runs. This is the design §4.4 reconcilable-scanner fallback, documented honestly in the module docstring and commit message, and the lost job is always reconstructable from committed source identity. No sweeper is scheduled in Phase 1 (correct — Task 1.8 only schedules). Not blocking; ensure Task 1.9/2.1 wires recovery before operational reliance."
+    },
+    {
+      "label": "API vs worker account-scope asymmetry",
+      "confidence": "confirmed",
+      "severity": "informational",
+      "detail": "The worker scopes jobs as conn:<connection_id>; the API path scopes as src:<sanitized communication.source>. Both are account-scoped and sanitized to the identifier alphabet, but they are different namespaces. Confirm this matches the intended R-023 isolation boundary before Task 1.9 consumes API-ingested records. Not blocking."
+    },
+    {
+      "label": "API path coarser identity material",
+      "confidence": "confirmed",
+      "severity": "informational",
+      "detail": "The API helper passes channel as provider and communication_id as both provider_uid and rfc_message_id with folder=None. The outbox key is still deterministic and account-scoped and idempotent, but the identity material is coarser than the worker's. Acceptable for scheduling; note for the consumer. Not blocking."
+    }
+  ],
+  "invariants_verified": {
+    "flag_gated_default_off": "PASS — mail_security_enabled mirrors ingest_enabled exactly (strip() not in ('','0')), default OFF; wiring binds repo only when flag ON; both call sites short-circuit before DB touch; TestFlagOffIsNoOp proves no-op even with repo bound.",
+    "no_cursor_change": "PASS — seam call is inside _process_batch upstream of the unchanged P0-D flush_durable/set_cursor gate; schedule() swallows all exceptions internally; TestSchedulingFailureIsolation proves cursor advances and no safe row is forged on failure (R-001.3, R-018, I-07, T-16/T-17).",
+    "no_attention_change": "PASS — no pipeline/detection/attention source in the commit; TestAttentionUnaffected asserts durable attention_items snapshot identical flag-on vs flag-off while job count differs 0 vs 1 (T-26, R-001.4).",
+    "idempotent_scheduling": "PASS — upsert on Task 1.2 outbox_job_key(account_scope, source_key, analysis_profile_version); TestFlagOnSchedulesOne, TestIdempotentOnReplay (3 polls -> 1 row), TestScanMissingJobs (double run -> 1 row) (R-018.2).",
+    "no_secret_no_raw_body": "PASS — _safe_job_meta admits only requested flag + opaque content_ref + boolean-filtered flags; failure log emits type(exc).__name__ only, never str(exc); TestNoCanaryLeak and test_schedule_failure_log_has_no_canary prove canary/address/secret absent from row and logs (T-14).",
+    "no_fetch_no_provider_writes": "PASS — seam calls only repo.upsert_job; no transport call, no provider mutation, no outbound request; wiring starts no consumer/scanner (T-29).",
+    "scope_stops_at_1_8": "PASS — additive flag-guarded edits to two seam points + new backend/mail_security/ingestion_seam.py + light wiring/registry/init; scan_missing_jobs is a pure uncalled function; no job consumption (Task 1.9 absent).",
+    "required_tests_and_recorded_evidence": "PASS — six required cases map to real asserting tests (12 passed recorded); full non-integration suite recorded 5100 passed / 0 failed (baseline 5088 + 12); named regression guard 122 passed across mail-ingest, persistence, restart, detection-wiring, today, attention-durable. Per instruction, not re-run; recorded evidence is consistent with the diff."
+  },
+  "reviewDoc": "/Users/celes/sources/celesrenata/nervcenter/.kiro/specs/nerve-shield/evidence/task-1-8-review.md"
+}

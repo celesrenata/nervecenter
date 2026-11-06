@@ -1,0 +1,24 @@
+{
+  "verdict": "APPROVED",
+  "findings": [
+    {
+      "label": "Property-based class is a deterministic corpus",
+      "confidence": "confirmed",
+      "blocking": false,
+      "detail": "Hypothesis is not a repo dependency and was correctly not added; the malformed-MIME class is a parametrized corpus exhaustive over the parser's typed IncompleteReason modes. Honestly disclosed in the test module and evidence file. If randomized property testing is wanted later it is a scoped follow-up, not a gate blocker."
+    },
+    {
+      "label": "PROMPT_INJECTION axis asymmetry asserted, not changed",
+      "confidence": "confirmed",
+      "blocking": false,
+      "detail": "Standalone PROMPT_INJECTION yields disposition REVIEW but leaves threat_likelihood NOT_EVALUATED because the category is intentionally outside _DECEPTION_CATEGORIES in the unchanged policy. The harness locks this in as the current safe contract and documents that surfacing it on the threat axis would be a reviewed policy change. Correct call for a tests-only task; carry forward as a conscious policy question for a later phase."
+    },
+    {
+      "label": "Deferred threats explicitly out of scope",
+      "confidence": "confirmed",
+      "blocking": false,
+      "detail": "T-08, T-09, T-13, T-19/T-20, T-21, T-22, T-27 are listed as deferred to Phases 2-6. Correct per the phase gating (Phase 1 performs no model/remote inference, no feeds, no training). Recorded so the G1 gate review does not mistake deferral for a gap."
+    }
+  ],
+  "reviewDoc": "/Users/celes/sources/celesrenata/nervcenter/.kiro/specs/nerve-shield/evidence/review-1-12.md"
+}

@@ -1,0 +1,579 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://nervecenter.celestium.life/schemas/mail-security-assessment/v1",
+  "title": "NerveShieldSecurityAssessmentV1",
+  "description": "Reference schema for persisted metadata-only mail security assessment. Revise with existing database and policy contracts before production use. Never persist raw body, subject, addresses, secrets or attachments here.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "assessment_id",
+    "account_scope",
+    "source_ref",
+    "source_revision",
+    "analysis_profile_version",
+    "created_at",
+    "processing_state",
+    "evidence_fidelity",
+    "completeness",
+    "authentication",
+    "findings",
+    "axes",
+    "model_runs",
+    "policy"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0"
+    },
+    "assessment_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9:_-]{1,160}$"
+    },
+    "account_scope": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9:_-]{1,128}$"
+    },
+    "source_ref": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9:_-]{1,200}$"
+    },
+    "source_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "analysis_profile_version": {
+      "type": "string",
+      "maxLength": 100,
+      "minLength": 1
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "processing_state": {
+      "enum": [
+        "DISCOVERED",
+        "EVIDENCE_READY",
+        "DETERMINISTIC_DONE",
+        "MODEL_PENDING",
+        "ASSESSED",
+        "REVIEW",
+        "SAFE_TO_PROCESS",
+        "INCOMPLETE",
+        "ERROR_RETRYABLE",
+        "DEAD_LETTER"
+      ]
+    },
+    "evidence_fidelity": {
+      "enum": [
+        "ORIGINAL_RFC822",
+        "PROVIDER_FULL",
+        "SELECTED_HEADERS_AND_BODY",
+        "BODY_ONLY",
+        "METADATA_ONLY",
+        "UNKNOWN"
+      ]
+    },
+    "completeness": {
+      "$ref": "#/$defs/completeness"
+    },
+    "authentication": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spf",
+        "dkim",
+        "dmarc",
+        "arc"
+      ],
+      "properties": {
+        "spf": {
+          "$ref": "#/$defs/authObservation"
+        },
+        "dkim": {
+          "$ref": "#/$defs/authObservation"
+        },
+        "dmarc": {
+          "$ref": "#/$defs/authObservation"
+        },
+        "arc": {
+          "$ref": "#/$defs/authObservation"
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 256,
+      "items": {
+        "$ref": "#/$defs/finding"
+      }
+    },
+    "axes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "threat_likelihood",
+        "impact_severity",
+        "personal_relevance",
+        "urgency",
+        "expectedness",
+        "actionability"
+      ],
+      "properties": {
+        "threat_likelihood": {
+          "$ref": "#/$defs/score"
+        },
+        "impact_severity": {
+          "$ref": "#/$defs/score"
+        },
+        "personal_relevance": {
+          "$ref": "#/$defs/score"
+        },
+        "urgency": {
+          "$ref": "#/$defs/score"
+        },
+        "expectedness": {
+          "$ref": "#/$defs/score"
+        },
+        "actionability": {
+          "$ref": "#/$defs/score"
+        }
+      }
+    },
+    "model_runs": {
+      "type": "array",
+      "maxItems": 16,
+      "items": {
+        "$ref": "#/$defs/modelRun"
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "disposition",
+        "policy_version",
+        "reason_codes",
+        "human_approval_required",
+        "action_capabilities"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "SHADOW",
+            "NOTIFY",
+            "REVIEW_GATED",
+            "ENFORCE"
+          ]
+        },
+        "disposition": {
+          "enum": [
+            "SAFE_TO_PROCESS",
+            "LOW_PRIORITY",
+            "REVIEW",
+            "RESTRICTED",
+            "INCOMPLETE"
+          ]
+        },
+        "policy_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "reason_codes": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/code"
+          }
+        },
+        "human_approval_required": {
+          "type": "boolean"
+        },
+        "action_capabilities": {
+          "type": "array",
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/code"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "code": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "pattern": "^[A-Z][A-Z0-9_.-]*$"
+    },
+    "opaqueRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[A-Za-z0-9:_-]+$"
+    },
+    "completeness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "available",
+        "missing",
+        "checks_not_run"
+      ],
+      "properties": {
+        "available": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/code"
+          }
+        },
+        "missing": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/code"
+          }
+        },
+        "checks_not_run": {
+          "type": "array",
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/code"
+          }
+        }
+      }
+    },
+    "authObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result",
+        "provenance",
+        "evidence_refs"
+      ],
+      "properties": {
+        "result": {
+          "enum": [
+            "PASS",
+            "FAIL",
+            "NEUTRAL",
+            "UNKNOWN"
+          ]
+        },
+        "provenance": {
+          "enum": [
+            "INDEPENDENT",
+            "PROVIDER_REPORTED",
+            "UNTRUSTED_HEADER",
+            "UNKNOWN"
+          ]
+        },
+        "evidence_refs": {
+          "type": "array",
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/opaqueRef"
+          }
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "finding_key",
+        "rule_id",
+        "category",
+        "severity",
+        "status",
+        "detector_version",
+        "evidence_refs",
+        "explanation_code"
+      ],
+      "properties": {
+        "finding_key": {
+          "$ref": "#/$defs/opaqueRef"
+        },
+        "rule_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "category": {
+          "enum": [
+            "AUTH_PROVENANCE",
+            "SENDER_IMPERSONATION",
+            "URL_DECEPTION",
+            "TRACKING",
+            "HTML_RISK",
+            "ATTACHMENT",
+            "MALWARE",
+            "PHISHING",
+            "PAYMENT_FRAUD",
+            "SOCIAL_ENGINEERING",
+            "PROMPT_INJECTION",
+            "INTEL_MATCH",
+            "SCANNER_FAILURE",
+            "OTHER"
+          ]
+        },
+        "severity": {
+          "enum": [
+            "INFO",
+            "LOW",
+            "MEDIUM",
+            "HIGH",
+            "CRITICAL",
+            "UNKNOWN"
+          ]
+        },
+        "status": {
+          "enum": [
+            "OBSERVED",
+            "SUSPECTED",
+            "NOT_EVALUATED",
+            "INCOMPLETE"
+          ]
+        },
+        "detector_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "evidence_refs": {
+          "type": "array",
+          "maxItems": 24,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/opaqueRef"
+          }
+        },
+        "explanation_code": {
+          "$ref": "#/$defs/code"
+        }
+      }
+    },
+    "score": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "value",
+        "semantics",
+        "calibration_id",
+        "evidence_refs"
+      ],
+      "properties": {
+        "value": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
+        },
+        "semantics": {
+          "enum": [
+            "NOT_EVALUATED",
+            "RAW_SCORE",
+            "CALIBRATED_PROBABILITY",
+            "POLICY_NORMALIZED"
+          ]
+        },
+        "calibration_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 100
+        },
+        "evidence_refs": {
+          "type": "array",
+          "maxItems": 24,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/opaqueRef"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "semantics": {
+                "const": "CALIBRATED_PROBABILITY"
+              }
+            },
+            "required": [
+              "semantics"
+            ]
+          },
+          "then": {
+            "properties": {
+              "calibration_id": {
+                "type": "string",
+                "minLength": 1
+              },
+              "value": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "semantics": {
+                "const": "NOT_EVALUATED"
+              }
+            },
+            "required": [
+              "semantics"
+            ]
+          },
+          "then": {
+            "properties": {
+              "value": {
+                "type": "null"
+              },
+              "calibration_id": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "modelRun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "route",
+        "model_id",
+        "artifact_digest",
+        "runtime",
+        "status",
+        "privacy_policy_version",
+        "latency_ms"
+      ],
+      "properties": {
+        "route": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "model_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "artifact_digest": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 160
+        },
+        "runtime": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "status": {
+          "enum": [
+            "COMPLETED",
+            "DENIED_BY_POLICY",
+            "TIMEOUT",
+            "INVALID_OUTPUT",
+            "UNAVAILABLE",
+            "NOT_RUN"
+          ]
+        },
+        "privacy_policy_version": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "latency_ms": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "policy": {
+            "properties": {
+              "mode": {
+                "const": "SHADOW"
+              }
+            },
+            "required": [
+              "mode"
+            ]
+          }
+        },
+        "required": [
+          "policy"
+        ]
+      },
+      "then": {
+        "properties": {
+          "policy": {
+            "properties": {
+              "action_capabilities": {
+                "maxItems": 0
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "processing_state": {
+            "enum": [
+              "INCOMPLETE",
+              "ERROR_RETRYABLE",
+              "DEAD_LETTER"
+            ]
+          }
+        },
+        "required": [
+          "processing_state"
+        ]
+      },
+      "then": {
+        "properties": {
+          "policy": {
+            "properties": {
+              "disposition": {
+                "enum": [
+                  "INCOMPLETE",
+                  "REVIEW",
+                  "RESTRICTED"
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
+}
