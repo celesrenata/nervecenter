@@ -13,7 +13,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
-from sqlalchemy import delete as sa_delete, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select
 
 from ..models.personal import (
     ConnectionRow,
@@ -113,6 +114,22 @@ class ConnectionsRepository:
                 stmt = stmt.where(ConnectionRow.enabled.is_(True))
             result = await session.execute(stmt)
             return list(result.scalars().all())
+
+    async def list_enabled_ids_for_kinds(self, kinds: set[str]) -> list[str]:
+        """Ids ONLY of enabled connections whose kind is in ``kinds``.
+
+        Narrow read-only projection for the mail-security API scope resolver:
+        no config, label, secret or status column is selected.
+        """
+        if not kinds:
+            return []
+        async with self._sessions() as session:
+            stmt = select(ConnectionRow.id).where(
+                ConnectionRow.enabled.is_(True),
+                func.lower(ConnectionRow.kind).in_(sorted(kinds)),
+            )
+            result = await session.execute(stmt)
+            return [str(i) for i in result.scalars().all()]
 
     async def update_connection(
         self,

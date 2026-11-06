@@ -23,6 +23,12 @@ Hard contract (requirements/design/threat-model — stricter behavior wins):
   id exists in another account), even when the caller supplies the exact id
   (R-023.4, T-15).
 
+  Opt-in ``NERVE_MAIL_SECURITY_API_SCOPE_MODE=single_tenant`` (NS-ADR-025)
+  additionally resolves ``conn:<id>`` server-side for enabled mail
+  connections for human access tokens only (claim, if present, can only
+  narrow). Default / any other value is ``claim_only``. ``src:`` scopes are
+  never server-resolved.
+
 - **Read-only, no side effects (R-019, T-26, steering).** This module mounts
   only GET routes. It performs no writes, schedules no jobs, mints no
   attention, calls no model/network and mutates no provider state. Reviewing a
@@ -61,15 +67,19 @@ from __future__ import annotations
 
 import base64
 import binascii
+import os
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import uuid4
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from backend.api.auth import current_access
 from backend.api.models import ApiResponseMeta, ListResponse
+
+log = structlog.get_logger(__name__)
 
 router = APIRouter(prefix="/api/mail-security", tags=["mail-security"])
 
@@ -169,8 +179,79 @@ def _authorized_scopes(claims: dict[str, Any]) -> list[str]:
     return [s for s in raw if isinstance(s, str) and s]
 
 
-def _resolve_query_scopes(
-    claims: dict[str, Any], account_id: str | None
+#: Environment variable selecting the scope mode (NS-ADR-025).
+SCOPE_MODE_ENV = "NERVE_MAIL_SECURITY_API_SCOPE_MODE"
+MODE_CLAIM_ONLY = "claim_only"
+MODE_SINGLE_TENANT = "single_tenant"
+
+
+def scope_mode() -> str:
+    """The configured scope mode; ANY value but exactly ``single_tenant`` is
+    ``claim_only`` (unset, empty, unknown or garbled never fails open)."""
+    raw = os.environ.get(SCOPE_MODE_ENV)
+    if isinstance(raw, str) and raw.strip().lower() == MODE_SINGLE_TENANT:
+        return MODE_SINGLE_TENANT
+    return MODE_CLAIM_ONLY
+
+
+def _eligible_for_server_scopes(claims: dict[str, Any]) -> bool:
+    """Humans only: no device credential and a non-empty ``sub`` (NS-ADR-025)."""
+    sub = claims.get("sub")
+    if not isinstance(sub, str) or not sub.strip():
+        return False
+    if sub.startswith("device:") or claims.get("typ") == "device":
+        return False
+    roles = claims.get("roles")
+    if isinstance(roles, (list, tuple, set)) and "device" in roles:
+        return False
+    return claims.get("typ") == "access"
+
+
+async def _server_resolved_scopes(request: Request) -> list[str]:
+    """``conn:<id>`` for each ENABLED mail-kind connection (ids only).
+
+    Mail kinds and the scope shape are the ingest supervisor's / backfill's own
+    definitions. Resolved per request (no cache). Any failure or an absent
+    durable plane yields NO scopes (fail closed); only a safe code is logged.
+    """
+    from backend.mail_security.backfill import _SCOPE_RE, _supported_kinds
+
+    registry = getattr(request.app.state, "repository_registry", None)
+    if registry is None:
+        log.warning("mail_security.api.scope_resolve_failed", code="no_plane")
+        return []
+    try:
+        ids = await registry.connections.list_enabled_ids_for_kinds(
+            set(_supported_kinds())
+        )
+    except Exception:  # noqa: BLE001 - fail closed, log a safe code only
+        log.warning("mail_security.api.scope_resolve_failed", code="lookup_error")
+        return []
+    out = [f"conn:{i}" for i in ids if _SCOPE_RE.fullmatch(f"conn:{i}")]
+    log.debug("mail_security.api.scopes_resolved", mode=MODE_SINGLE_TENANT, count=len(out))
+    return out
+
+
+async def _caller_scopes(request: Request, claims: dict[str, Any]) -> list[str]:
+    """The caller's effective scopes under the configured mode.
+
+    ``claim_only``: the ``account_scopes`` claim alone (unchanged).
+    ``single_tenant``: the server-resolved set for eligible principals,
+    INTERSECTED with the claim when the token carries one (claim only narrows).
+    Ineligible principals get claim-only semantics.
+    """
+    claimed = _authorized_scopes(claims)
+    if scope_mode() != MODE_SINGLE_TENANT or not _eligible_for_server_scopes(claims):
+        return claimed
+    resolved = await _server_resolved_scopes(request)
+    if "account_scopes" in claims:
+        allowed = set(claimed)
+        return [s for s in resolved if s in allowed]
+    return resolved
+
+
+async def _resolve_query_scopes(
+    request: Request, claims: dict[str, Any], account_id: str | None
 ) -> list[str]:
     """Intersect an optional client ``account_id`` with the authorized scopes.
 
@@ -180,7 +261,7 @@ def _resolve_query_scopes(
     yields an empty set (the caller simply sees nothing for it — no 403 that
     would confirm the scope exists).
     """
-    authorized = _authorized_scopes(claims)
+    authorized = await _caller_scopes(request, claims)
     if account_id is None:
         return authorized
     return [s for s in authorized if s == account_id]
@@ -348,7 +429,7 @@ async def get_health(
     from backend.mail_security import observability as obs
 
     repo = _repo(request)
-    scopes = _authorized_scopes(claims)
+    scopes = await _caller_scopes(request, claims)
     if repo is None or not scopes:
         raise _safe_error(404, "not_found")
 
@@ -388,7 +469,7 @@ async def list_assessments(
     per_page = min(max(1, limit), MAX_PAGE_SIZE)
     offset = _decode_cursor(cursor)
 
-    scopes = _resolve_query_scopes(claims, account_id)
+    scopes = await _resolve_query_scopes(request, claims, account_id)
     repo = _repo(request)
 
     rows: list[Any] = []
@@ -431,7 +512,7 @@ async def get_assessment(
     detail includes the "checks not run" list (R-020.1 unavailable checks).
     """
     repo = _repo(request)
-    scopes = _authorized_scopes(claims)
+    scopes = await _caller_scopes(request, claims)
     if repo is None or not scopes:
         raise _safe_error(404, "not_found")
 
