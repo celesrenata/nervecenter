@@ -67,7 +67,7 @@ from backend.mail_security.parser import ParsedEvidence
 
 #: Stable version recorded on every emitted finding so deterministic evidence
 #: is reproducible / auditable (R-002, R-005.5).
-INSPECTIONS_VERSION = "offline-inspections@1"
+INSPECTIONS_VERSION = "offline-inspections@2"
 
 # -- stable rule ids (grouping keys for dashboards / policy) -----------------
 
@@ -119,6 +119,29 @@ _KNOWN_BRAND_DOMAINS: dict[str, str] = {
 
 #: Set view of brand *names* for fast membership tests.
 _KNOWN_BRANDS: frozenset[str] = frozenset(_KNOWN_BRAND_DOMAINS)
+
+#: OWNER-REVIEWABLE DATA, NOT LOGIC (NS-ADR-026). Extra registrable domains that
+#: are first-party for a brand beyond its canonical ``_KNOWN_BRAND_DOMAINS``
+#: entry. Add a domain ONLY when the brand itself is known to operate it; every
+#: entry needs periodic owner review. A host is first-party only when its
+#: registrable domain EXACTLY equals an entry (or the brand's canonical domain);
+#: subdomains of it are first-party, look-alikes embedding it are not.
+_FIRST_PARTY_REGISTRABLE_DOMAINS: dict[str, frozenset[str]] = {
+    # cdn-apple.com is Apple's content-delivery domain (observed on real mail:
+    # applecard.cdn-apple.com); icloud.com / mzstatic.com are Apple's own.
+    "apple": frozenset({"icloud.com", "cdn-apple.com", "mzstatic.com"}),
+}
+
+#: OWNER-REVIEWABLE DATA (NS-ADR-026). Brand -> top-level domain the brand's
+#: owner operates as a registry (brand TLD). A host whose public suffix is that
+#: TLD is first-party by registry control. Only brands present in
+#: ``_KNOWN_BRAND_DOMAINS`` may appear here.
+_BRAND_OWNED_TLDS: dict[str, str] = {
+    "apple": "apple",
+    "google": "google",
+    "microsoft": "microsoft",
+    "amazon": "amazon",
+}
 
 #: HTML attributes whose external http(s) target is an *auto-loaded* remote
 #: resource (not a user-clicked anchor). Mirrors the resource/action attributes
@@ -653,6 +676,30 @@ def _domain_deception_findings(
     return findings
 
 
+def _is_first_party_host(host: str) -> bool:
+    """True when ``host`` is first-party for a mapped brand (NS-ADR-026).
+
+    Exact-match on the registrable domain (or the brand-owned TLD as the public
+    suffix). Never a substring/suffix-string test, so ``cdn-apple.com.evil.test``
+    and ``secure-cdn-apple.com`` are not first-party. ``xn--`` hosts never are.
+    """
+    if not host or not host.isascii():
+        return False
+    lowered = host.lower().rstrip(".")
+    labels = lowered.split(".")
+    if len(labels) < 2 or any(not label for label in labels) or "xn--" in lowered:
+        return False
+    registrable = _registrable(lowered)
+    for brand, canonical in _KNOWN_BRAND_DOMAINS.items():
+        if registrable == canonical or registrable in _FIRST_PARTY_REGISTRABLE_DOMAINS.get(
+            brand, frozenset()
+        ):
+            return True
+        if _BRAND_OWNED_TLDS.get(brand) == labels[-1]:
+            return True
+    return False
+
+
 def _is_ascii_typosquat(host: str) -> bool:
     """All-ASCII typosquat / lookalike heuristic (folded-in Task 1.4 gap).
 
@@ -669,6 +716,8 @@ def _is_ascii_typosquat(host: str) -> bool:
     The genuine brand name itself never flags.
     """
     if not host or not host.isascii():
+        return False
+    if _is_first_party_host(host):
         return False
     registrable = _registrable(host)
     name = registrable.split(".", 1)[0] if "." in registrable else registrable
@@ -708,8 +757,16 @@ def _is_subdomain_brand_deception(host: str) -> bool:
     E.g. ``paypal.com.evil.example`` or ``login.paypal.secure.example`` where
     the registrable domain is NOT the brand's. Offline, lexical only.
     """
-    if not host:
+    if not host or _is_first_party_host(host):
         return False
+    # A first-party registrable domain embedded at a label boundary in a host
+    # that is NOT first-party (``cdn-apple.com.evil.test``,
+    # ``cdn-apple.com-login.net``) is deception (NS-ADR-026).
+    lowered_host = host.lower()
+    for brand, canonical in _KNOWN_BRAND_DOMAINS.items():
+        for domain in {canonical, *_FIRST_PARTY_REGISTRABLE_DOMAINS.get(brand, ())}:
+            if re.search(rf"(?:^|\.){re.escape(domain)}(?:[.-]|$)", lowered_host):
+                return True
     registrable = _registrable(host)
     reg_name = registrable.split(".", 1)[0] if "." in registrable else registrable
     labels = host.lower().split(".")
