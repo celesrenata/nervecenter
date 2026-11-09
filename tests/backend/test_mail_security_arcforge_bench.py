@@ -562,3 +562,53 @@ def test_new_modules_import_only_stdlib_and_backend(name: str) -> None:
     assert roots <= allowed, roots - allowed
     assert not roots & {"subprocess", "os", "requests", "httpx", "urllib3", "numpy"}
     assert "getaddrinfo" not in (PKG_DIR / name).read_text()
+
+
+# --------------------------------------------------------------------------- #
+# regression: server-counter deltas were silently zero against the REAL service
+# --------------------------------------------------------------------------- #
+
+#: Literal /metrics lines captured from a live ArcForge host (labels included).
+_REAL_METRICS = """\
+arcforge_embedding_requests_total{model="qwen3-embedding-0.6b",status="ok"} 206.0
+arcforge_embedding_items_total{model="qwen3-embedding-0.6b"} 1160.0
+arcforge_embedding_inference_seconds_count{model="qwen3-embedding-0.6b"} 206.0
+arcforge_embedding_inference_seconds_sum{model="qwen3-embedding-0.6b"} 92.4379985332489
+"""
+
+
+def test_summarize_reads_real_labeled_series() -> None:
+    from backend.mail_security.classifier import arcforge_bench as B
+    from backend.mail_security.classifier.arcforge_client import parse_prometheus
+
+    s = B._summarize(parse_prometheus(_REAL_METRICS))
+    assert s["inference_seconds_count"] == 206.0
+    assert s["items_total"] == 1160.0
+    assert abs(s["inference_seconds_sum"] - 92.4379985332489) < 1e-9
+    assert s["requests"] == {"ok": 206.0}
+
+
+def test_summarize_sums_across_label_sets_and_accepts_bare_series() -> None:
+    from backend.mail_security.classifier import arcforge_bench as B
+
+    s = B._summarize(
+        {
+            'arcforge_embedding_items_total{model="a"}': 3.0,
+            'arcforge_embedding_items_total{model="b"}': 4.0,
+            "arcforge_embedding_inference_seconds_count": 2.0,
+            'arcforge_embedding_requests_total{status="ok"}': 5.0,
+            'arcforge_embedding_requests_total{model="a",status="error"}': 1.0,
+            'arcforge_embedding_requests_total{model="b",status="error"}': 2.0,
+            "arcforge_other_total": 99.0,
+        }
+    )
+    assert s["items_total"] == 7.0
+    assert s["inference_seconds_count"] == 2.0
+    assert s["requests"] == {"ok": 5.0, "error": 3.0}
+
+
+def test_summarize_ignores_unknown_and_malformed_keys() -> None:
+    from backend.mail_security.classifier import arcforge_bench as B
+
+    s = B._summarize({"not a metric": 1.0, 'arcforge_embedding_items_total{': 5.0, "": 2.0})
+    assert s["items_total"] == 0.0 and s["requests"] == {}

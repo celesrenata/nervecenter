@@ -354,8 +354,10 @@ def test_ready_models_metrics_contract(fake: F.FakeArcForge) -> None:
     assert m.identity == identity_of(fake)
     pool_for(fake).embed(records(2))
     s = c.metrics().samples
-    assert s['arcforge_embedding_requests_total{status="ok"}'] >= 1
-    assert "arcforge_embedding_inference_seconds_sum" in s
+    # The REAL service labels every series (observed on a live host); the fake now
+    # mirrors that, so this contract test reads the labeled keys.
+    assert s['arcforge_embedding_requests_total{model="qwen3-embedding-0.6b",status="ok"}'] >= 1
+    assert 'arcforge_embedding_inference_seconds_sum{model="qwen3-embedding-0.6b"}' in s
 
 
 def test_not_ready_and_wedged_distinguished(fake: F.FakeArcForge) -> None:

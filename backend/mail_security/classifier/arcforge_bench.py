@@ -144,7 +144,11 @@ HUMAN_STEPS = (
     "Owner: decide on an authenticated/mTLS endpoint before any non-synthetic data is sent.",
 )
 
-_REQ_RE = re.compile(r'^arcforge_embedding_requests_total\{status="([A-Za-z_]+)"\}$')
+# A Prometheus series key as kept by ``parse_prometheus``: ``name`` or ``name{labels}``.
+# The REAL service labels every series (``{model="..."}``, ``{model="...",status="ok"}``),
+# so lookups must match on the metric NAME and sum across label sets, not on a bare key.
+_SERIES_RE = re.compile(r"^([A-Za-z_:][A-Za-z0-9_:]*)(?:\{(.*)\})?$")
+_STATUS_LABEL_RE = re.compile(r'(?:^|,)status="([A-Za-z_]+)"(?:,|$)')
 
 
 @dataclass(frozen=True)
@@ -234,15 +238,28 @@ class RateLimiter:
 # Prometheus counter snapshots (server-side view)
 # --------------------------------------------------------------------------- #
 def _summarize(samples: dict[str, float]) -> dict[str, Any]:
+    """Sum the service's counters across label sets (works for labeled and bare series)."""
+    totals = {
+        "arcforge_embedding_inference_seconds_sum": 0.0,
+        "arcforge_embedding_inference_seconds_count": 0.0,
+        "arcforge_embedding_items_total": 0.0,
+    }
     requests: dict[str, float] = {}
     for key, value in samples.items():
-        m = _REQ_RE.match(key)
-        if m:
-            requests[m.group(1)] = value
+        m = _SERIES_RE.match(key)
+        if not m:
+            continue
+        name, labels = m.group(1), m.group(2) or ""
+        if name in totals:
+            totals[name] += value
+        elif name == "arcforge_embedding_requests_total":
+            s = _STATUS_LABEL_RE.search(labels)
+            if s:
+                requests[s.group(1)] = requests.get(s.group(1), 0.0) + value
     return {
-        "inference_seconds_sum": samples.get("arcforge_embedding_inference_seconds_sum", 0.0),
-        "inference_seconds_count": samples.get("arcforge_embedding_inference_seconds_count", 0.0),
-        "items_total": samples.get("arcforge_embedding_items_total", 0.0),
+        "inference_seconds_sum": totals["arcforge_embedding_inference_seconds_sum"],
+        "inference_seconds_count": totals["arcforge_embedding_inference_seconds_count"],
+        "items_total": totals["arcforge_embedding_items_total"],
         "requests": requests,
     }
 

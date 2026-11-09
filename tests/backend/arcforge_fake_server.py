@@ -184,12 +184,16 @@ class FakeArcForge:
                 "# HELP arcforge_embedding_requests_total requests",
                 "# TYPE arcforge_embedding_requests_total counter",
             ]
+            # Match the REAL service's exposition: every series carries a model label
+            # (observed on a live host), requests also carry status. A bare-name fake
+            # hid a bug where all server-counter deltas were silently zero.
+            m = 'model="qwen3-embedding-0.6b"'
             for status, n in sorted(self.status_counts.items()):
-                lines.append(f'arcforge_embedding_requests_total{{status="{status}"}} {n}')
+                lines.append(f'arcforge_embedding_requests_total{{{m},status="{status}"}} {n}')
             lines += [
-                f"arcforge_embedding_items_total {self.items_total}",
-                f"arcforge_embedding_inference_seconds_count {self.infer_count}",
-                f"arcforge_embedding_inference_seconds_sum {self.infer_sum}",
+                f"arcforge_embedding_items_total{{{m}}} {self.items_total}",
+                f"arcforge_embedding_inference_seconds_count{{{m}}} {self.infer_count}",
+                f"arcforge_embedding_inference_seconds_sum{{{m}}} {self.infer_sum}",
                 "arcforge_embedding_queue_depth 0",
                 "arcforge_embedding_active_inferences 0",
                 f"arcforge_device_wedged {1 if self.wedged else 0}",
