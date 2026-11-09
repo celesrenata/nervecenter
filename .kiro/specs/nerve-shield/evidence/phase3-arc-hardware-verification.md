@@ -63,10 +63,37 @@ Findings (observations on ONE host with SHORT synthetic feature strings; not a c
 ## Fix applied during verification
 The client's target validator accepted `https://` though the service is plain HTTP; an https target could only fail to connect. Tightened to `http`-only at construction (and the test that asserted https-accepted now asserts it is refused). Full suite 6346 passed / 0 failed.
 
+## Same-model CPU vs Arc GPU (VERIFIED, gremlin-4, 2026-11-09)
+**Method.** A single script was piped over SSH into `systemd-run --pipe` so nothing was written to the host. Containment: CPU plugin only (`DevicePolicy=closed` blocks the GPU), `PrivateNetwork=true`, `ProtectSystem=strict`, `NoNewPrivileges`, no capabilities, `MemoryMax=8G`, `CPUQuota=800%`, `Nice=15`, idle I/O, `RuntimeMaxSec=300`. A smoke run (compile plus one inference) validated the sandbox first. The script replicates the service's tokenization (right-pad to the batch maximum), input order, LAST-token pooling and L2 normalization, with 8 CPU threads. The GPU side sent the **same 32 synthetic texts** (75 to 216 tokens each, median 125) in the **same batch windows and repetition counts** to the live service one request at a time, using the server-side `infer_s`, which covers the same stages (tokenize, infer, pool). No units or files were left on the host; the service stayed `GPU / ready / not wedged` throughout.
+
+| batch | CPU 8 threads total p50 | CPU p95 | CPU items/s | Arc GPU p50 | Arc GPU p95 | GPU items/s | GPU speedup | reps cpu/gpu |
+|--|--|--|--|--|--|--|--|--|
+| 1 | 208 ms | 413 ms | 4.5 | 65 ms | 114 ms | 15.4 | 3.2x | 12/12 |
+| 8 | 2494 ms | 2624 ms | 3.6 | 461 ms | 624 ms | 17.4 | 5.4x | 6/6 |
+| 16 | 3638 ms | 4793 ms | 3.9 | 747 ms | 921 ms | 21.4 | 4.9x | 5/5 |
+
+CPU time is essentially all inference (tokenize about 1 ms, pool about 0.2 ms).
+
+**Numerics.** Cosine similarity of CPU vs GPU embeddings for the same text: batch 1 minimum 0.99954 (n=4), batch 16 minimum 0.99941 (n=16). For context, the INT8 model's own batch-size sensitivity is 0.99986 on CPU and 0.99956 on GPU (batch 1 vs batch 16). All vectors finite and unit norm. The GPU path is numerically equivalent to CPU within normal INT8 variation.
+
+**Caveats (read before quoting the speedup).**
+- The CPU was deliberately constrained (8 threads, low priority, CPU quota, shared production node). The supported claim is "3 to 5 times faster than 8 contended CPU threads"; the CPU best case (all 22 threads, normal priority) was not measured and could narrow the gap.
+- One host, 5 to 12 timed repetitions per cell (p95 from 5 samples is weak), short synthetic inputs, one model. Energy was not measured.
+- GPU absolute numbers vary with text length: batch 16 was 21.4 items/s on these texts and about 17 items/s on the harness's different sample.
+- Runtime now recorded: **OpenVINO 2026.4.0**, Python 3.14.8 (the service's own environment).
+
+## Artifact identity (VERIFIED, read-only, all four hosts)
+Identical on gremlin-1, -2, -3 and -4:
+- `openvino_model.xml` sha256 `fc0218b8973d09f43e7f8175760b69d4f2a9c9bab6e354aca8cee639d9b57e15`
+- `openvino_model.bin` (616,316,780 bytes) sha256 `b88066b1898f5e74eb31fe87578f10ab3d01709765a09bd8c4ea4fe256f62bb4`
+- `tokenizer.json` sha256 `def76fb086971c7867b829c23a26261e38d9d74e02139253b38aeb9df8b4b50a`
+- `config.json` sha256 `68f2df7c4bea23d67b321a89503429303aedaef24a3fd646ce14e5c355047a43`
+Kernel 7.2.15 and intel-media-driver / vpl-gpu-rt 26.3.5 on all four. The intel-compute-runtime, level-zero and IGC package versions were NOT captured (not found in the store references queried). Supply-chain note (T-27): these hashes can be pinned in NerveShield config so a changed artifact is rejected.
+
 ## Open (G3 not fully closeable here)
-- **Same-model CPU comparison** (OpenVINO CPU device on a host) — NOT RUN; owner runs it by hand per the ArcForge README's transient-unit method. Needed for a real Arc-vs-CPU acceleration claim.
-- **On-host (loopback) benchmark** to measure capacity without LAN/JSON overhead, and a stress run with a raised p95 ceiling.
-- **Calibration** of the embed-head scores on real labeled data (currently UNCALIBRATED; synthetic quality is meaningless for real mail).
-- **Authentication** for the ArcForge/Granite endpoints before any private-content inference is routed to them; and the OmniRoute `hybrid/reader` resolution (Phase 4) to prove local-only routing.
-- Runtime/driver/artifact digests in the report are `NOT_RECORDED` (the client cannot see them; a host-side probe can).
+- **CPU fallback on a failed GPU is not exercised on hardware.** ArcForge fails loudly by design; the NerveShield client treats any non-OK outcome as "not evaluated" (tested against the fake server only). The same-model CPU path now has measured numbers (above), so a documented CPU fallback is a viable option if the owner wants one.
+- **Capacity under the service's 4 workers**: aggregate throughput was flat with concurrency on gremlin-4 for short inputs (see on-node run); not explained here.
+- **Calibration** of the embed-head scores on real labeled data (UNCALIBRATED; synthetic quality is meaningless for real mail). The head is pure Python on CPU; only the embedding runs on the Arc GPU.
+- **Privacy and routing**: the ArcForge/Granite endpoints are unauthenticated plain HTTP on the LAN. No private content was sent. Local-only routing through OmniRoute (`hybrid/reader`) is unproven (Phase 4).
+- compute-runtime / level-zero / IGC versions not recorded.
 - Nothing here is wired into the assessment pipeline; the embed-head is not a security verdict (I-08).
