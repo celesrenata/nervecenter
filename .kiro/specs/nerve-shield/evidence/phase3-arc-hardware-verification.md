@@ -29,7 +29,36 @@ Measured (client wall-clock over the LAN from macOS / server GPU time as reporte
 
 **Run status: ABORTED on `ABORT_P95_CEILING`** at batch 8 / concurrency 4 (wall p95 3843 ms > 2000 ms). This is the safety limit working as designed, not a fault: 0 errors, device never wedged. The wall-vs-server gap is LAN round-trip + JSON transfer of 1024-float vectors from a macOS client; server-side GPU time stayed ≤ ~807 ms. Throughput (~17 items/s) is bounded by the rate cap and is NOT a capacity measurement.
 
-Interpretation: the embedding model runs on the real Arc PF and returns correct 1024-dim L2-normalized vectors under concurrency; latency is dominated by transfer, not GPU compute. A capacity benchmark should run ON a host (loopback) to remove LAN/JSON overhead, and the p95 ceiling should be raised for a deliberate stress run.
+Interpretation (as first written, **partly WRONG, corrected below**): "latency is dominated by transfer, not GPU compute." Only the Mac-vs-server gap was transfer. The on-node run below shows GPU compute time is the dominant and throughput-limiting term.
+
+## On-node capacity run (VERIFIED, gremlin-4, 2026-11-09)
+The package is not stdlib-only in practice (`features.py` needs pydantic; `backend.mail_security.__init__` pulls in the worker, SQLAlchemy and structlog), so it cannot run under a host's Nix Python without installing packages. Instead the real guarded harness ran as a one-off pod (`api` image `bench-b2d66ac`, non-root, caps dropped, cpu limit 1, memory limit 512Mi) **pinned to gremlin-4**, targeting that node's own address, then was deleted. Grid: batch 1/8/16 x concurrency 1/2, 30 requests per cell after warmup, rate cap 50 rps, p95 ceiling 3000 ms. Result: **status OK, 0 errors in 180 timed requests, no abort**, `/ready` ok afterwards, no IPs in the report.
+
+| batch | conc | wall p50 | wall p95 | server p50 | server p95 | items/s | Prometheus mean infer ms/request |
+|--|--|--|--|--|--|--|--|
+| 1 | 1 | 70 | 98 | 67 | 95 | 14.4 | 65 |
+| 1 | 2 | 115 | 170 | 110 | 167 | 15.1 | 117 |
+| 8 | 1 | 447 | 569 | 430 | 556 | 17.7 | 437 |
+| 8 | 2 | 862 | 1078 | 842 | 1066 | 18.0 | 859 |
+| 16 | 1 | 970 | 1031 | 945 | 1009 | 16.9 | 916 |
+| 16 | 2 | 1840 | 1918 | 1804 | 1880 | 17.4 | 1796 |
+
+The two server-side measurement paths (`usage.arcforge.infer_s` per request vs the service's own Prometheus counters) agree within about 5 percent, and counters match the work sent (30 requests per cell, items = 30 x batch size).
+
+Findings (observations on ONE host with SHORT synthetic feature strings; not a capacity guarantee):
+- Wall time is within about 3 ms of server time on-node, so the earlier Mac-measured gap was LAN plus JSON transfer.
+- **Aggregate throughput is flat at roughly 14-18 items/s.** Batching gives about 20 percent over batch 1 and plateaus at 16. Doubling concurrency doubles per-request server time and adds no throughput: GPU work appears effectively serialized for this input shape (about 55-65 ms of GPU time per item).
+- This differs from the ArcForge README's validation note that aggregate throughput scales with concurrency (measured on gremlin-1, input mix not stated). Possible reasons not separated here: short inputs, different host, service worker configuration, my pool's per-host cap of 2.
+- The first on-node attempt (concurrency 4) aborted on the p95 ceiling because my pool caps each host at 2 in-flight requests, so two of four requests wait client-side; that cell measured queueing, not the GPU. The grid above avoids it.
+- Planning arithmetic only (NOT measured): about 17 items/s per host. A backlog of the 72 current messages is a few seconds of GPU time; real message text is longer than these strings and will cost more.
+
+## Defects found by this run and fixed
+1. **Server-counter deltas were silently zero** against the real service: it labels every series (`{model="..."}`) and the harness looked up bare names. The fake server emitted bare names, which hid it. Fixed in `b2d66ac` (sum across label sets; fake now emits the real format; regression tests use the literal captured `/metrics` text).
+2. The target validator accepted `https://` (fixed earlier).
+3. The earlier claim that the classifier package is "standard library only" was wrong about third-party imports (pydantic, and the package `__init__` imports); only the network/subprocess static check held.
+
+## Unrelated failing test (pre-existing, not touched)
+`tests/backend/test_routines.py::TestWellnessSleepSeam::test_returns_iso_records_with_source` hard-codes Oct 25-27 2026 sleep records and queries a 14-day window against the wall clock; it began failing when the clock passed Nov 8. Full suite: 6348 passed, 1 failed (this one).
 
 ## Fix applied during verification
 The client's target validator accepted `https://` though the service is plain HTTP; an https target could only fail to connect. Tightened to `http`-only at construction (and the test that asserted https-accepted now asserts it is refused). Full suite 6346 passed / 0 failed.
