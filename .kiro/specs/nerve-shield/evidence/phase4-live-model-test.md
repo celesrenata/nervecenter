@@ -47,3 +47,5 @@ Root causes found, in order: nested-object JSON errors (root closed early) -> fl
 | injection body | 4/4 PHISHING_SUSPECTED, INSTRUCTIONS_TO_AI | AGREE |
 
 Prompt tokens 612-650 per observer call (no injected context). Not proven: quality on real mail, calibration, rates beyond 6 packets, memory-write absence (see above). OmniRoute still sets a stable `x-conversationid` on secure requests; whether it stores conversation content is unverified.
+
+Note 2026-11-11: the owner renamed OmniRoute combo `secure/code` to `secure/coder`. References to `secure/code` above are historical. `secure/coder` re-verified: exists, `config.secure=true`, guard ALLOWED_LOCAL_ONLY (`vllm/qwen3.8-27b-nvfp4`), smoke reply OK at 58 prompt tokens. NerveCenter combos now: Reader -> `secure/reader`, Coder -> `secure/coder`, Planner -> `secure/planner`.

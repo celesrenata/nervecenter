@@ -42,9 +42,23 @@ Working tree also holds modified tracked artifacts (`__pycache__`, `egg-info`, `
 
 My recommendation is 2 before 1: the guard is only as good as its assumptions about the live registry, and that is cheap to check read-only.
 
-## Owner decision (to be completed by owner)
+## Update before decision (2026-11-10/11)
+- Option 2 completed: live registry contract check (`phase4-live-registry-check.md`).
+- OmniRoute `3.8.52-secure-combo` deployed by the owner; `secure/reader`, `secure/code`, `secure/planner` are local-only and `config.secure=true`; the guard requires the flag (NS-ADR-034). NerveCenter `Reader` -> `secure/reader`.
+- Compact observer contract and challenger prompt v2 (NS-ADR-035): live synthetic chain 6/6 completed, observer 24/24 valid (`phase4-live-model-test.md`).
+- Owner renamed `secure/code` to `secure/coder`; NerveCenter combos now Reader -> `secure/reader`, Coder -> `secure/coder`, Planner -> `secure/planner` (all guard-verified).
+- Committed locally as `dfa93b0`. Full suite 7764 passed, 1 known unrelated failure.
+- Still open: endpoint authentication on the hosts, memory-write absence unproven, quality on real mail unmeasured, Arc band edges and budgets unmeasured.
+
+## Owner decision
 ```
-Decision:
-Date:
-Notes:
+Decision: APPROVE Phase 5 ("commit and continue on")
+Date: 2026-11-11
+Reviewer: Owner (via orchestrator)
+Conditions (orchestrator, carried from earlier gates; owner may change):
+  - Phase 5 starts with 5.1 on synthetic multi-account MBOX/EML fixtures only. No real
+    Takeout archive is imported and no real mail reaches any model.
+  - Nothing is wired into the assessment pipeline or the live cluster in this phase.
+  - Tasks in order with verification between each; STOP at G5 (5.6).
+  - Endpoint authentication remains NOT DECIDED and is not part of this approval.
 ```
