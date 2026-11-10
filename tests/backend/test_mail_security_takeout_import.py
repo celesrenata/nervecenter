@@ -469,10 +469,15 @@ def test_import_modules_are_not_wired_into_the_backend() -> None:
     """Only the 5.2 job may import the 5.1 importer; nothing imports either."""
     backend = Path(__file__).resolve().parents[2] / "backend"
     own = {"takeout_import.py", "takeout_job.py"}
+    imports = re.compile(
+        r"^\s*(?:from\s+\S*takeout_(?:import|job)\b|import\s+\S*takeout_(?:import|job)\b"
+        r"|from\s+\S+\s+import\s+[^\n]*\btakeout_(?:import|job)\b)",
+        re.MULTILINE,
+    )
     offenders = [
         str(p.relative_to(backend))
         for p in backend.rglob("*.py")
-        if p.name not in own and re.search(r"takeout_(import|job)", p.read_text(encoding="utf-8"))
+        if p.name not in own and imports.search(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
 
