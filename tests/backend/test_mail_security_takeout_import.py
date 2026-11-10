@@ -465,12 +465,14 @@ def test_manifest_contains_no_content_paths_or_identifiers(two_accounts: Any) ->
         assert SECRET_ADDR not in repr(record) and SECRET_LABEL not in repr(record)
 
 
-def test_import_module_is_not_wired_into_the_backend() -> None:
+def test_import_modules_are_not_wired_into_the_backend() -> None:
+    """Only the 5.2 job may import the 5.1 importer; nothing imports either."""
     backend = Path(__file__).resolve().parents[2] / "backend"
+    own = {"takeout_import.py", "takeout_job.py"}
     offenders = [
         str(p.relative_to(backend))
         for p in backend.rglob("*.py")
-        if p.name != "takeout_import.py" and "takeout_import" in p.read_text(encoding="utf-8")
+        if p.name not in own and re.search(r"takeout_(import|job)", p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
 
@@ -490,3 +492,44 @@ def test_random_bytes_never_raise(tmp_path: Path, seed: int) -> None:
     src = manifest.sources[0]
     assert src.status is SourceStatus.COMPLETED
     assert src.records == len(records) <= src.messages_seen
+
+
+def test_allowed_root_behind_a_symlink_is_usable(tmp_path: Path) -> None:
+    """e.g. macOS /var -> /private/var, or a linked home directory."""
+    real_root = tmp_path / "real_root"
+    real_root.mkdir()
+    (real_root / "a.mbox").write_bytes(_mbox(_eml(1)))
+    linked_root = tmp_path / "linked_root"
+    linked_root.symlink_to(real_root)
+    manifest, records = _run(
+        linked_root, [ImportSource("acct", linked_root / "a.mbox", SourceKind.MBOX)]
+    )
+    assert manifest.sources[0].status is SourceStatus.COMPLETED and len(records) == 1
+
+
+def test_symlink_below_a_linked_root_is_still_refused(tmp_path: Path) -> None:
+    real_root = tmp_path / "real_root"
+    (real_root / "sub").mkdir(parents=True)
+    outside = tmp_path / "outside.mbox"
+    outside.write_bytes(_mbox(_eml(1)))
+    (real_root / "sub" / "a.mbox").symlink_to(outside)
+    linked_root = tmp_path / "linked_root"
+    linked_root.symlink_to(real_root)
+    src = _refusal(linked_root, linked_root / "sub" / "a.mbox")
+    assert src.status_code is IssueCode.PATH_SYMLINK
+
+
+def test_unresolved_system_temp_path_works(tmp_path: Path) -> None:
+    import tempfile
+
+    unresolved = Path(tempfile.mkdtemp())  # /var/... on macOS (a symlink to /private/var)
+    try:
+        (unresolved / "a.mbox").write_bytes(_mbox(_eml(1)))
+        manifest, records = _run(
+            unresolved, [ImportSource("acct", unresolved / "a.mbox", SourceKind.MBOX)]
+        )
+        assert manifest.sources[0].status is SourceStatus.COMPLETED and len(records) == 1
+    finally:
+        import shutil
+
+        shutil.rmtree(unresolved)

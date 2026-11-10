@@ -84,6 +84,7 @@ class IssueCode(StrEnum):
     MESSAGE_COUNT_EXCEEDED = "MESSAGE_COUNT_EXCEEDED"
     EML_FILE_COUNT_EXCEEDED = "EML_FILE_COUNT_EXCEEDED"
     READ_ERROR = "READ_ERROR"
+    CHECKPOINT_MISMATCH = "CHECKPOINT_MISMATCH"
     # per-message quarantine
     MESSAGE_TOO_LARGE = "MESSAGE_TOO_LARGE"
     PARSE_FAILED = "PARSE_FAILED"
@@ -229,16 +230,32 @@ class _Cancelled(Exception):
 
 
 def _check_path(raw_path: Path | str, policy: ImportPolicy) -> Path:
-    """Resolve and validate a source path. Raises :class:`_Refused`."""
+    """Resolve and validate a source path. Raises :class:`_Refused`.
+
+    An allowed root may itself sit behind a symlink (macOS ``/var`` ->
+    ``/private/var``, a linked home directory); it is resolved once. Below the
+    root, no path component may be a symlink, so nothing can point outside it.
+    Returns the real path.
+    """
     path = Path(os.path.abspath(os.fspath(raw_path)))
     if not os.path.lexists(path):
         raise _Refused(IssueCode.PATH_MISSING)
-    if os.path.realpath(path) != str(path):
-        raise _Refused(IssueCode.PATH_SYMLINK)
-    roots = [Path(os.path.realpath(r)) for r in policy.allowed_roots]
-    if not any(path == r or r in path.parents for r in roots):
-        raise _Refused(IssueCode.PATH_OUTSIDE_ROOTS)
-    return path
+    for root in policy.allowed_roots:
+        root_abs = Path(os.path.abspath(os.fspath(root)))
+        root_real = Path(os.path.realpath(root_abs))
+        for base in (root_abs, root_real):
+            if path != base and base not in path.parents:
+                continue
+            current = base
+            for part in path.relative_to(base).parts:
+                current = current / part
+                if os.path.islink(current):
+                    raise _Refused(IssueCode.PATH_SYMLINK)
+            real = Path(os.path.realpath(path))
+            if real != root_real and root_real not in real.parents:  # pragma: no cover
+                raise _Refused(IssueCode.PATH_SYMLINK)
+            return real
+    raise _Refused(IssueCode.PATH_OUTSIDE_ROOTS)
 
 
 def _check_suffix(path: Path, allowed: str) -> None:
@@ -301,10 +318,15 @@ def _scan_headers(raw: bytes, limit: int) -> tuple[str | None, str | None]:
 class _RawMessage:
     offset: int
     data: bytes | None  # None means over the per-message cap (quarantine)
+    #: Where a resume must restart after this message: MBOX byte offset of the
+    #: next ``From `` line (or EOF), or the EML ordinal of this entry.
+    next_position: int = 0
+    #: Quarantine code when ``data`` is None (default: over the size cap).
+    issue: IssueCode = IssueCode.MESSAGE_TOO_LARGE
 
 
 def _iter_mbox(
-    handle: BinaryIO, policy: ImportPolicy, manifest: SourceManifest
+    handle: BinaryIO, policy: ImportPolicy, manifest: SourceManifest, start_offset: int = 0
 ) -> Iterator[_RawMessage]:
     """Stream messages from an mbox. mboxrd unquoting; one trailing blank line dropped.
 
@@ -312,6 +334,13 @@ def _iter_mbox(
     line, which keeps unquoted ``From `` body lines (mboxo) inside the message.
     """
     offset = 0
+    if start_offset:
+        handle.seek(start_offset)
+        offset = start_offset
+        peek = handle.read(5)
+        handle.seek(start_offset)
+        if peek and peek != b"From ":  # a resume must land on a separator (or EOF)
+            raise _Refused(IssueCode.CHECKPOINT_MISMATCH)
     current: bytearray | None = None
     current_offset = 0
     over = False
@@ -326,10 +355,11 @@ def _iter_mbox(
         # The first separator needs no preceding blank line (it may follow junk).
         if at_line_start and line.startswith(b"From ") and (prev_blank or current is None):
             if current is not None:
-                yield _finish(current, current_offset, over)
-            manifest.messages_seen += 1
-            if manifest.messages_seen > policy.max_messages_per_source:
-                manifest.messages_seen -= 1
+                # Counted when handed over, so a checkpoint never includes a
+                # message that was read but not yet processed.
+                manifest.messages_seen += 1
+                yield _finish(current, current_offset, over, offset)
+            if manifest.messages_seen + 1 > policy.max_messages_per_source:
                 raise _Refused(IssueCode.MESSAGE_COUNT_EXCEEDED)
             current, current_offset, over = bytearray(), offset, False
         elif current is None:
@@ -349,52 +379,66 @@ def _iter_mbox(
         offset += len(line)
         manifest.bytes_read = offset
     if current is not None:
-        yield _finish(current, current_offset, over)
+        manifest.messages_seen += 1
+        yield _finish(current, current_offset, over, offset)
 
 
-def _finish(buf: bytearray, offset: int, over: bool) -> _RawMessage:
+def _finish(buf: bytearray, offset: int, over: bool, next_position: int) -> _RawMessage:
     if over:
-        return _RawMessage(offset, None)
+        return _RawMessage(offset, None, next_position)
     data = bytes(buf)
     for tail in (b"\r\n", b"\n"):  # the separator blank line belongs to mbox, not the message
         if data.endswith(tail * 2):
             data = data[: -len(tail)]
             break
-    return _RawMessage(offset, data)
+    return _RawMessage(offset, data, next_position)
 
 
-def _iter_eml(root: Path, policy: ImportPolicy, manifest: SourceManifest) -> Iterator[_RawMessage]:
+def _iter_eml(
+    root: Path, policy: ImportPolicy, manifest: SourceManifest, skip: int = 0
+) -> Iterator[_RawMessage]:
     """Yield .eml files: one file, or a directory walked without following links."""
+    # Walk-time issues are held until the next entry, then counted only if that
+    # entry lies after ``skip``; a resume never counts the same issue twice.
+    pending: Counter[str] = Counter()
     if root.is_file():
         _check_suffix(root, ".eml")
         entries: Iterator[Path] = iter([root])
     else:
-        entries = _walk_eml(root, policy, manifest)
+        entries = _walk_eml(root, policy, pending)
     ordinal = 0
     for entry in entries:
         ordinal += 1
         if ordinal > policy.max_eml_files:
             raise _Refused(IssueCode.EML_FILE_COUNT_EXCEEDED)
+        if ordinal > skip:
+            manifest.quarantined.update(pending)
+        pending.clear()
+        if ordinal <= skip:  # already processed before a checkpoint
+            continue
         manifest.messages_seen += 1
         try:
             fd = os.open(entry, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
         except OSError:
-            manifest.quarantined[IssueCode.EML_ENTRY_SKIPPED] += 1
+            yield _RawMessage(ordinal, None, ordinal, IssueCode.EML_ENTRY_SKIPPED)
             continue
         with os.fdopen(fd, "rb") as handle:
             info = os.fstat(handle.fileno())
             if not stat.S_ISREG(info.st_mode):
-                manifest.quarantined[IssueCode.EML_ENTRY_SKIPPED] += 1
+                yield _RawMessage(ordinal, None, ordinal, IssueCode.EML_ENTRY_SKIPPED)
                 continue
             if info.st_size > policy.max_message_bytes:
-                yield _RawMessage(ordinal, None)
+                yield _RawMessage(ordinal, None, ordinal)
                 continue
             data = handle.read(policy.max_message_bytes + 1)
         manifest.bytes_read += len(data)
-        yield _RawMessage(ordinal, data if len(data) <= policy.max_message_bytes else None)
+        fits = len(data) <= policy.max_message_bytes
+        yield _RawMessage(ordinal, data if fits else None, ordinal)
+    if ordinal > skip or skip == 0:
+        manifest.quarantined.update(pending)
 
 
-def _walk_eml(root: Path, policy: ImportPolicy, manifest: SourceManifest) -> Iterator[Path]:
+def _walk_eml(root: Path, policy: ImportPolicy, issues: Counter[str]) -> Iterator[Path]:
     stack: list[tuple[Path, int]] = [(root, 0)]
     while stack:
         directory, depth = stack.pop()
@@ -402,12 +446,12 @@ def _walk_eml(root: Path, policy: ImportPolicy, manifest: SourceManifest) -> Ite
             items = sorted(it, key=lambda e: e.name)
         for item in items:
             if item.is_symlink():
-                manifest.quarantined[IssueCode.EML_ENTRY_SKIPPED] += 1
+                issues[IssueCode.EML_ENTRY_SKIPPED] += 1
             elif item.is_dir(follow_symlinks=False):
                 if depth + 1 <= policy.max_eml_depth:
                     stack.append((Path(item.path), depth + 1))
                 else:
-                    manifest.quarantined[IssueCode.EML_ENTRY_SKIPPED] += 1
+                    issues[IssueCode.EML_ENTRY_SKIPPED] += 1
             elif item.is_file(follow_symlinks=False):
                 if Path(item.name).suffix.lower() == ".eml":
                     yield Path(item.path)
@@ -479,6 +523,64 @@ def run_import(
     return manifest
 
 
+def _accept(
+    message: _RawMessage,
+    account_scope: str,
+    index: int,
+    src: SourceManifest,
+    policy: ImportPolicy,
+    seen: set[str],
+) -> ImportRecord | None:
+    """Classify one message and update ``src``. Returns a record, or None if not kept.
+
+    Shared by :func:`run_import` and the resumable job (``takeout_job``) so both
+    apply identical quarantine, dedup and labelling rules.
+    """
+    if message.data is None:
+        src.quarantined[message.issue] += 1
+        return None
+    raw = message.data
+    if not raw.strip():  # separator with no message behind it
+        src.quarantined[IssueCode.PARSE_FAILED] += 1
+        return None
+    evidence = parse_mime_evidence(raw, limits=policy.parser_limits)
+    reasons = {note.reason for note in evidence.incomplete_notes}
+    if reasons & _FATAL_PARSE:
+        src.quarantined[IssueCode.PARSE_FAILED] += 1
+        return None
+    sha = evidence.source_sha256
+    if sha in seen:
+        src.duplicates_in_account += 1
+        return None
+    seen.add(sha)
+    message_id, labels = _scan_headers(raw, policy.max_header_scan_bytes)
+    if message_id is None:
+        src.without_message_id += 1
+    if labels is not None:
+        src.with_gmail_labels += 1
+    if not evidence.inspection_complete:
+        src.inspection_incomplete += 1
+    mode = AcquisitionMode.TAKEOUT_MBOX if src.kind is SourceKind.MBOX else AcquisitionMode.EML
+    src.records += 1
+    return ImportRecord(
+        account_scope=account_scope,
+        source_index=index,
+        logical_key=logical_source_key(
+            account_scope,
+            provider=IMPORT_PROVIDER,
+            provider_uid=None if message_id else f"sha256:{sha}",
+            rfc_message_id=message_id,
+        ),
+        sha256=sha,
+        raw=raw,
+        offset=message.offset,
+        acquisition_mode=mode,
+        evidence_fidelity=fidelity_for_mode(mode),
+        inspection_complete=evidence.inspection_complete,
+        gmail_labels_raw=labels,
+    )
+
+
 def _consume(
     messages: Iterator[_RawMessage],
     source: ImportSource,
@@ -491,60 +593,18 @@ def _consume(
     sink: RecordSink | None,
     cancel: Callable[[], bool] | None,
 ) -> None:
-    mode = AcquisitionMode.TAKEOUT_MBOX if src.kind is SourceKind.MBOX else AcquisitionMode.EML
-    fidelity = fidelity_for_mode(mode)
+    if cancel is not None and cancel():
+        raise _Cancelled
     for message in messages:
+        record = _accept(message, source.account_scope, index, src, policy, seen)
+        if record is not None:
+            emitted.append((source.account_scope, record.sha256))
+            if not request.dry_run:
+                assert sink is not None  # noqa: S101 - checked in run_import
+                sink(record)
+        # Checked after a message is fully handled: cancel never splits one.
         if cancel is not None and cancel():
             raise _Cancelled
-        if message.data is None:
-            src.quarantined[IssueCode.MESSAGE_TOO_LARGE] += 1
-            continue
-        raw = message.data
-        if not raw.strip():  # separator with no message behind it
-            src.quarantined[IssueCode.PARSE_FAILED] += 1
-            continue
-        evidence = parse_mime_evidence(raw, limits=policy.parser_limits)
-        reasons = {note.reason for note in evidence.incomplete_notes}
-        if reasons & _FATAL_PARSE:
-            src.quarantined[IssueCode.PARSE_FAILED] += 1
-            continue
-        sha = evidence.source_sha256
-        if sha in seen:
-            src.duplicates_in_account += 1
-            continue
-        seen.add(sha)
-        message_id, labels = _scan_headers(raw, policy.max_header_scan_bytes)
-        if message_id is None:
-            src.without_message_id += 1
-        if labels is not None:
-            src.with_gmail_labels += 1
-        if not evidence.inspection_complete:
-            src.inspection_incomplete += 1
-        key = logical_source_key(
-            source.account_scope,
-            provider=IMPORT_PROVIDER,
-            provider_uid=None if message_id else f"sha256:{sha}",
-            rfc_message_id=message_id,
-        )
-        src.records += 1
-        emitted.append((source.account_scope, sha))
-        if request.dry_run:
-            continue
-        assert sink is not None  # noqa: S101 - checked in run_import
-        sink(
-            ImportRecord(
-                account_scope=source.account_scope,
-                source_index=index,
-                logical_key=key,
-                sha256=sha,
-                raw=raw,
-                offset=message.offset,
-                acquisition_mode=mode,
-                evidence_fidelity=fidelity,
-                inspection_complete=evidence.inspection_complete,
-                gmail_labels_raw=labels,
-            )
-        )
 
 
 __all__ = [
