@@ -181,6 +181,7 @@ def _manifest() -> MessageEvidenceManifest:
 
 def _observation() -> SemanticObservation:
     return SemanticObservation(
+        schema_version="1.0",
         source_ref="src:msg:1",
         observer_role=ObserverRole.TEST_FIXTURE,
         gist="A short, bounded summary of the message.",
@@ -291,6 +292,7 @@ def test_nested_submodels_forbid_unknown_keys() -> None:
 def test_gist_over_length_rejected() -> None:
     with pytest.raises(ValidationError):
         SemanticObservation(
+            schema_version="1.0",
             source_ref="src:1",
             observer_role=ObserverRole.TEST_FIXTURE,
             gist="x" * 601,  # schema maxLength 600

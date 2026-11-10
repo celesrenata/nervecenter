@@ -38,8 +38,15 @@ Before Phase 4, decide how the inference endpoints are protected (a NixOS change
 
 ## Owner decision (to be completed by owner)
 ```
-G3 decision:  APPROVE Phase 4 (fixture-first, no real mail to any model) | REQUEST CHANGES | HOLD
-Reviewer / date:
+G3 decision:  APPROVE Phase 4 (fixture-first, no real mail to any model)
+Reviewer / date: Owner (via orchestrator) / 2026-11-09
 Decision on endpoint authentication (none / bind-to-cluster-only / shared secret / mTLS):
+  NOT DECIDED. Owner chose option 1 only; the NixOS hardening of the ArcForge/Granite
+  endpoints remains an open decision and is NOT part of this approval.
 Notes / conditions:
+  - Phase 4 proceeds on fixtures. No real mail content to any model, local or remote.
+  - Synthetic fixtures only may reach a real local model, and only through the fail-closed
+    resolver (task 4.2) after it classifies the route as local-only.
+  - Tasks 4.1-4.6 in order, verified between each, STOP at G4 (4.7). No Phase 5.
+  - Nothing is wired into the assessment pipeline in this phase.
 ```

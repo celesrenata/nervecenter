@@ -584,6 +584,11 @@ class MessageEvidenceManifest(_StrictModel):
 # =============================================================================
 
 
+#: Uncalibrated model estimate in [0, 1]. Strict: numeric strings, bools, NaN and
+#: infinities are rejected (schema ``type: number``, min 0, max 1).
+Confidence = Annotated[float, Field(ge=0.0, le=1.0, strict=True, allow_inf_nan=False)]
+
+
 class Component(_StrictModel):
     """An observed link/image/attachment component.
 
@@ -593,8 +598,8 @@ class Component(_StrictModel):
 
     evidence_ref: OpaqueRef
     risk_level: ComponentRiskLevel
-    indicator_codes: list[Code] = Field(default_factory=list, max_length=32)
-    model_confidence: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    indicator_codes: list[Code] = Field(max_length=32)
+    model_confidence: Confidence | None
 
     @field_validator("indicator_codes")
     @classmethod
@@ -607,9 +612,9 @@ class ObservationRequest(_StrictModel):
 
     request_type: RequestType
     claimed_urgency: RequestUrgency
-    evidence_refs: list[OpaqueRef] = Field(default_factory=list, max_length=24)
-    high_impact: bool
-    requires_independent_verification: bool
+    evidence_refs: list[OpaqueRef] = Field(max_length=24)
+    high_impact: Annotated[bool, Field(strict=True)]
+    requires_independent_verification: Annotated[bool, Field(strict=True)]
 
     @field_validator("evidence_refs")
     @classmethod
@@ -621,8 +626,8 @@ class RiskIndicator(_StrictModel):
     """An observed risk indicator with an uncalibrated confidence estimate."""
 
     indicator_code: Code
-    evidence_refs: list[OpaqueRef] = Field(default_factory=list, max_length=24)
-    model_confidence: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    evidence_refs: list[OpaqueRef] = Field(max_length=24)
+    model_confidence: Confidence | None
 
     @field_validator("evidence_refs")
     @classmethod
@@ -634,7 +639,7 @@ class Contradiction(_StrictModel):
     """An observed internal contradiction (e.g. display-name vs. address)."""
 
     contradiction_code: Code
-    evidence_refs: list[OpaqueRef] = Field(default_factory=list, max_length=24)
+    evidence_refs: list[OpaqueRef] = Field(max_length=24)
 
     @field_validator("evidence_refs")
     @classmethod
@@ -646,7 +651,7 @@ class ClaimedIdentity(_StrictModel):
     """Who the message *claims* to be from (observation, never verified)."""
 
     claimed_role: ClaimedRole
-    entity_refs: list[OpaqueRef] = Field(default_factory=list, max_length=24)
+    entity_refs: list[OpaqueRef] = Field(max_length=24)
     identity_consistency: IdentityConsistency
 
     @field_validator("entity_refs")
@@ -663,20 +668,20 @@ class SemanticObservation(_StrictModel):
     opaque. Mirrors ``semantic-observation.schema.json``.
     """
 
-    schema_version: str = SCHEMA_VERSION
+    schema_version: str
     source_ref: OpaqueRef
     observer_role: ObserverRole
     gist: Annotated[str, StringConstraints(max_length=600)]
     claimed_identity: ClaimedIdentity
     message_category: MessageCategory
-    requests: list[ObservationRequest] = Field(default_factory=list, max_length=32)
-    links: list[Component] = Field(default_factory=list, max_length=128)
-    images: list[Component] = Field(default_factory=list, max_length=128)
-    attachments: list[Component] = Field(default_factory=list, max_length=128)
-    risk_indicators: list[RiskIndicator] = Field(default_factory=list, max_length=64)
-    contradictions: list[Contradiction] = Field(default_factory=list, max_length=24)
-    missing_evidence: list[Code] = Field(default_factory=list, max_length=64)
-    evidence_refs: list[OpaqueRef] = Field(default_factory=list, max_length=256)
+    requests: list[ObservationRequest] = Field(max_length=32)
+    links: list[Component] = Field(max_length=128)
+    images: list[Component] = Field(max_length=128)
+    attachments: list[Component] = Field(max_length=128)
+    risk_indicators: list[RiskIndicator] = Field(max_length=64)
+    contradictions: list[Contradiction] = Field(max_length=24)
+    missing_evidence: list[Code] = Field(max_length=64)
+    evidence_refs: list[OpaqueRef] = Field(max_length=256)
 
     @field_validator("schema_version")
     @classmethod
