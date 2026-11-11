@@ -34,6 +34,7 @@ from typing import Any
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
+from backend.mail_security.signing_keys import KeyCustodyError, key_id, resolve_trusted
 from backend.mail_security.training_selection import SelectedExample, SelectionManifest
 
 MANIFEST_VERSION = "mail-dataset-manifest@1"
@@ -255,6 +256,7 @@ def sign_manifest(
         "reviewed_at": _iso(review.reviewed_at),
         "decision": review.decision,
     }
+    final["signing_key_id"] = key_id(key.public_key().public_bytes_raw())  # signed
     canonical = _canonical(final)
     digest = hashlib.sha256(canonical).hexdigest()
     signature = base64.b64encode(key.sign(canonical)).decode()
@@ -262,8 +264,10 @@ def sign_manifest(
     return SignedManifest(final, digest, signature, public)
 
 
-def verify_manifest(raw: str, trusted_public_key: bytes) -> dict[str, Any]:
-    """Verify a serialized manifest against a *trusted* key. Returns the body."""
+def verify_manifest(raw: str, trusted: bytes | Mapping[str, bytes]) -> dict[str, Any]:
+    """Verify against a trusted key, or a pinned ``key_id -> public key`` set
+    (:func:`backend.mail_security.signing_keys.pinned_keys`). The key carried in
+    the document is never trusted. Returns the body."""
     try:
         doc = json.loads(raw)
         body, digest, signature = doc["body"], doc["digest"], doc["signature"]
@@ -274,6 +278,15 @@ def verify_manifest(raw: str, trusted_public_key: bytes) -> dict[str, Any]:
         raise ManifestError("digest mismatch")
     if not isinstance(body.get("review"), dict) or body["review"].get("decision") != "APPROVED":
         raise ManifestError("missing human review")
+    if isinstance(trusted, Mapping):
+        try:
+            trusted_public_key = resolve_trusted(trusted, body.get("signing_key_id"))
+        except KeyCustodyError as exc:
+            raise ManifestError(str(exc)) from None
+    else:
+        trusted_public_key = trusted
+        if body.get("signing_key_id") != key_id(trusted_public_key):
+            raise ManifestError("bad signature")
     try:
         Ed25519PublicKey.from_public_bytes(trusted_public_key).verify(
             base64.b64decode(signature), canonical

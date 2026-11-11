@@ -13,3 +13,12 @@ Found while building: my first synthetic corpus linked everything into one strad
 Full suite: 8093 passed, 1 known unrelated failure.
 
 Open: signing key custody (where the Ed25519 private key lives) is an owner decision; campaign keys must come from a real campaign clusterer (not built); thread keys from References/In-Reply-To digests.
+
+## Gaps closed (2026-11-11, NS-ADR-046)
+- Thread keys from Message-ID / In-Reply-To / References: a whole thread shares one key; keys are opaque and per account; messages without an id fall back to their own key.
+- Campaign clusterer: 12 copies of an ~75-word phish with 2 per-recipient edits form one campaign; 30 unrelated messages stay 30 campaigns; deterministic, order-independent, per account. End to end with real thread and campaign keys: a campaign whose copies straddle the cutoff is dropped from both splits while unrelated mail splits normally. First attempt (5-shingles, 30-word test text with 7% edits) did not cluster; switched to 3-shingles and a realistic body, and kept a test that documents the limit for short, heavily edited copies. Speed: 2,000 docs x 150 words in 2.7 s.
+- Key custody: explicit creation only, refuses overwrite, `0600`/`0700`, owner check, symlink and loose-permission refusal, refusal inside a git work tree, default path outside the repo; manifests carry a signed key id; verification against pinned keys refuses unpinned keys and tampered ids.
+
+Full suite: 8113 passed, 1 known unrelated failure.
+
+Still open (owner): whether to generate the signing key now on this Mac, or hold custody elsewhere.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import random
+import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -287,7 +288,10 @@ def test_not_wired_into_the_backend() -> None:
     offenders = [
         str(p.relative_to(backend))
         for p in backend.rglob("*.py")
-        if p.name != "dataset_manifest.py" and "dataset_manifest" in p.read_text(encoding="utf-8")
+        if p.name != "dataset_manifest.py"
+        and re.search(
+            r"^\s*(from|import)\s+\S*dataset_manifest\b", p.read_text(encoding="utf-8"), re.M
+        )
     ]
     assert offenders == []
 

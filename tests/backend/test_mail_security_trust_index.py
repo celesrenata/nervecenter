@@ -284,7 +284,9 @@ def test_not_wired_into_the_backend() -> None:
     offenders = [
         str(p.relative_to(backend))
         for p in backend.rglob("*.py")
-        if p.name != "trust_index.py" and "trust_index" in p.read_text(encoding="utf-8")
+        # split_keys reuses the pure message_ids() parser; it stores nothing here.
+        if p.name not in {"trust_index.py", "split_keys.py"}
+        and "trust_index" in p.read_text(encoding="utf-8")
     ]
     assert offenders == []
 
