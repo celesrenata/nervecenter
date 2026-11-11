@@ -39,9 +39,16 @@ Commits (local only): `9c7bfce` (5.1), `e45df97` (5.2), `374f899` (5.3), `95bde6
 
 My recommendation is B before A: Phase 6 builds datasets from imported data, and the importer has never seen real Takeout output.
 
-## Owner decision (to be completed by owner)
+## Owner decision
 ```
-Decision:
-Date:
-Notes:
+Decision: "sure, lets do them" - recorded as approving the orchestrator's recommendations:
+  1. 5.4 deviation CONFIRMED: trust index stays separate from backend.knowledge.
+  2. Raw evidence capture stays OFF until object-store encryption is decided.
+  3. B then A: a manifest-only dry run on one owner-chosen real Takeout mbox, then Phase 6
+     starting with 6.1 on synthetic data. STOP at G6.
+Date: 2026-11-11
+Reviewer: Owner (via orchestrator)
+Conditions for B (orchestrator): dry run only (no sink, no records kept, no raw store, no
+  model, no network); run locally on the Mac; output is the counts-only manifest plus timing.
+  The owner may correct this reading.
 ```
