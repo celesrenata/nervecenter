@@ -359,7 +359,7 @@ def test_not_wired_into_the_backend() -> None:
     offenders = [
         str(p.relative_to(backend))
         for p in backend.rglob("*.py")
-        if p.name != "training_selection.py"
+        if p.name not in {"training_selection.py", "dataset_manifest.py"}  # 6.2 builds on 6.1
         and "training_selection" in p.read_text(encoding="utf-8")
     ]
     assert offenders == []
