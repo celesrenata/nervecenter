@@ -297,7 +297,9 @@ def paired_bootstrap(
 # -- candidates --------------------------------------------------------------------------
 
 
-def run_baseline(split: dict[str, list[Item]]) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
+def run_baseline(
+    split: dict[str, list[Item]], extra: dict[str, list[Item]] | None = None
+) -> tuple[dict[str, Any], np.ndarray, np.ndarray]:
     from scipy.sparse import hstack
     from sklearn.feature_extraction.text import HashingVectorizer
     from sklearn.linear_model import LogisticRegression
@@ -323,6 +325,7 @@ def run_baseline(split: dict[str, list[Item]]) -> tuple[dict[str, Any], np.ndarr
     n = len(split["val"]) + len(split["eval"])
     return (
         {
+            "_extra": {k: model.decision_function(feats(v)) for k, v in (extra or {}).items()},
             "train_s": round(train_s, 1),
             "infer_ms_per_item": round(1000 * infer_s / n, 3),
             "device": "cpu",
@@ -349,6 +352,7 @@ def run_transformer(
     batch: int,
     max_len: int,
     seed: int = 0,
+    extra: dict[str, list[Item]] | None = None,
 ):
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -430,6 +434,7 @@ def run_transformer(
     infer_s = time.monotonic() - t
     n = len(split["val"]) + len(split["eval"])
     info = {
+        "_extra": {k: score(v) for k, v in (extra or {}).items()},
         "model": model_id,
         "train_s": round(train_s, 1),
         "infer_ms_per_item": round(1000 * infer_s / n, 2),
@@ -585,6 +590,7 @@ def main() -> None:
         name, fn = runs[key]
         info, s_val, s_eval = fn()
         result = calibrate_and_score(name, s_val, y_val, s_eval, y_eval)
+        info.pop("_extra", None)
         result["run"] = info
         report["candidates"].append(result)
         partial = {
