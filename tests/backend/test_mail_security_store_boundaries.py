@@ -334,10 +334,22 @@ def test_classifier_imports_no_feedback_memory_or_intel() -> None:
         ), path
 
 
-def test_nothing_in_backend_imports_feedback_yet() -> None:
+def test_only_training_selection_reads_feedback() -> None:
+    """6.1 reads APPROVED training proposals; nothing else imports feedback yet."""
+    allowed = {"feedback.py", "training_selection.py"}
     offenders = [
         str(p.relative_to(ROOT))
         for p in (ROOT / "backend").rglob("*.py")
-        if p.name != "feedback.py" and _touches(p, {"backend.mail_security.feedback"})
+        if p.name not in allowed and _touches(p, {"backend.mail_security.feedback"})
     ]
     assert offenders == []
+
+
+def test_training_selection_imports_no_store_or_model() -> None:
+    forbidden = (
+        INTEL
+        | MEMORY
+        | MODELS
+        | {"backend.mail_security.takeout_labels", "backend.persistence", "backend.storage"}
+    )
+    assert _touches(MS / "training_selection.py", forbidden) == set()

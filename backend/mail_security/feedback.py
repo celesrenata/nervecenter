@@ -132,6 +132,7 @@ class Proposal:
     approval_ref: str | None = None
     decided_by: FeedbackSource | None = None
     history: tuple[str, ...] = field(default_factory=tuple)  # status trail
+    assessment_ref: str = ""  # provenance: the assessment the feedback was about
 
 
 def _need(ok: bool, code: FeedbackRefusal) -> None:
@@ -240,6 +241,7 @@ class FeedbackLedger:
                 status=status,
                 indicator_refs=record.indicator_refs if dest is Destination.THREAT_INTEL else (),
                 history=(status.value,),
+                assessment_ref=record.assessment_ref,
             )
             self._proposals[pid] = proposal
             self._latest[key] = pid
