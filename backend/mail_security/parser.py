@@ -106,6 +106,8 @@ class IncompleteReason(StrEnum):
     DANGEROUS_ENCODING = "DANGEROUS_ENCODING"
     ARCHIVE_NOT_INSPECTED = "ARCHIVE_NOT_INSPECTED"
     MALFORMED_MIME = "MALFORMED_MIME"
+    #: A header the stdlib structured parser rejected; its raw value is kept.
+    MALFORMED_HEADER = "MALFORMED_HEADER"
     DECODE_ERROR = "DECODE_ERROR"
     EMPTY_SOURCE = "EMPTY_SOURCE"
 
@@ -513,8 +515,15 @@ def parse_mime_evidence(
         state.note(IncompleteReason.MALFORMED_MIME)
         return evidence
 
-    _extract_headers(message, state)
-    _walk(message, state, depth=0)
+    try:
+        _extract_headers(message, state)
+    except Exception:  # noqa: BLE001 - never crash the worker (R-003.2)
+        state.note(IncompleteReason.MALFORMED_MIME)
+        return evidence
+    try:
+        _walk(message, state, depth=0)
+    except Exception:  # noqa: BLE001 - e.g. stdlib errors on hostile part headers
+        state.note(IncompleteReason.MALFORMED_MIME)
 
     evidence.part_count = state.part_count
     return evidence
@@ -552,12 +561,19 @@ def _extract_headers(message: EmailMessage, state: _ParseState) -> None:
     assert state.evidence is not None
     limits = state.limits
     count = 0
-    for name, raw_value in message.items():
+    # raw_items() never runs the structured header parsers; each header is then
+    # parsed on its own so one malformed value (e.g. ``Message-ID: <>``, which
+    # makes the stdlib raise IndexError) cannot abort extraction (R-003.2).
+    for name, raw_value in message.raw_items():
         if count >= limits.max_header_count:
             state.note(IncompleteReason.HEADER_COUNT_EXCEEDED)
             break
         count += 1
-        value = str(raw_value)
+        try:
+            value = str(message.policy.header_fetch_parse(name, raw_value))
+        except Exception:  # noqa: BLE001 - attacker-controlled header; keep raw text
+            state.note(IncompleteReason.MALFORMED_HEADER)
+            value = str(raw_value)
         encoded_len = len((f"{name}: {value}").encode("utf-8", "replace"))
         if encoded_len > limits.max_header_bytes:
             state.note(IncompleteReason.HEADER_SIZE_EXCEEDED)

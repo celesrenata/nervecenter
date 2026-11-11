@@ -139,7 +139,7 @@ def _benign_newsletter() -> bytes:
         b"Content-Type: text/html; charset=utf-8\r\n"
         b"\r\n"
         b"<html><body><h1>Digest</h1>"
-        b"<p>Read <a href=\"https://news.example.com/story\">this story</a>.</p>"
+        b'<p>Read <a href="https://news.example.com/story">this story</a>.</p>'
         b"</body></html>\r\n"
     )
 
@@ -259,7 +259,7 @@ def _deeply_nested(depth: int) -> bytes:
     for level in range(depth):
         boundary = f"B{level}".encode("ascii")
         body = (
-            b"Content-Type: multipart/mixed; boundary=\"" + boundary + b"\"\r\n\r\n"
+            b'Content-Type: multipart/mixed; boundary="' + boundary + b'"\r\n\r\n'
             b"--" + boundary + b"\r\n" + body + b"--" + boundary + b"--\r\n"
         )
     return b"From: a@b.c\r\n" + body
@@ -269,32 +269,20 @@ def _many_parts(count: int) -> bytes:
     parts = []
     for index in range(count):
         parts.append(
-            b"--P\r\nContent-Type: text/plain\r\n\r\npart "
-            + str(index).encode("ascii")
-            + b"\r\n"
+            b"--P\r\nContent-Type: text/plain\r\n\r\npart " + str(index).encode("ascii") + b"\r\n"
         )
     return (
         b"From: a@b.c\r\n"
-        b'Content-Type: multipart/mixed; boundary="P"\r\n\r\n'
-        + b"".join(parts)
-        + b"--P--\r\n"
+        b'Content-Type: multipart/mixed; boundary="P"\r\n\r\n' + b"".join(parts) + b"--P--\r\n"
     )
 
 
 def _huge_body(size: int) -> bytes:
-    return (
-        b"From: a@b.c\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n"
-        + b"A" * size
-        + b"\r\n"
-    )
+    return b"From: a@b.c\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n" + b"A" * size + b"\r\n"
 
 
 def _huge_header(size: int) -> bytes:
-    return (
-        b"From: a@b.c\r\nX-Big: "
-        + b"Z" * size
-        + b"\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
-    )
+    return b"From: a@b.c\r\nX-Big: " + b"Z" * size + b"\r\nContent-Type: text/plain\r\n\r\nbody\r\n"
 
 
 def _archive_attachment() -> bytes:
@@ -353,8 +341,7 @@ def test_benign_messages_parse_complete(builder) -> None:
     # is the safe BODY_ONLY and only a caller-supplied (trusted) fidelity wins.
     assert evidence_fidelity_for(evidence).value == "BODY_ONLY"
     assert (
-        evidence_fidelity_for(evidence, EvidenceFidelity.ORIGINAL_RFC822).value
-        == "ORIGINAL_RFC822"
+        evidence_fidelity_for(evidence, EvidenceFidelity.ORIGINAL_RFC822).value == "ORIGINAL_RFC822"
     )
 
 
@@ -388,11 +375,7 @@ def test_tracking_pixel_flagged_remote_and_never_fetched() -> None:
 
 def test_deceptive_link_captures_both_display_and_target() -> None:
     evidence = parse_mime_evidence(_deceptive_link_only())
-    anchors = [
-        link
-        for link in evidence.links
-        if link.attribute == "href" and link.display_text
-    ]
+    anchors = [link for link in evidence.links if link.attribute == "href" and link.display_text]
     assert anchors, "anchor with display text must be captured"
     link = anchors[0]
     # R-003.5: display text and actual target differ and both are retained.
@@ -449,9 +432,7 @@ def test_malformed_input_never_crashes(builder) -> None:
 def test_empty_source_is_incomplete_not_clean() -> None:
     evidence = parse_mime_evidence(b"")
     assert evidence.inspection_complete is False
-    assert IncompleteReason.EMPTY_SOURCE in {
-        note.reason for note in evidence.incomplete_notes
-    }
+    assert IncompleteReason.EMPTY_SOURCE in {note.reason for note in evidence.incomplete_notes}
 
 
 def test_bad_base64_attachment_yields_decode_note_not_crash() -> None:
@@ -492,9 +473,7 @@ def test_huge_header_triggers_header_size_cap() -> None:
 
 
 def test_header_count_cap() -> None:
-    headers = b"".join(
-        b"X-H%d: v\r\n" % index for index in range(50)
-    )
+    headers = b"".join(b"X-H%d: v\r\n" % index for index in range(50))
     message = b"From: a@b.c\r\n" + headers + b"Content-Type: text/plain\r\n\r\nx\r\n"
     limits = ParserLimits(max_header_count=10)
     evidence = parse_mime_evidence(message, limits=limits)
@@ -629,7 +608,7 @@ def _random_mime_corpus(seed: int, count: int) -> Iterator[bytes]:
     alphabet = (string.printable + "\r\n\x00\xff").encode("latin-1")
     fragments = [
         b"From: a@b.c\r\n",
-        b"Content-Type: multipart/mixed; boundary=\"X\"\r\n",
+        b'Content-Type: multipart/mixed; boundary="X"\r\n',
         b"Content-Transfer-Encoding: base64\r\n",
         b"--X\r\n",
         b"--X--\r\n",
@@ -671,3 +650,93 @@ def test_malformed_corpus_always_terminates() -> None:
         if not evidence.inspection_complete:
             assert evidence.incomplete_notes
             assert evidence.to_findings()
+
+
+# -- malformed structured headers must never crash the parser (found by 6.3 corpus run) --
+
+import random as _random  # noqa: E402
+
+import pytest as _pytest  # noqa: E402
+
+from backend.mail_security.parser import IncompleteReason as _IR  # noqa: E402
+from backend.mail_security.parser import parse_mime_evidence as _parse  # noqa: E402
+
+
+@_pytest.mark.parametrize("value", [b"<>", b"<@>", b"< >", b"<<a@b>"])
+def test_malformed_message_id_is_kept_raw_and_flagged(value: bytes) -> None:
+    ev = _parse(b"From: a@b\nMessage-ID: " + value + b"\nSubject: hi\n\nbody text\n")
+    assert _IR.MALFORMED_HEADER in {n.reason for n in ev.incomplete_notes}
+    assert dict(ev.headers)["Message-ID"] == value.decode()
+    assert [t.normalized.strip() for t in ev.text_parts] == ["body text"]
+    assert not ev.inspection_complete
+
+
+_STRUCTURED = [
+    "Message-ID",
+    "In-Reply-To",
+    "References",
+    "Date",
+    "From",
+    "To",
+    "Cc",
+    "Reply-To",
+    "Sender",
+    "Resent-From",
+    "Resent-Date",
+    "Content-Type",
+    "Content-Disposition",
+    "Content-Transfer-Encoding",
+    "MIME-Version",
+    "Return-Path",
+]
+_HOSTILE = [
+    "<>",
+    "<@>",
+    "< >",
+    "<<<",
+    ">>>",
+    '"',
+    "(",
+    ")",
+    ";",
+    "=?",
+    "=?x?q?",
+    "@",
+    ",",
+    "::",
+    "a@",
+    "@b",
+    "<a@b",
+    "\x00",
+    "\\",
+    "[",
+    "]",
+    "1.",
+    "x/",
+    "=",
+    "; =",
+    "\t",
+]
+
+
+@_pytest.mark.parametrize("seed", range(40))
+def test_hostile_structured_headers_never_raise(seed: int) -> None:
+    rng = _random.Random(seed)
+    lines = [
+        rng.choice(_STRUCTURED)
+        + ": "
+        + "".join(rng.choice(_HOSTILE) for _ in range(rng.randint(1, 6)))
+        for _ in range(rng.randint(1, 8))
+    ]
+    raw = ("\n".join(lines) + "\nSubject: s\n\nbody\n").encode("utf-8", "surrogatepass")
+    ev = _parse(raw)  # must not raise
+    assert ev.source_bytes == len(raw)
+
+
+def test_hostile_part_headers_in_multipart_never_raise() -> None:
+    raw = (
+        b"From: a@b\nMIME-Version: 1.0\nContent-Type: multipart/mixed; boundary=X\n\n"
+        b'--X\nContent-Type: text/plain; charset="\nContent-Disposition: attachment; filename="\n'
+        b"Content-ID: <>\n\nhello\n--X--\n"
+    )
+    _parse(raw)  # must not raise
