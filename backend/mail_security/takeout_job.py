@@ -533,6 +533,9 @@ def _source_from_dict(item: dict[str, Any]) -> SourceManifest:
         without_message_id=int(item["without_message_id"]),
     )
     src.quarantined = Counter({str(k): int(v) for k, v in dict(item["quarantined"]).items()})
+    src.incomplete_reasons = Counter(
+        {str(k): int(v) for k, v in dict(item.get("incomplete_reasons", {})).items()}
+    )
     return src
 
 

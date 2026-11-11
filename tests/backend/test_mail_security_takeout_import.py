@@ -386,6 +386,9 @@ def test_mime_limits_mark_incomplete_but_do_not_drop(tmp_path: Path) -> None:
     )
     assert manifest.sources[0].inspection_incomplete == 1
     assert records[0].inspection_complete is False
+    reasons = manifest.sources[0].to_dict()["incomplete_reasons"]
+    assert reasons and all(re.fullmatch(r"[A-Z_]+", k) for k in reasons)
+    assert sum(reasons.values()) >= 1
 
 
 # -- EML ---------------------------------------------------------------------------------

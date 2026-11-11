@@ -171,6 +171,8 @@ class SourceManifest:
     with_gmail_labels: int = 0
     without_message_id: int = 0
     quarantined: Counter[str] = field(default_factory=Counter)
+    #: Parser limit/failure codes among kept-but-incomplete records (counts only).
+    incomplete_reasons: Counter[str] = field(default_factory=Counter)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -187,6 +189,7 @@ class SourceManifest:
             "with_gmail_labels": self.with_gmail_labels,
             "without_message_id": self.without_message_id,
             "quarantined": dict(sorted(self.quarantined.items())),
+            "incomplete_reasons": dict(sorted(self.incomplete_reasons.items())),
         }
 
 
@@ -560,6 +563,7 @@ def _accept(
         src.with_gmail_labels += 1
     if not evidence.inspection_complete:
         src.inspection_incomplete += 1
+        src.incomplete_reasons.update({str(reason) for reason in reasons})
     mode = AcquisitionMode.TAKEOUT_MBOX if src.kind is SourceKind.MBOX else AcquisitionMode.EML
     src.records += 1
     return ImportRecord(

@@ -31,3 +31,30 @@ Mode: `run_import(..., dry_run=True)` (no sink, no records kept, no raw store, n
 5. Peak memory 618 MB, likely from the largest messages being parsed whole; acceptable on the Mac, worth bounding further before running in a pod.
 
 Not done: label summary (needs records, which the dry-run conditions exclude), any storage, the other services in part 1.
+
+## Second pass: label summary and incomplete-reason breakdown (owner approved, 2026-11-11)
+Records were held in memory only long enough to reduce labels to counts (no names kept), then discarded; the extracted copy was deleted afterwards. 380 s.
+
+| Labels (weak, provider export) | Count of 91,922 |
+| --- | --- |
+| INBOX | 90,358 |
+| UNREAD | 85,762 |
+| OPENED | 5,477 |
+| IMPORTANT | 4,977 |
+| SENT | 1,144 |
+| ARCHIVED | 664 |
+| SPAM | 78 |
+| DRAFT | 71 |
+| STARRED | 22 |
+| TRASH | 0 |
+
+Categories: PROMOTIONS 42,363; UPDATES 32,924; SOCIAL 8,810; PERSONAL 4,542; FORUMS 1,738.
+Ambiguities: UNKNOWN_CATEGORY 4,743; NO_LABELS 296; no contradictions (no SPAM_AND_INBOX etc.).
+Custom labels per message: 0 for 87,160; 1 for 4,747; 2 for 15.
+Incomplete reasons: DECODED_BYTES_EXCEEDED 36, ARCHIVE_NOT_INSPECTED 9.
+
+Findings:
+- INBOX is on 98% of messages and SPAM on only 78 (0.08%), so provider labels are very weak as security labels, as designed: they must not become training labels.
+- 4,743 messages carry a `Category ...` label the normaliser does not know; almost all custom-label hits come from it. Likely a Gmail category added after the normaliser's list; the name has not been inspected.
+- No TRASH labels despite the "Including Spam and Trash" export name.
+- Incomplete messages are large decoded bodies (36) and attached archives that are deliberately not inspected (9).
