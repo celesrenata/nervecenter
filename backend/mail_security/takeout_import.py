@@ -98,7 +98,10 @@ class ImportPolicy:
 
     allowed_roots: tuple[Path, ...]
     max_file_bytes: int = 64 * 1024**3
-    max_message_bytes: int = 25 * 1024 * 1024
+    #: Gmail accepts incoming mail up to ~50 MB; the real export peaked at 31.3 MiB
+    #: (NS-ADR-044). The MIME parser keeps its own 25 MiB parse cap, so larger
+    #: messages are kept whole but marked incomplete (SOURCE_BYTES_EXCEEDED).
+    max_message_bytes: int = 64 * 1024 * 1024
     max_line_bytes: int = 1024 * 1024
     max_messages_per_source: int = 2_000_000
     max_eml_files: int = 200_000

@@ -61,3 +61,7 @@ Findings:
 
 ## Third pass: unknown category names (owner approved)
 Printed only `Category <suffix>` suffixes not in the normaliser's list and matching `[A-Za-z][A-Za-z ]{0,29}`; other shapes counted only. Result: Purchases 3,964; Bills 757; Travel 35; other shapes 0. These are Gmail categories, now added (NS-ADR-043). Extracted copy deleted afterwards.
+
+## Cap raised to 64 MiB (owner decision, NS-ADR-044)
+Size-only scan (no parsing): 16 messages above 20 MiB, largest 31.3 MiB; the 9 quarantined ones were 25.7-31.3 MiB.
+Dry run again: 91,931 seen, 91,931 records, 0 quarantined, 54 incomplete (DECODED_BYTES_EXCEEDED 45, SOURCE_BYTES_EXCEEDED 9, ARCHIVE_NOT_INSPECTED 9; a message can have several), 386 s, peak RSS 845 MB. Extracted copy deleted.
