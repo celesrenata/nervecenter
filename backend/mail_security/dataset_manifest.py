@@ -35,6 +35,12 @@ from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from backend.mail_security.signing_keys import KeyCustodyError, key_id, resolve_trusted
+from backend.mail_security.ssh_signing import (
+    ManifestSigner,
+    SshPublicKey,
+    SshSignatureError,
+    verify_sshsig,
+)
 from backend.mail_security.training_selection import SelectedExample, SelectionManifest
 
 MANIFEST_VERSION = "mail-dataset-manifest@1"
@@ -264,6 +270,61 @@ def sign_manifest(
     return SignedManifest(final, digest, signature, public)
 
 
+def _reviewed_copy(body: dict[str, Any], review: HumanReview) -> dict[str, Any]:
+    if review.decision != "APPROVED" or not _REF_RE.fullmatch(review.reviewer_ref):
+        raise ManifestError("a signed manifest needs an approving human review")
+    if body.get("review") is not None:
+        raise ManifestError("manifest already reviewed")
+    final = json.loads(_canonical(body))
+    final["review"] = {
+        "reviewer_ref": review.reviewer_ref,
+        "reviewed_at": _iso(review.reviewed_at),
+        "decision": review.decision,
+    }
+    return final
+
+
+def sign_manifest_ssh(
+    body: dict[str, Any], review: HumanReview, signer: ManifestSigner, signer_key: SshPublicKey
+) -> SignedManifest:
+    """Sign with the owner's SSH key (SSHSIG, dedicated namespace).
+
+    ``signer_key`` is the public half of the key ``signer`` uses; its fingerprint
+    is embedded and signed so verification can pick the pinned key.
+    """
+    final = _reviewed_copy(body, review)
+    final["signing_key_id"] = "ssh:" + signer_key.fingerprint
+    canonical = _canonical(final)
+    armored = signer.sign(canonical)
+    try:
+        signed_by = verify_sshsig(canonical, armored, {signer_key.fingerprint: signer_key})
+    except SshSignatureError:
+        raise ManifestError("signature does not match the declared signer key") from None
+    digest = hashlib.sha256(canonical).hexdigest()
+    return SignedManifest(final, digest, armored, signed_by)
+
+
+def verify_manifest_ssh(raw: str, pinned: Mapping[str, SshPublicKey]) -> dict[str, Any]:
+    """Verify an SSH-signed manifest against pinned keys (``pinned_ssh_keys``)."""
+    try:
+        doc = json.loads(raw)
+        body, digest, signature = doc["body"], doc["digest"], doc["signature"]
+    except (ValueError, KeyError, TypeError):
+        raise ManifestError("malformed manifest") from None
+    canonical = _canonical(body)
+    if hashlib.sha256(canonical).hexdigest() != digest:
+        raise ManifestError("digest mismatch")
+    if not isinstance(body.get("review"), dict) or body["review"].get("decision") != "APPROVED":
+        raise ManifestError("missing human review")
+    try:
+        signed_by = verify_sshsig(canonical, signature, dict(pinned))
+    except SshSignatureError as exc:
+        raise ManifestError(str(exc)) from None
+    if body.get("signing_key_id") != "ssh:" + signed_by:
+        raise ManifestError("signing key id does not match the signature")
+    return body
+
+
 def verify_manifest(raw: str, trusted: bytes | Mapping[str, bytes]) -> dict[str, Any]:
     """Verify against a trusted key, or a pinned ``key_id -> public key`` set
     (:func:`backend.mail_security.signing_keys.pinned_keys`). The key carried in
@@ -308,5 +369,7 @@ __all__ = [
     "assign_splits",
     "build_manifest",
     "sign_manifest",
+    "sign_manifest_ssh",
     "verify_manifest",
+    "verify_manifest_ssh",
 ]
