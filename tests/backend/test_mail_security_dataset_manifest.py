@@ -289,6 +289,7 @@ def test_not_wired_into_the_backend() -> None:
         str(p.relative_to(backend))
         for p in backend.rglob("*.py")
         if p.name != "dataset_manifest.py"
+        and "owner_tools" not in p.parts  # owner-run tools are not the service
         and re.search(
             r"^\s*(from|import)\s+\S*dataset_manifest\b", p.read_text(encoding="utf-8"), re.M
         )

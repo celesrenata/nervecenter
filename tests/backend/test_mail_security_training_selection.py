@@ -360,6 +360,7 @@ def test_not_wired_into_the_backend() -> None:
         str(p.relative_to(backend))
         for p in backend.rglob("*.py")
         if p.name not in {"training_selection.py", "dataset_manifest.py"}  # 6.2 builds on 6.1
+        and "owner_tools" not in p.parts  # owner-run tools are not the service
         and "training_selection" in p.read_text(encoding="utf-8")
     ]
     assert offenders == []
