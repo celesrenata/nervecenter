@@ -58,3 +58,6 @@ Findings:
 - 4,743 messages carry a `Category ...` label the normaliser does not know; almost all custom-label hits come from it. Likely a Gmail category added after the normaliser's list; the name has not been inspected.
 - No TRASH labels despite the "Including Spam and Trash" export name.
 - Incomplete messages are large decoded bodies (36) and attached archives that are deliberately not inspected (9).
+
+## Third pass: unknown category names (owner approved)
+Printed only `Category <suffix>` suffixes not in the normaliser's list and matching `[A-Za-z][A-Za-z ]{0,29}`; other shapes counted only. Result: Purchases 3,964; Bills 757; Travel 35; other shapes 0. These are Gmail categories, now added (NS-ADR-043). Extracted copy deleted afterwards.

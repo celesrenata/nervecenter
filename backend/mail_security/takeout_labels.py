@@ -64,6 +64,10 @@ class Category(StrEnum):
     PROMOTIONS = "PROMOTIONS"
     UPDATES = "UPDATES"
     FORUMS = "FORUMS"
+    # Newer Gmail categories, seen in a real 2026 Takeout export (NS-ADR-043).
+    PURCHASES = "PURCHASES"
+    BILLS = "BILLS"
+    TRAVEL = "TRAVEL"
 
 
 class LabelAmbiguity(StrEnum):

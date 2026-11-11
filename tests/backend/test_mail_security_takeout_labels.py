@@ -48,6 +48,12 @@ PRIVATE = "Divorce lawyer"
         ("INBOX, important ,  opened", {S.INBOX, S.IMPORTANT, S.OPENED}, set(), 0),
         ("Inbox,Category Promotions", {S.INBOX}, {Category.PROMOTIONS}, 0),
         ("Category Updates,Category_Social", set(), {Category.UPDATES, Category.SOCIAL}, 0),
+        (
+            "Inbox,Category Purchases,Category Bills,Category Travel",
+            {S.INBOX},
+            {Category.PURCHASES, Category.BILLS, Category.TRAVEL},
+            0,
+        ),
         ("Inbox,Work/Projects,Receipts", {S.INBOX}, set(), 2),
         ('Inbox,"Bills, 2026",Family', {S.INBOX}, set(), 2),
     ],
