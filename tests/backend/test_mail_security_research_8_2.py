@@ -131,7 +131,9 @@ def test_evaluation_is_deterministic():
 def test_research_package_is_not_imported_by_runtime():
     offenders = []
     for path in ROOT.rglob("*.py"):
-        if "research" in path.parts or "__pycache__" in path.parts:
+        # Research itself and owner-run tools (not the service) may import it,
+        # matching the owner_tools exemption in the 6.x wiring guards.
+        if {"research", "owner_tools", "__pycache__"} & set(path.parts):
             continue
         tree = ast.parse(path.read_text())
         for node in ast.walk(tree):

@@ -21,7 +21,7 @@ Can campaigns be grouped **without content** (no words, addresses or full URLs),
 
 **`CampaignStore`:** it keeps only a signature, a size, first/last seen and an expiry (TTL 30 days, extended on new members). It releases aggregates only for clusters of at least **k = 3**, without cluster ids or tokens.
 
-## Evaluation (`campaign_clustering_eval.py`; raw: `phase8-8.1-eval.json`)
+## Evaluation (`backend/owner_tools/campaign_cluster_eval.py`; raw: `phase8-8.1-eval.json`)
 
 The reference is the existing *content* MinHash campaigns (`split_keys.campaign_keys`, 6.2): 320 spam campaigns of size 2 or more, covering 1,024 spam messages and 1,895 pairs. Pair precision and recall below are measured on spam pairs against that reference.
 
