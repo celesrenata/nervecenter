@@ -152,10 +152,28 @@ def split_items(items: list[Item], cutoff: datetime, embargo_days: int) -> dict[
         (by_id[e] for e, s in assigned.items() if s is Split.TRAIN), key=lambda i: (i.when, i.eid)
     )
     evals = [by_id[e] for e, s in sorted(assigned.items()) if s is Split.EVAL]
-    k = int(len(train) * 0.85)
+    # VAL = 1 in 6 thread/campaign groups across the whole training period, group-disjoint
+    # from FIT. The first 6.3 run used the latest 15% by time, which held only 17 spam.
+    parent: dict[str, str] = {}
+
+    def find(x: str) -> str:
+        parent.setdefault(x, x)
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in train:
+        a, b = find("t:" + i.tkey), find("c:" + i.ckey)
+        if a != b:
+            parent[max(a, b)] = min(a, b)
+
+    def in_val(i: Item) -> bool:
+        return int(hashlib.sha256(find("t:" + i.tkey).encode()).hexdigest(), 16) % 6 == 0
+
     return {
-        "fit": train[:k],
-        "val": train[k:],
+        "fit": [i for i in train if not in_val(i)],
+        "val": [i for i in train if in_val(i)],
         "eval": evals,
         "dropped": [by_id[e] for e in dropped],
     }
@@ -353,6 +371,7 @@ def run_transformer(
     max_len: int,
     seed: int = 0,
     extra: dict[str, list[Item]] | None = None,
+    keep_model: bool = False,
 ):
     import torch
     from transformers import AutoModelForSequenceClassification, AutoTokenizer
@@ -434,6 +453,7 @@ def run_transformer(
     infer_s = time.monotonic() - t
     n = len(split["val"]) + len(split["eval"])
     info = {
+        "_model": (model, tok) if keep_model else None,
         "_extra": {k: score(v) for k, v in (extra or {}).items()},
         "model": model_id,
         "train_s": round(train_s, 1),
@@ -508,6 +528,26 @@ def run_frozen_embedding(split: dict[str, list[Item]], model_id: str, max_len: i
 # -- driver ------------------------------------------------------------------------------
 
 
+_SEED_METRICS = ("roc_auc", "pr_auc", "recall_at_1pct_fpr", "ece")
+
+
+def _seeded(key: str, split: dict[str, list[Item]], epochs: int, seed: int):
+    if key == "B":
+        return run_transformer(
+            split,
+            "distilbert/distilroberta-base",
+            lora=False,
+            epochs=epochs,
+            lr=3e-5,
+            batch=16,
+            max_len=256,
+            seed=seed,
+        )
+    return run_transformer(
+        split, "Qwen/Qwen3-0.6B", lora=True, epochs=epochs, lr=2e-4, batch=8, max_len=256, seed=seed
+    )
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument(
@@ -520,6 +560,7 @@ def main() -> None:
     ap.add_argument("--embargo-days", type=int, default=7)
     ap.add_argument("--only", default="A,B,C,D")
     ap.add_argument("--quick", action="store_true", help="tiny subset, for smoke testing")
+    ap.add_argument("--seeds", default="0", help="comma-separated seeds for B and C")
     args = ap.parse_args()
     salt = hashlib.sha256(b"nerveshield-bench-6.3").digest()
     t0 = time.monotonic()
@@ -561,6 +602,8 @@ def main() -> None:
     except ImportError:
         pass
     epochs = 1 if args.quick else 2
+    seeds = [int(x) for x in args.seeds.split(",")]
+    seed_runs: dict[str, list[dict[str, Any]]] = {}
     runs = {
         "A": ("A_baseline_hashed_logreg", lambda: run_baseline(split)),
         "B": (
@@ -588,9 +631,16 @@ def main() -> None:
     }
     for key in args.only.split(","):
         name, fn = runs[key]
+        for seed in seeds[1:] if key in ("B", "C") else []:
+            _, sv, se = _seeded(key, split, epochs, seed)
+            r = calibrate_and_score(name, sv, y_val, se, y_eval)["eval"]
+            seed_runs.setdefault(name, []).append(
+                {"seed": seed, **{m: r[m] for m in _SEED_METRICS}}
+            )
         info, s_val, s_eval = fn()
         result = calibrate_and_score(name, s_val, y_val, s_eval, y_eval)
         info.pop("_extra", None)
+        info.pop("_model", None)
         result["run"] = info
         report["candidates"].append(result)
         partial = {
@@ -601,6 +651,19 @@ def main() -> None:
         }
         args.out.write_text(json.dumps(partial, indent=1, default=str))
         print(name, json.dumps(result["eval"]), flush=True)
+    for c in report["candidates"]:
+        if c["candidate"] in seed_runs:
+            rows = [
+                {"seed": 0, **{m: c["eval"][m] for m in _SEED_METRICS}},
+                *seed_runs[c["candidate"]],
+            ]
+            c["seeds"] = {"runs": rows} | {
+                m: {
+                    "mean": round(float(np.mean([r[m] for r in rows])), 4),
+                    "sd": round(float(np.std([r[m] for r in rows], ddof=1)), 4),
+                }
+                for m in _SEED_METRICS
+            }
     scores = {c["candidate"]: c.pop("_p_eval") for c in report["candidates"]}
     if len(scores) > 1:
         base = next(iter(scores))

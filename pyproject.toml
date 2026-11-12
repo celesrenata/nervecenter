@@ -63,6 +63,7 @@ ml = [
     "mlx==0.32.4",
     "mlx-lm==0.32.2",
     "numpy==2.4.6",
+    "openvino==2026.4.0",
     "peft==0.21.2",
     "scikit-learn==1.9.1",
     "torch==2.15.0",

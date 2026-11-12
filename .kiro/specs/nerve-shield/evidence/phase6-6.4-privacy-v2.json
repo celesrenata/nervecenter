@@ -1,0 +1,279 @@
+{
+ "task": "6.4",
+ "redaction": {
+  "failures": 0,
+  "missed": [],
+  "suite_size": 11
+ },
+ "canary_chance": {
+  "median_of_k_median": 1.02,
+  "median_of_k_p95": 1.9,
+  "median_of_k_p99": 2.366,
+  "k": 10,
+  "max_bits": 9.966
+ },
+ "canary_plan": {
+  "repetitions": [
+   1,
+   4,
+   16
+  ],
+  "per_level": 10,
+  "alternates": 999,
+  "template": "please send the signed papers to ...",
+  "evades_6_1_detectors": true
+ },
+ "members": 600,
+ "nonmembers": 473,
+ "candidates": [
+  {
+   "candidate": "A_baseline_hashed_logreg",
+   "canary_exposure_bits": {
+    "1": [
+     1.653,
+     3.49,
+     3.035,
+     0.589,
+     3.184,
+     0.26,
+     1.146,
+     0.725,
+     0.201,
+     1.842
+    ],
+    "4": [
+     3.857,
+     1.009,
+     0.031,
+     0.983,
+     0.811,
+     3.224,
+     2.077,
+     0.031,
+     2.857,
+     0.943
+    ],
+    "16": [
+     0.957,
+     3.146,
+     4.012,
+     4.035,
+     1.599,
+     4.133,
+     1.578,
+     6.644,
+     3.837,
+     1.761
+    ]
+   },
+   "mia_auc": 0.5288,
+   "artifact": {
+    "path_inside_cache": true,
+    "sha256": "e7d1952ed47c5ebbac987efcd16a68a45d700972f3c0fa572af45d89952f6160",
+    "findings": []
+   },
+   "utility_eval_auc_this_run": 0.984,
+   "gate_input": {
+    "redaction_regressions": 0,
+    "canary_exposure_bits": {
+     "1": 1.399,
+     "4": 0.996,
+     "16": 3.492
+    },
+    "mia_auc": 0.5288,
+    "artifact_findings": [],
+    "retrieval_returns_text": false,
+    "auc_diff_vs_baseline_ci_low": 0.0,
+    "ece": 0.0649,
+    "proxy_data": true,
+    "ran_on_target_runtime": false,
+    "ece_canary_model": 0.0705
+   },
+   "gate": {
+    "version": "mail-model-promotion-gate@2",
+    "outcome": "BLOCKED",
+    "reasons": [
+     "CANARY_EXPOSURE_HIGH",
+     "NOT_BETTER_THAN_BASELINE",
+     "POORLY_CALIBRATED",
+     "PROXY_DATA_ONLY",
+     "NOT_RUN_ON_TARGET_RUNTIME"
+    ]
+   },
+   "train_s": 3.3,
+   "gate_before_ece_source_fix": {
+    "version": "mail-model-promotion-gate@2",
+    "outcome": "BLOCKED",
+    "reasons": [
+     "CANARY_EXPOSURE_HIGH",
+     "NOT_BETTER_THAN_BASELINE",
+     "POORLY_CALIBRATED",
+     "PROXY_DATA_ONLY",
+     "NOT_RUN_ON_TARGET_RUNTIME"
+    ]
+   }
+  },
+  {
+   "candidate": "B_distilroberta_finetune",
+   "canary_exposure_bits": {
+    "1": [
+     3.523,
+     2.411,
+     0.821,
+     0.991,
+     1.407,
+     0.094,
+     0.386,
+     1.168,
+     1.071,
+     0.706
+    ],
+    "4": [
+     1.837,
+     0.615,
+     0.462,
+     2.943,
+     4.411,
+     1.989,
+     1.519,
+     0.63,
+     2.344,
+     0.556
+    ],
+    "16": [
+     0.651,
+     0.744,
+     0.233,
+     1.599,
+     0.589,
+     2.932,
+     0.123,
+     9.966,
+     0.806,
+     0.05
+    ]
+   },
+   "mia_auc": 0.5334,
+   "artifact": {
+    "path_inside_cache": true,
+    "sha256": "bdf0caf4473e5836fa3df38d914c3a45e5eaee899157021e0bd259aa418f40b2",
+    "findings": []
+   },
+   "utility_eval_auc_this_run": 0.993,
+   "gate_input": {
+    "redaction_regressions": 0,
+    "canary_exposure_bits": {
+     "1": 1.031,
+     "4": 1.678,
+     "16": 0.698
+    },
+    "mia_auc": 0.5334,
+    "artifact_findings": [],
+    "retrieval_returns_text": false,
+    "auc_diff_vs_baseline_ci_low": 0.0046,
+    "ece": 0.0309,
+    "proxy_data": true,
+    "ran_on_target_runtime": true,
+    "ece_canary_model": 0.0535
+   },
+   "gate": {
+    "version": "mail-model-promotion-gate@2",
+    "outcome": "BLOCKED",
+    "reasons": [
+     "PROXY_DATA_ONLY"
+    ]
+   },
+   "train_s": 31.8,
+   "gate_before_ece_source_fix": {
+    "version": "mail-model-promotion-gate@2",
+    "outcome": "BLOCKED",
+    "reasons": [
+     "POORLY_CALIBRATED",
+     "PROXY_DATA_ONLY"
+    ]
+   }
+  },
+  {
+   "candidate": "C_qwen3_0.6b_lora",
+   "canary_exposure_bits": {
+    "1": [
+     0.653,
+     4.68,
+     0.415,
+     0.886,
+     1.617,
+     0.048,
+     0.584,
+     2.3,
+     1.486,
+     0.61
+    ],
+    "4": [
+     0.34,
+     0.857,
+     0.253,
+     1.117,
+     2.653,
+     3.921,
+     1.194,
+     0.091,
+     1.617,
+     2.599
+    ],
+    "16": [
+     0.044,
+     0.229,
+     2.857,
+     0.351,
+     2.756,
+     1.478,
+     1.676,
+     3.211,
+     1.821,
+     1.105
+    ]
+   },
+   "mia_auc": 0.5182,
+   "artifact": {
+    "path_inside_cache": true,
+    "sha256": "a1fc6f00d6afc4e174ae8081429c80c296ee4ccaca47f3c19dbe31394ad2ba18",
+    "findings": []
+   },
+   "utility_eval_auc_this_run": 0.9905,
+   "gate_input": {
+    "redaction_regressions": 0,
+    "canary_exposure_bits": {
+     "1": 0.77,
+     "4": 1.155,
+     "16": 1.577
+    },
+    "mia_auc": 0.5182,
+    "artifact_findings": [],
+    "retrieval_returns_text": false,
+    "auc_diff_vs_baseline_ci_low": 0.0049,
+    "ece": 0.0184,
+    "proxy_data": true,
+    "ran_on_target_runtime": true,
+    "ece_canary_model": 0.0732
+   },
+   "gate": {
+    "version": "mail-model-promotion-gate@2",
+    "outcome": "BLOCKED",
+    "reasons": [
+     "PROXY_DATA_ONLY"
+    ]
+   },
+   "train_s": 269.6,
+   "gate_before_ece_source_fix": {
+    "version": "mail-model-promotion-gate@2",
+    "outcome": "BLOCKED",
+    "reasons": [
+     "POORLY_CALIBRATED",
+     "PROXY_DATA_ONLY"
+    ]
+   }
+  }
+ ],
+ "total_s": 542.6,
+ "report_contains_training_text": 0
+}

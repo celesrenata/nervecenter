@@ -1,0 +1,17 @@
+{
+ "host": "gremlin-4 (10.1.1.15)",
+ "device": "GPU.0 = Intel Arc iGPU physical function 0000:00:02.0 (/dev/dri/renderD128), shared with ArcForge and OVMS",
+ "openvino": "2026.4.0 (host ArcForge env, Python 3.14.8); conversion with openvino 2026.4.0 on the Mac",
+ "weights": "fp16 (compress_to_fp16)",
+ "sandbox": "systemd-run: DevicePolicy=closed + renderD128 only, PrivateNetwork, ProtectSystem=strict, ReadWritePaths=temp dir, NoNewPrivileges, MemoryMax=16G, CPUQuota=400%, Nice=15, idle IO; temp dir deleted after",
+ "arcforge_after_each_run": "ready, GPU, not wedged",
+ "candidates": {
+  "B_distilroberta_finetune": {"latency_ms_batch1_p50": 6.93, "latency_ms_batch1_p95": 7.43, "throughput_per_s_batch16": 76.7, "compile_s": 1.9,
+    "auc_arc": 0.9961, "auc_cpu_fp32": 0.9961, "recall_at_1pct_fpr_arc": 0.9449, "recall_at_1pct_fpr_cpu": 0.9449,
+    "pearson_arc_vs_cpu": 1.0, "max_abs_logit_diff": 0.099, "median_abs_logit_diff": 0.0046, "sign_agreement": 1.0},
+  "C_qwen3_0.6b_lora": {"latency_ms_batch1_p50": 146.6, "latency_ms_batch1_p95": 159.61, "throughput_per_s_batch16": 15.2, "compile_s": 4.1,
+    "auc_arc": 0.9966, "auc_cpu_fp32": 0.9966, "recall_at_1pct_fpr_arc": 0.9779, "recall_at_1pct_fpr_cpu": 0.9743,
+    "pearson_arc_vs_cpu": 0.99999, "max_abs_logit_diff": 0.182, "median_abs_logit_diff": 0.0237, "sign_agreement": 1.0}
+ },
+ "eval_n": 2377
+}

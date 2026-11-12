@@ -101,3 +101,13 @@ def test_returns_text_only_accepts_float_scores() -> None:
 def test_chance_levels_match_theory() -> None:
     c = pe.chance_levels(trials=4000)
     assert 0.7 < c["median_of_k_median"] < 1.3 and c["median_of_k_p99"] < 3.0
+
+
+def test_on_target_requires_matching_arc_evidence() -> None:
+    good = {"candidates": {"C": {"sign_agreement": 1.0, "auc_arc": 0.9966, "auc_cpu_fp32": 0.9966}}}
+    assert pe.on_target(good, "C") is True
+    assert pe.on_target(good, "B") is False
+    assert pe.on_target({}, "C") is False
+    drift = {"candidates": {"C": {"sign_agreement": 0.97, "auc_arc": 0.99, "auc_cpu_fp32": 0.9966}}}
+    assert pe.on_target(drift, "C") is False
+    assert pe.on_target({"candidates": {"C": {"sign_agreement": "yes"}}}, "C") is False

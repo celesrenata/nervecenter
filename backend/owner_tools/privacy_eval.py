@@ -233,6 +233,21 @@ def chance_levels(
     }
 
 
+def on_target(arc: dict[str, Any], name: str) -> bool:
+    """True only if Arc evidence exists for ``name`` and matches the reference:
+    sign agreement >= 99% and AUC within 0.002 of the CPU fp32 reference."""
+    entry = (arc.get("candidates") or {}).get(name)
+    if not isinstance(entry, dict):
+        return False
+    try:
+        return (
+            float(entry["sign_agreement"]) >= 0.99
+            and abs(float(entry["auc_arc"]) - float(entry["auc_cpu_fp32"])) <= 0.002
+        )
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def returns_text(*outputs: Any) -> bool:
     """True unless every candidate output is a numeric float array (no text, no ids)."""
     for out in outputs:
@@ -289,6 +304,7 @@ def main() -> None:
     )
     ap.add_argument("--out", type=Path, required=True)
     ap.add_argument("--only", default="A,B,C")
+    ap.add_argument("--arc", type=Path, default=None, help="Arc runtime evidence JSON")
     args = ap.parse_args()
     salt = hashlib.sha256(b"nerveshield-bench-6.3").digest()
     t0 = time.monotonic()
@@ -315,6 +331,7 @@ def main() -> None:
         ]
 
     bench = json.loads(args.bench.read_text())
+    arc = json.loads(args.arc.read_text()) if args.arc else {}
     bench_by = {c["candidate"][0]: c for c in bench["candidates"]}
     diffs = bench.get("bootstrap", {}).get("diff_vs_baseline_ci95", {})
     redaction = redaction_regressions(salt)
@@ -394,9 +411,12 @@ def main() -> None:
             "auc_diff_vs_baseline_ci_low": diff_low
             if diff_low is not None
             else (0.0 if key == "A" else None),
-            "ece": utility["eval"]["ece"],
+            # Calibration of the clean, benchmarked model (the promotion candidate); the
+            # canary-planted model trained here is a test artifact that is never deployed.
+            "ece": bench_by[key]["eval"]["ece"],
+            "ece_canary_model": utility["eval"]["ece"],
             "proxy_data": True,
-            "ran_on_target_runtime": False,
+            "ran_on_target_runtime": on_target(arc, name),
         }
         decision = evaluate(gate_input)
         report["candidates"].append(
