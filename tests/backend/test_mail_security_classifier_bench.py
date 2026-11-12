@@ -393,6 +393,26 @@ def test_new_modules_are_not_wired_into_runtime() -> None:
     for path in root.rglob("*.py"):
         if PKG_DIR in path.parents:
             continue
-        if "mail_security.classifier" in path.read_text():
+        text = path.read_text()
+        if path.resolve() == _OPS_ENDPOINT:
+            # Task 7.7: the ops dashboard may import ONLY the ArcForge status
+            # helper (ready/models/metrics for display, never a verdict).
+            text = text.replace(_OPS_IMPORT, "")
+        if "mail_security.classifier" in text:
             offenders.append(str(path))
     assert offenders == []  # classifier output is not an authority (I-08)
+
+
+_OPS_ENDPOINT = (PKG_DIR.parents[1] / "api" / "endpoints" / "mail_security.py").resolve()
+_OPS_IMPORT = "from backend.mail_security.classifier.arcforge_status import cached_status"
+
+
+def test_arcforge_status_never_embeds_or_classifies() -> None:
+    src = (PKG_DIR / "arcforge_status.py").read_text()
+    calls = {
+        node.func.attr
+        for node in ast.walk(ast.parse(src))
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert {"ready", "models", "metrics"} <= calls
+    assert "embed" not in calls and "classify" not in calls

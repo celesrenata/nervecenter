@@ -17,6 +17,7 @@ import { ContactsView } from './views/ContactsView'
 import { PeopleView } from './views/PeopleView'
 import { CommunicationsView } from './views/CommunicationsView'
 import { SecurityReviewView } from './views/SecurityReviewView'
+import { SecurityOpsView } from './views/SecurityOpsView'
 import { CalendarView } from './views/CalendarView'
 import { NowView } from './views/NowView'
 import { BriefingView } from './views/BriefingView'
@@ -85,6 +86,7 @@ function App() {
             <Route path="/people" element={<PeopleView />} />
             <Route path="/search" element={<CommunicationsView />} />
             <Route path="/security-review" element={<SecurityReviewView />} />
+            <Route path="/security-ops" element={<SecurityOpsView />} />
             <Route path="/waiting-on" element={<WaitingOnView />} />
             <Route path="/wellness" element={<WellnessView />} />
             <Route path="/bills" element={<BillsView />} />

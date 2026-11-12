@@ -30,6 +30,11 @@ data:
   # only narrow). Remove this key or set "claim_only" (and roll api) to revert
   # to deny-by-default.
   NERVE_MAIL_SECURITY_API_SCOPE_MODE: "single_tenant"
+  # NerveShield ops dashboard (Task 7.7): read-only ArcForge status probes
+  # (/ready, /v1/models, /metrics only; never embeds or classifies), at most
+  # once per 30 s and only when the dashboard is viewed. Literal private IPs
+  # only, up to 4, comma-separated. Remove this key to report NOT_CONFIGURED.
+  NERVE_MAIL_SECURITY_ARCFORGE_URL: "http://10.1.1.15:8100,http://10.1.1.12:8100"
   # NOTE: the object store (§14) is NOT configured here. Its NERVECENTER_*
   # variables (NERVECENTER_OBJECT_STORE_URL / _BUCKET / _ACCESS_KEY /
   # _SECRET_KEY / _REGION / _SECURE) belong in the out-of-band

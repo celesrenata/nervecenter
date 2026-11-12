@@ -576,6 +576,81 @@ async def get_review_queue(
     }
 
 
+@router.get("/ops")
+async def get_ops_dashboard(
+    request: Request,
+    claims: Annotated[dict[str, Any], Depends(current_access)],
+) -> dict[str, Any]:
+    """Task 7.7: operations dashboard for the caller's scopes (read-only).
+
+    Composes the existing per-stage health view, the review-queue status,
+    version / model-run / feedback / gate / confirmation counts, the runner's
+    typed failure counters and ArcForge service status. Counts, version labels
+    and timings only: no message, account or person identifier, no free text.
+    """
+    import asyncio
+
+    from backend.attention.policy import get_attention_policy
+    from backend.mail_security import observability as obs
+    # The one allowed runtime use of the classifier package: service status
+    # (ready/models/metrics) for display; never a classification (I-08).
+    from backend.mail_security.classifier.arcforge_status import cached_status
+    from backend.mail_security.review_queue import (
+        QueueSettings,
+        build_queue,
+        quiet_until_from,
+    )
+    from backend.persistence.repositories.mail_security_ops_repo import load_ops_counts
+    from backend.persistence.repositories.mail_security_review_repo import (
+        load_queue_candidates,
+    )
+
+    repo = _repo(request)
+    registry = getattr(request.app.state, "repository_registry", None)
+    factory = getattr(registry, "session_factory", None)
+    scopes = await _caller_scopes(request, claims)
+    if repo is None or factory is None or not scopes:
+        raise _safe_error(404, "not_found")
+
+    now = datetime.now(UTC)
+    feed_rows = await obs.collect_feed_rows(factory) if obs.mail_security_enabled() else None
+    snapshot = await obs.collect_snapshot(repo, scopes, now=now, feed_rows=feed_rows)
+
+    period = get_attention_policy().active_quiet_period(now)
+    quiet_until = quiet_until_from(period.ends_at if period else None, now)
+    candidates = []
+    for scope in scopes:
+        candidates.extend(await load_queue_candidates(factory, scope))
+    queue = build_queue(candidates, now=now, settings=QueueSettings(quiet_until=quiet_until))
+    tiers: dict[str, int] = {}
+    delivery: dict[str, int] = {}
+    for item in queue.items:
+        tiers[item.tier.value] = tiers.get(item.tier.value, 0) + 1
+        delivery[item.delivery.value] = delivery.get(item.delivery.value, 0) + 1
+
+    runner = getattr(request.app.state, "mail_security_runner", None)
+    failures = {
+        code.value: n for code, n in (getattr(runner, "failure_counts", {}) or {}).items()
+    }
+    arc = await asyncio.to_thread(cached_status, dict(os.environ))
+    return {
+        "data": {
+            "health": obs.health_view(snapshot),
+            "review_queue": {
+                "pending": len(queue.items),
+                "by_tier": dict(sorted(tiers.items())),
+                "by_delivery": dict(sorted(delivery.items())),
+                "digest": queue.digest.count,
+                "reviewed": queue.excluded_reviewed,
+                "quiet_hours_active": quiet_until is not None,
+            },
+            "counts": await load_ops_counts(factory, scopes),
+            "runner": {"running": runner is not None, "failures": failures},
+            "arc": arc,
+        }
+    }
+
+
 #: Communication ids the mail worker mints: ``comm-mail-<24 lowercase hex>``.
 _COMMUNICATION_ID_RE = re.compile(r"comm-mail-(?P<digest>[0-9a-f]{24})")
 

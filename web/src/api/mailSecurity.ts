@@ -165,6 +165,49 @@ export interface ReviewQueue {
   policy_version: string
 }
 
+/** Task 7.7: operations dashboard (counts, version labels, timings only). */
+export interface OpsArcHost {
+  label: string
+  status: string
+  code?: string
+  model?: { model_id: string | null; version: string | null; device: string | null } | null
+  activity?: Record<string, number> | null
+}
+
+export interface OpsDashboard {
+  health: {
+    stages: { stage: string; status: string; reasons: string[] }[]
+    alerts: { code: string; stage: string; severity: string }[]
+    intel_feeds: { feed: string; feed_version: string | null; live_indicators: number }[]
+    queue: { depth: Record<string, number>; oldest_pending_age_seconds: number | null }
+  }
+  review_queue: {
+    pending: number
+    by_tier: Record<string, number>
+    by_delivery: Record<string, number>
+    digest: number
+    reviewed: number
+    quiet_hours_active: boolean
+  }
+  counts: {
+    versions?: Record<string, number>
+    dispositions?: Record<string, number>
+    model_runs?: Record<
+      string,
+      { count: number; latency_ms_mean: number | null; latency_ms_max: number | null }
+    >
+    feedback?: {
+      by_kind: Record<string, number>
+      flagged_false_positive_rate: number | null
+      missed_threat_reports: number
+    }
+    gate_holds?: Record<string, number>
+    confirmations?: Record<string, number>
+  }
+  runner: { running: boolean; failures: Record<string, number> }
+  arc: { status: string; code?: string; hosts?: OpsArcHost[] }
+}
+
 /** The list envelope: redacted rows + opaque continuation cursor. */
 export interface AssessmentListResponse {
   data: AssessmentSummary[]
@@ -200,6 +243,8 @@ export interface MailSecurityClient {
    * assessed) — never a fabricated verdict.
    */
   getForCommunication(communicationId: string): Promise<AssessmentDetail | null>
+  /** Task 7.7: ops dashboard; `null` on a safe 401/403/404. */
+  getOps(): Promise<OpsDashboard | null>
   /** Task 7.3: the review queue; `null` on a safe 401/403/404. */
   getReviewQueue(): Promise<ReviewQueue | null>
   /** Task 7.2: feedback on one assessment; `[]` on a safe 401/403/404. */
@@ -270,6 +315,13 @@ export const realMailSecurityApi: MailSecurityClient = {
     return (await res.json()) as AssessmentDetail
   },
 
+  getOps: async () => {
+    const res = await apiFetch('/api/mail-security/ops')
+    if (res.status === 401 || res.status === 403 || res.status === 404) return null
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return ((await res.json()) as { data: OpsDashboard }).data
+  },
+
   getReviewQueue: async () => {
     const res = await apiFetch('/api/mail-security/review-queue')
     if (res.status === 401 || res.status === 403 || res.status === 404) return null
@@ -309,6 +361,7 @@ export const mockMailSecurityApi: MailSecurityClient = {
   listAssessments: async () => emptyList(),
   getAssessment: async () => null,
   getForCommunication: async () => null,
+  getOps: async () => null,
   getReviewQueue: async () => null,
   listFeedback: async () => [],
   submitFeedback: async () => {
