@@ -531,9 +531,9 @@ def test_migration_up_then_down(tmp_path):
 
 def test_migration_single_head_chained_on_016(tmp_path):
     script = ScriptDirectory.from_config(_cfg(f"sqlite:///{tmp_path / 'noop.db'}"))
-    assert list(script.get_heads()) == ["019_mail_security_held_promotions"]
+    assert list(script.get_heads()) == ["019_mail_held_promotions"]
     assert (
-        script.get_revision("019_mail_security_held_promotions").down_revision
+        script.get_revision("019_mail_held_promotions").down_revision
         == "018_mail_security_feedback"
     )
     assert script.get_revision("018_mail_security_feedback").down_revision == "017_mail_intel"

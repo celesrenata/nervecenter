@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects import postgresql
 
-revision = "019_mail_security_held_promotions"
+revision = "019_mail_held_promotions"
 down_revision = "018_mail_security_feedback"
 branch_labels = None
 depends_on = None

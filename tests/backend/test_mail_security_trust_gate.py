@@ -468,10 +468,10 @@ def test_migration_019_up_then_down(tmp_path):
             text("INSERT INTO alembic_version (version_num) VALUES ('018_mail_security_feedback')")
         )
     eng.dispose()
-    command.upgrade(_cfg(url), "019_mail_security_held_promotions")
+    command.upgrade(_cfg(url), "019_mail_held_promotions")
     names, ver = _names(url)
     assert "mail_security_held_promotions" in names
-    assert ver == "019_mail_security_held_promotions"
+    assert ver == "019_mail_held_promotions"
     eng = create_engine(url)
     with eng.connect() as c:
         idx = {

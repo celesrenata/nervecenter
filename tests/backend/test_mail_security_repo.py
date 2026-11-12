@@ -305,6 +305,21 @@ def test_migration_up_then_down(tmp_path):
     assert version_after == "015_inference_providers"
 
 
+def test_every_revision_id_fits_alembic_version_column(tmp_path):
+    """Postgres ``alembic_version.version_num`` is VARCHAR(32); SQLite does
+    not enforce lengths, so a too-long id only fails at deploy (it did for
+    the first 7.4 id). Guard every revision explicitly."""
+    from alembic.script import ScriptDirectory
+
+    script = ScriptDirectory.from_config(
+        _alembic_config(f"sqlite:///{tmp_path / 'noop.db'}")
+    )
+    too_long = [
+        rev.revision for rev in script.walk_revisions() if len(rev.revision) > 32
+    ]
+    assert too_long == []
+
+
 def test_migration_single_head(tmp_path):
     """The alembic script tree has a single head (017 chained on 016)."""
     from alembic.script import ScriptDirectory
@@ -313,7 +328,7 @@ def test_migration_single_head(tmp_path):
         _alembic_config(f"sqlite:///{tmp_path / 'noop.db'}")
     )
     heads = script.get_heads()
-    assert list(heads) == ["019_mail_security_held_promotions"], (
+    assert list(heads) == ["019_mail_held_promotions"], (
         f"expected one head, got {heads}"
     )
 
