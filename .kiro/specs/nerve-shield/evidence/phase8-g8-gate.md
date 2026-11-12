@@ -47,3 +47,18 @@ Things the tests caught and fixed during the spikes:
 ## Owner decision required
 
 For each follow-on above: approve, reject or defer. Nothing proceeds without it.
+
+## Owner decisions (recorded 2026-11-12)
+
+The owner answered: "1. full email capture 2. sure 3. you choose 4. you choose 5. clamav? 6. you choose".
+
+| # | Follow-on | Decision | Reason (where the owner delegated) |
+|---|---|---|---|
+| 1 | Full-email capture via the Gmail API (encrypted, SHADOW) | **APPROVED** | — |
+| 2 | Thread continuity in SHADOW | **APPROVED**, after 1 | — |
+| 3 | Semantic observer, then personal expectedness | **DEFERRED** (delegated) | It would be the first time real owner mail goes to a model, even a local one. That needs its own explicit owner decision; 1 delivers value without it |
+| 4 | Channel grants store | **DEFERRED** (delegated) | No non-email channel is read yet, so there's nothing to protect |
+| 5 | Attachment inspection | **ClamAV first**, folded into 1 | The ClamAV client exists (NS-ADR-014) but no `clamd` runs anywhere, and with BODY_ONLY capture there are no attachments to scan (0 attachment findings). Full capture brings attachments in, and a local `clamd` scans them with no execution. Deeper macro/OLE/PDF structure inspection waits on ClamAV results |
+| 6 | Campaign clustering | **DEFERRED** (delegated) until 1 is live | Its structural features need the headers that 1 captures |
+
+Not approved: inline SMTP MX, live detonation, cross-account fingerprint sharing.
