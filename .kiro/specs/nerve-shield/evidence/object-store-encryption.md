@@ -82,3 +82,13 @@ The new tests cover:
 
 - **Raw capture.** Raw capture (5.2) can now be stored encrypted on durable storage. It **stays OFF** until the owner turns it on.
 - **Risk moved to key custody.** The new risk is that losing `nervecenter-object-key` loses the stored mail. Rotating means adding a new key first in the list and keeping the old one until objects are re-encrypted; there's no re-encryption tool yet.
+
+## Key backup (owner request, 2026-11-12)
+
+**Location:** the owner asked for a backup at `nfs://192.168.42.8:/volume1/Backups/nervecenter`. It is at `/volume1/Backups/nervecenter/nervecenter-object-key-k20261112.env`:
+- Directory: 0700. File: 0600, owner root.
+- The file holds the `NERVECENTER_OBJECT_STORE_ENCRYPTION_KEYS=…` line.
+
+**How it was written.** A one-off busybox pod mounted the Secret read-only (mode 0400) and the backup export, wrote the file under `umask 077`, and checked that the file's key digest matches the Secret's. The key never left the cluster or passed through the operator machine. The pod was deleted afterwards.
+
+**Tradeoff stated to the owner.** The backup sits on the same NAS as the ciphertext. It protects against losing the cluster Secret, but not against a compromise of the NAS itself.
