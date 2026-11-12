@@ -54,6 +54,7 @@ from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
+    MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
     AttentionItemRow,
@@ -81,6 +82,7 @@ COMMIT = "I will send you the deck by Friday."
 _TABLES = (
     *_SECURITY_TABLES,
     MailSecurityHeldPromotionRow.__table__,
+    MailThreadLedgerRow.__table__,
     MailSecurityFeedbackRow.__table__,
     PersonRow.__table__,
     CommitmentRow.__table__,
@@ -395,19 +397,19 @@ async def test_unsure_gate_holds(env):
 # -- commitments ---------------------------------------------------------------------------
 
 
-async def test_commitments_are_held_and_released_with_exact_id(env):
+async def test_outgoing_commitments_are_never_held(env):
+    """NS-ADR-066: the owner's own sent mail is not an untrusted inbound
+    source and never gets a security verdict, so the gate does not apply to
+    it. Its promises are written straight through with the ungated ``ct-`` id
+    (holding them would wait forever for a verdict that never comes)."""
     comm_id, ref = _mail_ref(CONN, "m-commit")
     out = _comm(ref, comm_id, direction=CommunicationDirection.OUTGOING)
+    assert not MailPromotionGate(env.holds).applies(out)
     await _ingest(env.pipeline(gated=True), out, COMMIT)
-    assert await env.count(CommitmentRow) == 0
-    kinds = sorted(h.target_kind for h in await env.holds_rows())
-    assert "commitment" in kinds
-    await env.verdict(SCOPE, ref, "asm:c", Disposition.SAFE_TO_PROCESS)
-    await env.release()
+    assert await env.count(MailSecurityHeldPromotionRow) == 0
     async with env.registry.session_factory() as s:
         ids = [r[0] for r in (await s.execute(select(CommitmentRow.id))).all()]
-    held_ids = [h.target_id for h in await env.holds_rows() if h.target_kind == "commitment"]
-    assert ids == held_ids and ids[0].startswith("ct-")
+    assert len(ids) == 1 and ids[0].startswith("ct-")
 
 
 # -- runner hook ---------------------------------------------------------------------------

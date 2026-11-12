@@ -410,6 +410,20 @@ async def wire_dependencies(target: FastAPI) -> None:
                     set_mail_security_repository(
                         target.state.repository_registry.mail_security
                     )
+                    # NS-ADR-067: SHADOW conversation ledger (inert without
+                    # NERVE_MAIL_SECURITY_LEDGER_KEY; the worker checks it).
+                    from backend.mail_security.thread_ledger import (
+                        set_thread_ledger_repository,
+                    )
+                    from backend.persistence.repositories.mail_security_thread_repo import (
+                        MailThreadLedgerRepository,
+                    )
+
+                    set_thread_ledger_repository(
+                        MailThreadLedgerRepository(
+                            target.state.repository_registry.session_factory
+                        )
+                    )
                     # Phase 2 wiring: explicitly start the flag-gated runner
                     # that sweeps and drains the scheduled jobs. Never reached
                     # with the flag OFF (no task, no construction).
@@ -762,6 +776,9 @@ async def teardown_dependencies(target: FastAPI) -> None:
         )
 
         set_mail_security_repository(None)
+        from backend.mail_security.thread_ledger import set_thread_ledger_repository
+
+        set_thread_ledger_repository(None)
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         log.warning("api.wiring.mail_security_repo_unbind_failed", error=str(exc))
 

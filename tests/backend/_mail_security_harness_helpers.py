@@ -59,6 +59,7 @@ from backend.persistence.models.mail_security import (
     MailSecurityAssessmentRow,
     MailSecurityFindingRow,
     MailSecurityJobRow,
+    MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
     AttentionItemRow,
@@ -73,6 +74,7 @@ from backend.persistence.models.personal import (
 )
 from backend.persistence.repositories import RepositoryRegistry
 from backend.persistence.repositories.connections_repo import IdentitySecretCodec
+from backend.mail_security.thread_ledger import set_thread_ledger_repository
 from backend.storage.memory import InMemoryObjectStore
 
 # ---------------------------------------------------------------------------
@@ -107,6 +109,7 @@ TABLES = [
     MailSecurityAssessmentRow.__table__,
     MailSecurityFindingRow.__table__,
     MailIntelIndicatorRow.__table__,
+    MailThreadLedgerRow.__table__,
 ]
 
 
@@ -279,6 +282,7 @@ async def teardown_harness(harness: SimpleNamespace) -> None:
     """Restore the global communications / repo module state and dispose."""
     set_communications_store(None)
     set_mail_security_repository(None)
+    set_thread_ledger_repository(None)
     reset_communications_service()
     await harness.engine.dispose()
 

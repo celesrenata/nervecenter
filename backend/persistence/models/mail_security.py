@@ -583,11 +583,46 @@ class MailSecurityConfirmationRow(Base):
     )
 
 
+class MailThreadLedgerRow(Base):
+    """One message in an account's conversation ledger (NS-ADR-067).
+
+    Table ``mail_thread_ledger``. Holds only per-account HMAC fingerprints
+    (``message_fp``, ``thread_fp``) and registrable domains: never a subject,
+    body, local part or address. Outgoing rows (the owner's sent mail) carry
+    their recipients' domains as ``participant_domains``. Inbound rows carry
+    the SHADOW continuity ``status`` and signal codes plus the opaque body
+    ``content_ref`` the review queue joins on.
+    """
+
+    __tablename__ = "mail_thread_ledger"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    schema_version: Mapped[str] = mapped_column(String(32), default="mail-thread-ledger@1")
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    message_fp: Mapped[str] = mapped_column(String(32), nullable=False)
+    thread_fp: Mapped[str] = mapped_column(String(32), nullable=False)
+    direction: Mapped[str] = mapped_column(String(8), nullable=False)
+    sender_domain: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    reply_to_domain: Mapped[str | None] = mapped_column(String(253), nullable=True)
+    participant_domains: Mapped[list[str]] = mapped_column(Jsonb, default=list, nullable=False)
+    status: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    signals: Mapped[list[str]] = mapped_column(Jsonb, default=list, nullable=False)
+    content_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+
+    __table_args__ = (
+        Index("ix_mail_thread_ledger_msg", "account_scope", "message_fp", unique=True),
+        Index("ix_mail_thread_ledger_thread", "account_scope", "thread_fp"),
+        Index("ix_mail_thread_ledger_status", "account_scope", "status"),
+    )
+
+
 __all__ = [
     "MailEvidenceRow",
     "MailIntelIndicatorRow",
     "MailIntelOverrideRow",
     "MailSecurityConfirmationRow",
+    "MailThreadLedgerRow",
     "MailSecurityFeedbackRow",
     "MailSecurityHeldPromotionRow",
     "MailSecurityAssessmentRow",

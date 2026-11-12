@@ -40,6 +40,7 @@ from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
+    MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
     AttentionItemRow,
@@ -257,6 +258,7 @@ def env(tmp_path):
         *_SECURITY_TABLES,
         MailSecurityFeedbackRow.__table__,
         MailSecurityHeldPromotionRow.__table__,
+        MailThreadLedgerRow.__table__,
         PersonRow.__table__,
         CommunicationRow.__table__,
         CommitmentRow.__table__,

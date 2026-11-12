@@ -90,6 +90,12 @@ spec:
             # object-store-nfs.yaml). Losing it makes stored mail unreadable.
             - secretRef:
                 name: nervecenter-object-key
+            # Conversation-ledger HMAC key (NS-ADR-067; out-of-band Secret,
+            # NERVE_MAIL_SECURITY_LEDGER_KEY). Losing it only resets the
+            # ledger (derived data); without it the ledger is inert.
+            - secretRef:
+                name: nervecenter-ledger-key
+                optional: true
           readinessProbe:
             httpGet:
               path: /api/health

@@ -530,6 +530,23 @@ def _parse_sender(raw: str) -> tuple[str, str | None]:
     return address, display
 
 
+def _parse_recipients(headers: dict[str, str]) -> list[tuple[str, str | None]]:
+    """``(address, display_name)`` for every ``To`` then ``Cc`` recipient, in
+    header order, deduplicated case-insensitively (NS-ADR-066)."""
+    import email.utils
+
+    out: list[tuple[str, str | None]] = []
+    seen: set[str] = set()
+    raw = [str(headers.get("To") or ""), str(headers.get("Cc") or "")]
+    for display, address in email.utils.getaddresses([r for r in raw if r]):
+        address = (address or "").strip()
+        if not address or "@" not in address or address.lower() in seen:
+            continue
+        seen.add(address.lower())
+        out.append((address, (display or "").strip() or None))
+    return out
+
+
 # -- single-flight OAuth refresh (GAP 1 race guard) ---------------------------
 #
 # Two live :class:`MailIngestWorker` instances can exist for the same
@@ -899,7 +916,19 @@ class MailIngestWorker:
             # "never guess" rule in ``_attribute_person`` is untouched; the
             # worker seeds the identity instead of relaxing resolution.
             sender_raw = str(item.headers.get("From") or account)
-            address, display_name = _parse_sender(sender_raw)
+            # NS-ADR-066: the owner's own sent mail (Gmail SENT without INBOX)
+            # is OUTGOING and attributed to its first recipient, the same
+            # counterpart rule the communications registry uses. Everything
+            # else keeps the historical incoming/sender attribution.
+            outgoing = bool(getattr(item, "outgoing", False))
+            recipients = _parse_recipients(item.headers) if outgoing else []
+            if outgoing and recipients:
+                address, display_name = recipients[0]
+            else:
+                address, display_name = _parse_sender(sender_raw)
+            direction = (
+                CommunicationDirection.OUTGOING if outgoing else CommunicationDirection.INCOMING
+            )
             # Derive the compact bulk/automated classification flags from the
             # envelope headers + sender pattern (FEAT-001). §7: only booleans
             # are carried — never a raw header value.
@@ -914,9 +943,13 @@ class MailIngestWorker:
                 "communication_id": communication_id,
                 "person_id": payload_person_id,
                 "channel": CommunicationChannel.EMAIL,
-                "direction": CommunicationDirection.INCOMING,
+                "direction": direction,
                 "sender": sender_raw,
-                "recipients": [account] if account else [],
+                "recipients": (
+                    [a for a, _ in recipients]
+                    if outgoing
+                    else ([account] if account else [])
+                ),
                 "timestamp": item.timestamp,
                 "thread_id": item.headers.get("In-Reply-To") or communication_id,
                 "content_ref": content_ref,
@@ -939,7 +972,7 @@ class MailIngestWorker:
                         "identity_kind": CommunicationChannel.EMAIL.value,
                         "identity_handle": address,
                         "channel": CommunicationChannel.EMAIL.value,
-                        "direction": CommunicationDirection.INCOMING.value,
+                        "direction": direction.value,
                         "content_ref": content_ref,
                         "subject": subject,
                         "received_at": item.timestamp,
@@ -981,16 +1014,25 @@ class MailIngestWorker:
             # gate, or mark the message safe (R-001.3, I-07). Carries only
             # keys + the opaque content_ref + boolean flags — never raw
             # subject/body/addresses or credentials (T-14).
-            raw_ref = await self._store_raw_capture(
-                item, mail_id=mail_id, account=account
+            # NS-ADR-067: record the message in the account's conversation
+            # ledger (both directions; inbound gets a SHADOW continuity
+            # status). Best-effort and inert without the ledger key.
+            await self._observe_thread(
+                item, outgoing=outgoing, content_ref=content_ref, subject=subject
             )
-            await self._schedule_security_job(
-                conn,
-                mail_id=mail_id,
-                content_ref=content_ref,
-                flags=flags,
-                raw_ref=raw_ref,
-            )
+            # Outgoing mail is the owner's own and not an inbound threat: no
+            # raw capture and no inbound security job (NS-ADR-066).
+            if not outgoing:
+                raw_ref = await self._store_raw_capture(
+                    item, mail_id=mail_id, account=account
+                )
+                await self._schedule_security_job(
+                    conn,
+                    mail_id=mail_id,
+                    content_ref=content_ref,
+                    flags=flags,
+                    raw_ref=raw_ref,
+                )
             if bool(result.get("created")):
                 ingested += 1
             else:
@@ -1044,6 +1086,50 @@ class MailIngestWorker:
             ),
             raw_ref=raw_ref,
         )
+
+    async def _observe_thread(
+        self, item: Any, *, outgoing: bool, content_ref: str, subject: str
+    ) -> None:
+        """Feed the SHADOW conversation ledger (NS-ADR-067).
+
+        A no-op unless mail security is ON, a ledger repository is bound and
+        ``NERVE_MAIL_SECURITY_LEDGER_KEY`` holds a valid key. Any failure is
+        swallowed (safe code logged): it never affects ingest or the cursor.
+        Only fingerprints and registrable domains are stored.
+        """
+        from backend.mail_security.ingestion_seam import mail_security_enabled
+        from backend.mail_security.thread_ledger import (
+            account_salt,
+            get_thread_ledger_repository,
+            ledger_key_from_env,
+            observe,
+        )
+
+        repo = get_thread_ledger_repository()
+        if repo is None or not mail_security_enabled():
+            return
+        key = ledger_key_from_env()
+        if key is None:
+            return
+        try:
+            observed = observe(dict(item.headers or {}), subject=subject, outgoing=outgoing)
+            if observed is None:
+                return
+            scope = security_account_scope(self.connection_id)
+            result = await repo.record(
+                scope,
+                account_salt(key, scope),
+                observed,
+                content_ref=None if outgoing else content_ref,
+            )
+            if result is not None:
+                log.info(
+                    "mail_security.thread_continuity",
+                    status=result.status.value,
+                    signals=[s.value for s in result.signals],
+                )
+        except Exception as exc:  # noqa: BLE001 - SHADOW signal must never fail ingest
+            log.warning("mail_security.thread_ledger_failed", error_type=type(exc).__name__)
 
     async def _store_raw_capture(
         self, item: Any, *, mail_id: str, account: str

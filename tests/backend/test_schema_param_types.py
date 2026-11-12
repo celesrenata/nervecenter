@@ -181,6 +181,8 @@ TABLES_WITH_ID = frozenset(
         "mail_security_held_promotions",
         # NerveShield explicit confirmations, Alembic 020 (Phase 7 Task 7.6).
         "mail_security_confirmations",
+        # NerveShield SHADOW conversation ledger, Alembic 021 (NS-ADR-067).
+        "mail_thread_ledger",
     }
 )
 

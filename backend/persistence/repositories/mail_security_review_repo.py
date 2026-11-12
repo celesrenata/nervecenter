@@ -24,12 +24,13 @@ from collections.abc import Iterable, Mapping
 from datetime import UTC
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 
 from backend.mail_security.backfill import parse_content_ref
 from backend.mail_security.review_feedback import verification_advice
 from backend.mail_security.review_queue import (
     QUEUED_DISPOSITIONS,
+    THREAD_WEIGHTS,
     CommitmentRef,
     QueueCandidate,
 )
@@ -39,6 +40,7 @@ from backend.persistence.models.mail_security import (
     MailSecurityFindingRow,
     MailSecurityHeldPromotionRow,
     MailSecurityJobRow,
+    MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
     AttentionItemRow,
@@ -73,15 +75,50 @@ def _match(rows: Iterable[tuple[str, Any]], comm_ids: set[str]) -> dict[str, lis
     return out
 
 
+async def _thread_flags(s: Any, account_scope: str) -> dict[str, str]:
+    """``source_key -> SUSPECT/BROKEN`` from the SHADOW ledger (NS-ADR-067),
+    joined through the job's body ``content_ref`` within this scope."""
+    flagged = {
+        str(ref): str(st)
+        for ref, st in (
+            await s.execute(
+                select(MailThreadLedgerRow.content_ref, MailThreadLedgerRow.status).where(
+                    MailThreadLedgerRow.account_scope == account_scope,
+                    MailThreadLedgerRow.status.in_(sorted(THREAD_WEIGHTS)),
+                    MailThreadLedgerRow.content_ref.is_not(None),
+                )
+            )
+        ).all()
+    }
+    if not flagged:
+        return {}
+    out: dict[str, str] = {}
+    for source_key, meta in (
+        await s.execute(
+            select(MailSecurityJobRow.source_key, MailSecurityJobRow.meta).where(
+                MailSecurityJobRow.account_scope == account_scope
+            )
+        )
+    ).all():
+        ref = (meta or {}).get("content_ref") if isinstance(meta, Mapping) else None
+        if isinstance(ref, str) and ref in flagged:
+            out[source_key] = flagged[ref]
+    return out
+
+
 async def load_queue_candidates(session_factory: Any, account_scope: str) -> list[QueueCandidate]:
     async with session_factory() as s:
+        thread_flags = await _thread_flags(s, account_scope)
+        queued = MailSecurityAssessmentRow.disposition.in_(sorted(QUEUED_DISPOSITIONS))
+        if thread_flags:
+            queued = or_(queued, MailSecurityAssessmentRow.source_id.in_(sorted(thread_flags)))
         assessments = (
             (
                 await s.execute(
                     select(MailSecurityAssessmentRow)
                     .where(
                         MailSecurityAssessmentRow.account_scope == account_scope,
-                        MailSecurityAssessmentRow.disposition.in_(sorted(QUEUED_DISPOSITIONS)),
+                        queued,
                     )
                     .order_by(MailSecurityAssessmentRow.created_at.desc())
                     .limit(MAX_CANDIDATES)
@@ -244,6 +281,7 @@ async def load_queue_candidates(session_factory: Any, account_scope: str) -> lis
                 important_sender=bool(comm and comm[1] in vip),
                 commitments=tuple(commitments.get(cid, [])) if cid else (),
                 reviewed=a.assessment_id in reviewed,
+                thread_continuity=thread_flags.get(a.source_id),
             )
         )
     return out

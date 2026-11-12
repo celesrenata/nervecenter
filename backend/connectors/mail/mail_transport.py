@@ -147,6 +147,13 @@ def _mark_seen(seen: list[str], key: str) -> list[str]:
     return seen[-(MAX_SEEN_KEYS - 1):] + [key]
 
 
+def is_outgoing_labels(labels: tuple[str, ...] | list[str]) -> bool:
+    """``SENT`` without ``INBOX``: mail the owner sent to someone else. A
+    self-addressed message carries both and stays incoming."""
+    labels = tuple(labels or ())
+    return "SENT" in labels and "INBOX" not in labels
+
+
 @dataclass(frozen=True, slots=True)
 class MailItem:
     """One fetched message.
@@ -174,6 +181,14 @@ class MailItem:
     #: capture is opted in (NS-ADR-064). Transient like ``content_bytes``: the
     #: worker stores it as a separate encrypted object for the security plane.
     raw_bytes: bytes | None = None
+    #: Provider labels (Gmail ``labelIds``; empty for IMAP). ``SENT`` without
+    #: ``INBOX`` marks the owner's own outgoing mail (NS-ADR-066).
+    labels: tuple[str, ...] = ()
+
+    @property
+    def outgoing(self) -> bool:
+        """True for the owner's own sent mail (not a self-addressed copy)."""
+        return is_outgoing_labels(self.labels)
 
     def subject_or_first_line(self) -> str:
         """Subject line / first non-empty line (§6 durable row ``subject``)."""
@@ -764,22 +779,46 @@ class GmailClient:
             fetched = await self._fetch_message(client, token, mid)
             if fetched is None:
                 continue
-            headers, body = fetched
-            ts = _parse_rfc2822(headers.get("Date")) or datetime.now(UTC)
             seen = _mark_seen(seen, key)
-            items.append(
-                MailItem(
-                    message_id=f"gmail:{mid}",
-                    account=account,
-                    subject=str(headers.get("Subject", "")).strip(),
-                    content_bytes=body.encode("utf-8", "replace"),
-                    timestamp=ts,
-                    headers={k: v for k, v in headers.items()},
-                    source="gmail",
-                    raw_bytes=await self._maybe_fetch_raw(client, token, mid),
-                )
-            )
+            item = await self._build_item(client, token, mid, account, fetched)
+            if item is not None:
+                items.append(item)
         return baseline, seen
+
+    async def _build_item(
+        self,
+        client: httpx.AsyncClient,
+        token: str,
+        mid: str,
+        account: str,
+        fetched: tuple[dict[str, str], str, tuple[str, ...]],
+    ) -> MailItem | None:
+        """Build the delivered item for one fetched message, or ``None``.
+
+        Gmail labels decide what a message is (NS-ADR-066): ``DRAFT`` is never
+        delivered (it is not mail anyone sent or received); ``SENT`` without
+        ``INBOX`` is the owner's own outgoing mail and is delivered with its
+        labels so the worker records it as OUTGOING. Outgoing mail is not an
+        inbound threat, so it never gets a raw fetch.
+        """
+        headers, body, labels = fetched
+        if "DRAFT" in labels:
+            return None
+        ts = _parse_rfc2822(headers.get("Date")) or datetime.now(UTC)
+        raw = None if is_outgoing_labels(labels) else await self._maybe_fetch_raw(
+            client, token, mid
+        )
+        return MailItem(
+            message_id=f"gmail:{mid}",
+            account=account,
+            subject=str(headers.get("Subject", "")).strip(),
+            content_bytes=body.encode("utf-8", "replace"),
+            timestamp=ts,
+            headers={k: v for k, v in headers.items()},
+            source="gmail",
+            raw_bytes=raw,
+            labels=labels,
+        )
 
     async def _poll_history(
         self,
@@ -851,25 +890,14 @@ class GmailClient:
                     fetched = await self._fetch_message(client, token, mid)
                     if fetched is None:
                         continue  # A9: a deleted message skips, not fails
-                    headers, body = fetched
-                    ts = _parse_rfc2822(headers.get("Date")) or datetime.now(UTC)
                     # A4: no From-header rejection — delivery is keyed on
-                    # (account, message id).
+                    # (account, message id). A draft is marked seen (never
+                    # re-fetched) but not delivered.
                     seen = _mark_seen(seen, key)
-                    items.append(
-                        MailItem(
-                            message_id=f"gmail:{mid}",
-                            account=account,
-                            subject=str(headers.get("Subject", "")).strip(),
-                            content_bytes=body.encode("utf-8", "replace"),
-                            timestamp=ts,
-                            headers={k: v for k, v in headers.items()},
-                            source="gmail",
-                            raw_bytes=await self._maybe_fetch_raw(
-                                client, token, mid
-                            ),
-                        )
-                    )
+                    item = await self._build_item(client, token, mid, account, fetched)
+                    if item is None:
+                        continue
+                    items.append(item)
                     if len(items) >= self._max_items:
                         # Cap reached. Stop both delivery and cursor
                         # advancement: on resume (exclusive ``startHistoryId``)
@@ -894,8 +922,8 @@ class GmailClient:
 
     async def _fetch_message(
         self, client: httpx.AsyncClient, token: str, message_id: str
-    ) -> tuple[dict[str, str], str] | None:
-        """Fetch one message's headers + best text body.
+    ) -> tuple[dict[str, str], str, tuple[str, ...]] | None:
+        """Fetch one message's headers + best text body + Gmail labels.
 
         Returns ``None`` for a deleted message (404) so the caller skips that
         single message instead of failing the poll (A9).
@@ -925,13 +953,19 @@ class GmailClient:
                 "Date",
                 "Message-ID",
                 "In-Reply-To",
+                # Envelope threading/addressing metadata for outgoing
+                # attribution and the thread ledger (NS-ADR-066/067).
+                "References",
+                "Reply-To",
+                "Cc",
                 "List-Unsubscribe",
                 "List-Id",
                 "Precedence",
                 "Auto-Submitted",
             )
         }
-        return headers, _extract_text_body(payload)
+        labels = tuple(str(x) for x in body.get("labelIds") or () if isinstance(x, str))
+        return headers, _extract_text_body(payload), labels
 
     async def _maybe_fetch_raw(
         self, client: httpx.AsyncClient, token: str, message_id: str

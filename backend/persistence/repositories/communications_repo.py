@@ -199,6 +199,9 @@ class CommunicationsRepository:
                     CommunicationRow.flags,
                 )
                 .where(CommunicationRow.content_ref.startswith(ref_prefix, autoescape=True))
+                # NS-ADR-066: the backfill assesses INBOUND mail only; the
+                # owner's own sent mail never gets a security job.
+                .where(CommunicationRow.direction != "outgoing")
                 .order_by(CommunicationRow.received_at.desc(), CommunicationRow.id.desc())
                 .limit(limit)
                 .offset(offset)

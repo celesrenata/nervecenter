@@ -171,6 +171,12 @@ class MailPromotionGate:
         scope = gate_scope(getattr(communication, "content_ref", None))
         if scope is None:
             return False
+        # NS-ADR-066: the owner's own sent mail is not an untrusted inbound
+        # source and never gets a security verdict, so gating it would hold
+        # its promises forever.
+        direction = getattr(communication, "direction", None)
+        if str(getattr(direction, "value", direction) or "").lower() == "outgoing":
+            return False
         return self._scopes is None or scope in self._scopes
 
     async def hold(
