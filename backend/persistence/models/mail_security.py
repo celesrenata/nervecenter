@@ -456,10 +456,55 @@ class MailIntelOverrideRow(Base):
     )
 
 
+class MailSecurityFeedbackRow(Base):
+    """One append-only reviewer feedback record (Task 7.2, design §9).
+
+    Table ``mail_security_feedback``. Codes and opaque refs only: the verdict,
+    the mapped ledger kind, the human source, an opaque ``reviewer_ref`` (hash,
+    never a user id or address), the disposition the reviewer saw, and the
+    routed proposals (destination/scope/status). Proposals are recorded, never
+    applied. ``account_scope`` is copied from the assessment row, never from
+    the client. Unique by ``(account_scope, feedback_id)`` so a replay is
+    idempotent.
+    """
+
+    __tablename__ = "mail_security_feedback"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    schema_version: Mapped[str] = mapped_column(String(32), default="mail-feedback@1")
+    feedback_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    assessment_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    verdict: Mapped[str] = mapped_column(String(24), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    reviewer_ref: Mapped[str] = mapped_column(String(80), nullable=False)
+    disposition_seen: Mapped[str] = mapped_column(String(32), nullable=False)
+    proposals: Mapped[list[dict[str, Any]]] = mapped_column(
+        Jsonb, default=list, nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_mail_security_feedback_scope_id",
+            "account_scope",
+            "feedback_id",
+            unique=True,
+        ),
+        Index(
+            "ix_mail_security_feedback_scope_assessment",
+            "account_scope",
+            "assessment_id",
+        ),
+    )
+
+
 __all__ = [
     "MailEvidenceRow",
     "MailIntelIndicatorRow",
     "MailIntelOverrideRow",
+    "MailSecurityFeedbackRow",
     "MailSecurityAssessmentRow",
     "MailSecurityFindingRow",
     "MailSecurityJobRow",

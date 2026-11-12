@@ -17,9 +17,10 @@
  *
  * Hard contract (requirements/design/threat-model — stricter behavior wins):
  *
- * - Read-only. This client issues GET only — no writes, no mail mutation, no
- *   feedback (feedback is a later task). Reviewing a verdict is not
- *   authorizing anything (R-020.4, T-26).
+ * - Read-only except feedback. Every call is a GET except
+ *   `submitFeedback` (Task 7.2), which POSTs one verdict code. Nothing here
+ *   mutates mail, trusts a sender or approves an action. Reviewing a verdict
+ *   is not authorizing anything (R-020.4, T-26).
  *
  * - Redacted metadata only. The backend already projects an explicit
  *   allow-list of safe metadata + opaque refs (R-017.2, T-14): disposition,
@@ -118,6 +119,25 @@ export interface AssessmentDetail extends AssessmentSummary {
   axes: Record<string, AxisView>
   completeness: Completeness
   findings: AssessmentFinding[]
+  /** Task 7.2: independent-verification advice codes (fixed set). */
+  verification_advice?: string[]
+}
+
+/** Task 7.2 reviewer verdicts (codes only; no free text is ever sent). */
+export type ReviewerVerdict = 'SAFE' | 'SUSPICIOUS' | 'NOT_RELEVANT' | 'WRONG_INTENT'
+
+/** One recorded feedback entry. Proposals are recorded, never applied. */
+export interface FeedbackEntry {
+  feedback_id: string
+  assessment_id: string
+  verdict: ReviewerVerdict
+  kind: string
+  source: string
+  disposition_seen: string
+  created_at: string | null
+  mine: boolean
+  proposals: { destination: string; scope: string; status: string }[]
+  applied: false
 }
 
 /** The list envelope: redacted rows + opaque continuation cursor. */
@@ -155,6 +175,17 @@ export interface MailSecurityClient {
    * assessed) — never a fabricated verdict.
    */
   getForCommunication(communicationId: string): Promise<AssessmentDetail | null>
+  /** Task 7.2: feedback on one assessment; `[]` on a safe 401/403/404. */
+  listFeedback(assessmentId: string): Promise<FeedbackEntry[]>
+  /**
+   * Task 7.2: record one reviewer verdict. Throws on failure so the caller
+   * can say it was not recorded; never retried silently.
+   */
+  submitFeedback(
+    assessmentId: string,
+    verdict: ReviewerVerdict,
+    idempotencyKey: string,
+  ): Promise<FeedbackEntry>
 }
 
 // ─── Real API implementation ─────────────────────────────────────────────────
@@ -211,6 +242,28 @@ export const realMailSecurityApi: MailSecurityClient = {
     if (!res.ok) throw await apiErrorFromResponse(res)
     return (await res.json()) as AssessmentDetail
   },
+
+  listFeedback: async (assessmentId: string) => {
+    const res = await apiFetch(
+      `/api/mail-security/assessments/${encodeURIComponent(assessmentId)}/feedback`,
+    )
+    if (res.status === 401 || res.status === 403 || res.status === 404) return []
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return ((await res.json()) as { data: FeedbackEntry[] }).data
+  },
+
+  submitFeedback: async (assessmentId, verdict, idempotencyKey) => {
+    const res = await apiFetch(
+      `/api/mail-security/assessments/${encodeURIComponent(assessmentId)}/feedback`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verdict, idempotency_key: idempotencyKey }),
+      },
+    )
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return ((await res.json()) as { data: FeedbackEntry }).data
+  },
 }
 
 // ─── Mock mode: honest empty (no backend → nothing assessed) ──────────────────
@@ -222,6 +275,10 @@ export const mockMailSecurityApi: MailSecurityClient = {
   listAssessments: async () => emptyList(),
   getAssessment: async () => null,
   getForCommunication: async () => null,
+  listFeedback: async () => [],
+  submitFeedback: async () => {
+    throw new Error('No backend: feedback was not recorded')
+  },
 }
 
 // ─── Exported client (mock-aware, mirrors communicationsApi / todayApi) ───────

@@ -175,6 +175,8 @@ TABLES_WITH_ID = frozenset(
         # global expiring indicators + account-scoped overrides).
         "mail_intel_indicators",
         "mail_intel_overrides",
+        # NerveShield reviewer feedback ledger, Alembic 018 (Phase 7 Task 7.2).
+        "mail_security_feedback",
     }
 )
 

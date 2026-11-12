@@ -46,6 +46,9 @@ class FeedbackKind(StrEnum):
     SENDER_KNOWN = "SENDER_KNOWN"  # owner knows this sender
     SENDER_UNKNOWN = "SENDER_UNKNOWN"  # owner does not know this sender
     NOT_SURE = "NOT_SURE"
+    # Task 7.2: recorded for audit only; they route to no store.
+    CONFIRMED_SAFE = "CONFIRMED_SAFE"  # owner agrees a not-flagged verdict
+    NOT_RELEVANT = "NOT_RELEVANT"  # relevance correction, not a security label
 
 
 class FeedbackSource(StrEnum):
@@ -181,7 +184,7 @@ _TRAINING_KINDS = frozenset(
 
 
 def route(record: FeedbackRecord) -> list[tuple[Destination, Scope, ProposalStatus]]:
-    """Pure routing rules. NOT_SURE routes nowhere."""
+    """Pure routing rules. NOT_SURE, CONFIRMED_SAFE and NOT_RELEVANT route nowhere."""
     out: list[tuple[Destination, Scope, ProposalStatus]] = []
     if record.kind in _INTEL_KINDS and record.indicator_refs:
         wants_global = record.request_global and record.source is FeedbackSource.ANALYST

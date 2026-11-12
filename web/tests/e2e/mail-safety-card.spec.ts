@@ -102,7 +102,19 @@ const DETAIL = {
   ],
 }
 
+async function routeFeedbackList(page: Page, data: unknown[] = []) {
+  await page.route('**/api/mail-security/assessments/*/feedback', (route: Route) => {
+    if (route.request().method() !== 'GET') return route.fallback()
+    return route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ data }),
+    })
+  })
+}
+
 async function routeSearch(page: Page) {
+  await routeFeedbackList(page)
   await page.route('**/api/communications/search?**', (route: Route) =>
     route.fulfill({
       status: 200,
@@ -188,12 +200,17 @@ test.describe('NerveShield safety card (Task 7.1)', () => {
     await page.keyboard.press('Enter')
     await expect(toggle).toHaveAttribute('aria-expanded', 'true')
     const panelId = await toggle.getAttribute('aria-controls')
-    const card = page.locator(`[id="${panelId}"]`).getByRole('status')
+    const card = page
+      .locator(`[id="${panelId}"]`)
+      .getByTestId('mail-security-indicator')
+    await expect(card).toHaveAttribute('role', 'status')
     await expect(card).toHaveAttribute('aria-label', /Security assessment: Review \(observation only/)
     await expect(card).toHaveAttribute('data-disposition', 'REVIEW')
-    // Only the for-communication route is called (dev StrictMode may mount
-    // the effect twice; the first run is cancelled).
-    expect([...new Set(w.securityCalls)]).toEqual([
+    // Only the for-communication route and (Task 7.2) the feedback list for
+    // that assessment are called. Dev StrictMode may mount effects twice.
+    await expect(page.getByTestId('mail-security-feedback')).toBeVisible()
+    expect([...new Set(w.securityCalls)].sort()).toEqual([
+      '/api/mail-security/assessments/as-7/feedback',
       `/api/mail-security/assessments/for-communication/${COMM_ID}`,
     ])
 
@@ -262,8 +279,146 @@ test.describe('NerveShield safety card (Task 7.1)', () => {
     await expect(card).toHaveAttribute('data-disposition', 'UNKNOWN')
     await expect(card.getByTestId('mail-security-disposition')).toHaveText('Not assessed')
     await expect(card.getByTestId('mail-security-details')).toHaveCount(0)
+    // No assessment → nothing to review: no feedback controls either.
+    await expect(page.getByTestId('mail-security-feedback')).toHaveCount(0)
     await expect(page.getByRole('alert')).toHaveCount(0)
     expect(REMOTE).toEqual([])
     expect(w.errors).toEqual([])
+  })
+
+  test('SC-5 (7.2) advice + codes-only feedback that trusts nothing', async ({ page }) => {
+    const w = watch(page)
+    await routeSearch(page)
+    const passed = { result: 'PASS', provenance: 'INDEPENDENT' }
+    const restricted = {
+      ...DETAIL,
+      disposition: 'RESTRICTED',
+      authentication: { spf: passed, dkim: passed, dmarc: passed, arc: passed },
+      verification_advice: ['VERIFY_PAYMENT_REQUEST'],
+    }
+    await page.route(
+      `**/api/mail-security/assessments/for-communication/${COMM_ID}`,
+      (route: Route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(restricted),
+        }),
+    )
+    const posted: unknown[] = []
+    await page.route('**/api/mail-security/assessments/as-7/feedback', (route: Route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      posted.push(route.request().postDataJSON())
+      return route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: {
+            feedback_id: 'fb:1',
+            assessment_id: 'as-7',
+            verdict: 'SAFE',
+            kind: 'FALSE_POSITIVE',
+            source: 'ACCOUNT_OWNER',
+            disposition_seen: 'RESTRICTED',
+            created_at: '2026-11-11T00:00:00Z',
+            mine: true,
+            proposals: [
+              { destination: 'PERSONAL_MEMORY', scope: 'ACCOUNT', status: 'PENDING_REVIEW' },
+            ],
+            applied: false,
+          },
+        }),
+      })
+    })
+    await search(page)
+    await page.getByTestId(`comm-security-toggle-${COMM_ID}`).click()
+    const card = page.getByTestId('mail-security-indicator')
+
+    // Advice shows even though every auth result passed (R-013.4).
+    const advice = card.getByTestId('mail-security-advice')
+    await expect(advice).toContainText('Verify independently')
+    await expect(advice).toContainText('Do not use contact details from this message')
+
+    // Feedback is a labelled group outside the display-only card.
+    const group = page.getByRole('group', { name: 'Your review' })
+    await expect(group).toBeVisible()
+    await expect(card.getByRole('button')).toHaveCount(0)
+    await expect(group.getByRole('button')).toHaveCount(4)
+    await expect(group).toContainText('does not trust the sender')
+    await expect(group.locator('textarea, input[type="text"]')).toHaveCount(0)
+    const safe = group.getByTestId('mail-security-feedback-SAFE')
+    await expect(safe).toHaveAttribute('aria-pressed', 'false')
+
+    // Keyboard submit.
+    await safe.focus()
+    await page.keyboard.press('Enter')
+    await expect(safe).toHaveAttribute('aria-pressed', 'true')
+    await expect(group.getByTestId('mail-security-feedback-status')).toContainText(
+      'Nothing was trusted or changed',
+    )
+    // Codes only: exactly verdict + an opaque idempotency key.
+    expect(posted).toHaveLength(1)
+    const body = posted[0] as Record<string, unknown>
+    expect(Object.keys(body).sort()).toEqual(['idempotency_key', 'verdict'])
+    expect(body.verdict).toBe('SAFE')
+    expect(String(body.idempotency_key)).toMatch(/^[0-9a-f]{32}$/)
+    // The verdict on screen did not change.
+    await expect(card).toHaveAttribute('data-disposition', 'RESTRICTED')
+    expect(REMOTE).toEqual([])
+    expect(w.errors).toEqual([])
+  })
+
+  test('SC-6 (7.2) existing feedback is shown; a failed submit says so', async ({ page }) => {
+    await routeSearch(page)
+    await page.unroute('**/api/mail-security/assessments/*/feedback')
+    await routeFeedbackList(page, [
+      {
+        feedback_id: 'fb:0',
+        assessment_id: 'as-7',
+        verdict: 'SUSPICIOUS',
+        kind: 'CONFIRMED_THREAT',
+        source: 'ACCOUNT_OWNER',
+        disposition_seen: 'REVIEW',
+        created_at: '2026-11-10T00:00:00Z',
+        mine: true,
+        proposals: [],
+        applied: false,
+      },
+    ])
+    await page.route(
+      `**/api/mail-security/assessments/for-communication/${COMM_ID}`,
+      (route: Route) =>
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify(DETAIL),
+        }),
+    )
+    await page.route('**/api/mail-security/assessments/as-7/feedback', (route: Route) => {
+      if (route.request().method() !== 'POST') return route.fallback()
+      return route.fulfill({
+        status: 500,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: { error_code: 'internal' } }),
+      })
+    })
+    await search(page)
+    await page.getByTestId(`comm-security-toggle-${COMM_ID}`).click()
+    const group = page.getByRole('group', { name: 'Your review' })
+    await expect(group.getByTestId('mail-security-feedback-SUSPICIOUS')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await group.getByTestId('mail-security-feedback-NOT_RELEVANT').click()
+    await expect(group.getByRole('alert')).toHaveText('Not recorded. Please try again.')
+    // The previous choice stays; nothing is shown as recorded.
+    await expect(group.getByTestId('mail-security-feedback-SUSPICIOUS')).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    )
+    await expect(group.getByTestId('mail-security-feedback-NOT_RELEVANT')).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    )
   })
 })

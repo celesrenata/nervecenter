@@ -83,6 +83,7 @@ from pydantic import BaseModel
 
 from backend.api.auth import current_access
 from backend.api.models import ApiResponseMeta, ListResponse
+from backend.mail_security.review_feedback import verification_advice
 
 log = structlog.get_logger(__name__)
 
@@ -389,6 +390,12 @@ def _redact_detail(row: Any, findings: list[Any]) -> dict[str, Any]:
             "checks_not_run": list(completeness.get("checks_not_run") or []),
         },
         "findings": [_redact_finding(f) for f in findings],
+        # Task 7.2 (R-013.4): independent-verification advice codes derived
+        # from findings + reason codes only; shown even when auth passes.
+        "verification_advice": verification_advice(
+            ((f.category, f.status) for f in findings),
+            policy.get("reason_codes") or [],
+        ),
     }
 
 

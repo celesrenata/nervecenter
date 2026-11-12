@@ -50,6 +50,7 @@ from backend.mail_security.models import (
 from backend.persistence.models.mail_security import (
     MailEvidenceRow,
     MailSecurityAssessmentRow,
+    MailSecurityFeedbackRow,
     MailSecurityFindingRow,
     MailSecurityJobRow,
 )
@@ -602,6 +603,59 @@ class MailSecurityRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def record_feedback(
+        self,
+        *,
+        feedback_id: str,
+        account_scope: str,
+        assessment_id: str,
+        verdict: str,
+        kind: str,
+        source: str,
+        reviewer_ref: str,
+        disposition_seen: str,
+        proposals: list[dict[str, Any]],
+    ) -> FeedbackWrite:
+        """Append one feedback record; a replayed ``feedback_id`` is a no-op."""
+        async with self._sessions() as session:
+            stmt = select(MailSecurityFeedbackRow).where(
+                MailSecurityFeedbackRow.account_scope == account_scope,
+                MailSecurityFeedbackRow.feedback_id == feedback_id,
+            )
+            existing = (await session.execute(stmt)).scalar_one_or_none()
+            if existing is not None:
+                return FeedbackWrite(row=existing, created=False)
+            row = MailSecurityFeedbackRow(
+                feedback_id=feedback_id,
+                account_scope=account_scope,
+                assessment_id=assessment_id,
+                verdict=verdict,
+                kind=kind,
+                source=source,
+                reviewer_ref=reviewer_ref,
+                disposition_seen=disposition_seen,
+                proposals=proposals,
+            )
+            session.add(row)
+            await session.commit()
+            await session.refresh(row)
+            return FeedbackWrite(row=row, created=True)
+
+    async def list_feedback(
+        self, account_scope: str, assessment_id: str
+    ) -> list[MailSecurityFeedbackRow]:
+        """Feedback for one assessment, oldest first, scope-enforced."""
+        async with self._sessions() as session:
+            stmt = (
+                select(MailSecurityFeedbackRow)
+                .where(
+                    MailSecurityFeedbackRow.account_scope == account_scope,
+                    MailSecurityFeedbackRow.assessment_id == assessment_id,
+                )
+                .order_by(MailSecurityFeedbackRow.created_at, MailSecurityFeedbackRow.id)
+            )
+            return list((await session.execute(stmt)).scalars().all())
+
     async def source_key_for_content_ref(
         self, account_scope: str, content_ref: str
     ) -> str | None:
@@ -663,7 +717,16 @@ class MailSecurityRepository:
             return list(result.scalars().all())
 
 
+@dataclass(frozen=True)
+class FeedbackWrite:
+    """Outcome of :meth:`MailSecurityRepository.record_feedback`."""
+
+    row: MailSecurityFeedbackRow
+    created: bool
+
+
 __all__ = [
+    "FeedbackWrite",
     "MailSecurityRepository",
     "VerdictWriteOutcome",
     "VerdictWriteStatus",

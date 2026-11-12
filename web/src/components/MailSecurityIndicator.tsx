@@ -49,6 +49,7 @@ import {
   type AxisView,
   type Disposition,
 } from '../api/mailSecurity'
+import { MailSecurityFeedback } from './MailSecurityFeedback'
 
 /** Exactly one lookup key is used; with neither, nothing is fetched. */
 export interface MailSecurityIndicatorProps {
@@ -126,6 +127,21 @@ const PROVENANCE_LABELS: Record<string, string> = {
   PROVIDER_REPORTED: 'reported by mail provider',
   UNTRUSTED_HEADER: 'from an untrusted header',
   UNKNOWN: 'source unknown',
+}
+
+/**
+ * Task 7.2 (R-013.4): fixed advice text per server code. Shown even when the
+ * sender authenticates, because a real sender can still make a bad request.
+ */
+const ADVICE_TEXT: Record<string, string> = {
+  VERIFY_PAYMENT_REQUEST:
+    'Before paying or changing bank details, confirm with the sender using a phone number or site you already know. Do not use contact details from this message.',
+  VERIFY_CREDENTIAL_REQUEST:
+    'Do not sign in or share codes from a link in this message. Go to the site directly by typing its address.',
+  VERIFY_HIGH_IMPACT_REQUEST:
+    'This asks for money, credentials or personal data. Confirm through a channel you already trust before acting.',
+  VERIFY_SENDER_IDENTITY:
+    'The sender may not be who they claim. Check their address and contact them another way if unsure.',
 }
 
 function toDisposition(value: string | null | undefined): Disposition {
@@ -325,7 +341,10 @@ export function MailSecurityIndicator({
         shadow ? ' (observation only, not enforced)' : ''
       }`
 
+  const advice = detail?.verification_advice ?? []
+
   return (
+    <div>
     <section
       role="status"
       aria-live="polite"
@@ -359,6 +378,22 @@ export function MailSecurityIndicator({
               Observation only — reviewing this does not approve or authorize
               anything.
             </p>
+          )}
+
+          {advice.length > 0 && (
+            <div
+              data-testid="mail-security-advice"
+              className="mt-2 rounded border border-current/40 bg-white/40 dark:bg-black/20 px-2 py-1.5"
+            >
+              <p className="text-xs font-semibold">Verify independently</p>
+              <ul className="mt-0.5 list-disc pl-4 text-xs">
+                {advice.map((code) => (
+                  <li key={code} data-advice={code}>
+                    {ADVICE_TEXT[code] ?? code}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           <CodeChips title="Why" codes={reasonCodes} />
@@ -410,5 +445,8 @@ export function MailSecurityIndicator({
         </>
       )}
     </section>
+    {/* Task 7.2: feedback sits outside the display-only status region. */}
+    {!loading && detail && <MailSecurityFeedback assessmentId={detail.assessment_id} />}
+    </div>
   )
 }
