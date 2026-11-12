@@ -53,9 +53,19 @@ Real phishing performance, behaviour on the owner's mail, adversarial robustness
 3. **Shadow/canary:** may any model (B or C) enter SHADOW? Recommendation: **no canary or active use yet.** If you want early signal, allow **C in SHADOW only** after (1) and an explicit proxy-data exception, on the Arc, observing live mail without affecting any verdict.
 4. **Next phase:** Phase 7 (safe actions and review UX) needs a G6 decision first.
 
-## Owner decision (to be completed by owner)
+## Owner decision
 ```
-Decision:
-Date:
-Notes:
+Decision: continue to Phase 7 ("1. done 2. dunno 3. dunno 4. continue")
+Date: 2026-11-12
+Reviewer: Owner (via orchestrator)
+1. Dataset spamassassin-bench-v2 SIGNED by the owner (reviewer "celes", 2026-11-12T00:47:01Z,
+   key ssh:SHA256:D+0xwbt4UdtQZtaPLbbUndLpMyKkmfbqSQn2By08yLw, signed digest
+   126d0719947b39142039a3f330c9fc480153a9ab61828570754ab9b8e75f8f7f). Verified by the
+   orchestrator against the pinned key; body identical to the built unsigned manifest.
+2. PROXY_DATA_ONLY: owner undecided -> the strict default stands (no exception granted).
+3. Shadow/canary: owner undecided -> NO model enters SHADOW, CANARY or ACTIVE.
+4. Phase 7 approved to proceed. Conditions (orchestrator, carried forward): no model
+   activation; Phase 7 UI/flow work behind OFF flags where the spec says so; 7.8 needs
+   owner-selected accounts and an explicit opt-in before any REVIEW_GATED canary;
+   STOP at G7 (7.9).
 ```
