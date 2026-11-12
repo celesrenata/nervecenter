@@ -1,0 +1,47 @@
+{
+ "seed": 11,
+ "accounts": 40,
+ "senders_per_account": 24,
+ "events": 1920,
+ "auc_all": {
+  "personalized": 0.9808,
+  "global_baseline": 0.9171
+ },
+ "auc_evaluated_only": {
+  "personalized": 0.9967,
+  "global_baseline": 0.9228
+ },
+ "auc_high_impact_types_only": {
+  "personalized": 0.972,
+  "global_baseline": 0.857
+ },
+ "abstain_rate": {
+  "sparse_senders": 1.0,
+  "rich_senders": 0.0
+ },
+ "false_unexpected_rate_on_normal": {
+  "sparse_senders": 0.0,
+  "rich_senders": 0.0045
+ },
+ "unexpected_recall_on_anomalous": {
+  "sparse_senders": 0.0,
+  "rich_senders": 0.7582
+ },
+ "status_counts": {
+  "EXPECTED": 530,
+  "UNEXPECTED": 514,
+  "UNCERTAIN": 304,
+  "ABSTAIN": 572
+ },
+ "request_types": [
+  "READ",
+  "REPLY",
+  "SCHEDULE",
+  "PAY",
+  "CHANGE_PAYMENT_DETAILS",
+  "SUBMIT_CREDENTIALS",
+  "SHARE_PERSONAL_DATA",
+  "DOWNLOAD",
+  "OPEN_LINK"
+ ]
+}
