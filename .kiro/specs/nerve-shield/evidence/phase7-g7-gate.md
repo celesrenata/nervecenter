@@ -67,3 +67,15 @@ Date: 2026-11-12. Phase 7 tasks 7.1–7.8 are complete. Per R-025 and task 7.9, 
 
 **Limits:**
 - WCAG conformance was not assessed beyond automated role, aria and keyboard checks.
+
+## Owner decision (recorded 2026-11-12)
+
+The owner wrote: "didn't we already agree to keep the canaries on". This is recorded as **APPROVED: keep the REVIEW_GATED canary ON for both accounts**. It confirms the 7.8 opt-in ("2. yes").
+
+**No other activation is approved.** These stay as they are:
+- Assessment mode: SHADOW.
+- No ML model is activated (G6 stands).
+- No proposal producer, executor or confirmation UI is wired.
+- Payments, sending and disclosure stay locked.
+
+The open owner items listed above carry forward.
