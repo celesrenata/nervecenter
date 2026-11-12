@@ -1,0 +1,120 @@
+{
+ "v1_presence_true_false_tokens": {
+  "corpus": {
+   "messages": 6046,
+   "spam": 1896,
+   "ham": 4150
+  },
+  "reference": {
+   "spam_campaigns_size_ge2": 320,
+   "spam_in_campaigns": 1024,
+   "pairs": 1895
+  },
+  "thresholds": {
+   "0.6": {
+    "clusters_size_ge3": 21,
+    "largest": 5628,
+    "pair_precision_vs_reference": 0.0014,
+    "pair_recall_vs_reference": 0.991,
+    "label_pure_cluster_share": 0.8095,
+    "ham_in_spam_majority_clusters": 4,
+    "ham_total": 4150
+   },
+   "0.7": {
+    "clusters_size_ge3": 52,
+    "largest": 4925,
+    "pair_precision_vs_reference": 0.0022,
+    "pair_recall_vs_reference": 0.8834,
+    "label_pure_cluster_share": 0.9038,
+    "ham_in_spam_majority_clusters": 1,
+    "ham_total": 4150
+   },
+   "0.8": {
+    "clusters_size_ge3": 130,
+    "largest": 1308,
+    "pair_precision_vs_reference": 0.0492,
+    "pair_recall_vs_reference": 0.5604,
+    "label_pure_cluster_share": 0.9385,
+    "ham_in_spam_majority_clusters": 147,
+    "ham_total": 4150
+   },
+   "0.9": {
+    "clusters_size_ge3": 240,
+    "largest": 329,
+    "pair_precision_vs_reference": 0.6094,
+    "pair_recall_vs_reference": 0.2248,
+    "label_pure_cluster_share": 0.9875,
+    "ham_in_spam_majority_clusters": 0,
+    "ham_total": 4150
+   }
+  },
+  "privacy": {
+   "distinct_structural_vocab": 7020,
+   "messages_with_unique_fingerprint_set": 0.7756,
+   "cross_epoch_shared_keyed_tokens": 0,
+   "cross_epoch_mean_signature_similarity": 0.0,
+   "reference_campaigns_spanning_gt1_week": 0.6031,
+   "store_clusters": 1874,
+   "releasable_aggregates_k3": 130
+  }
+ },
+ "v2_presence_only_tokens": {
+  "corpus": {
+   "messages": 6046,
+   "spam": 1896,
+   "ham": 4150
+  },
+  "reference": {
+   "spam_campaigns_size_ge2": 320,
+   "spam_in_campaigns": 1024,
+   "pairs": 1895
+  },
+  "thresholds": {
+   "0.6": {
+    "clusters_size_ge3": 37,
+    "largest": 5149,
+    "pair_precision_vs_reference": 0.0021,
+    "pair_recall_vs_reference": 0.942,
+    "label_pure_cluster_share": 0.9459,
+    "ham_in_spam_majority_clusters": 0,
+    "ham_total": 4150
+   },
+   "0.7": {
+    "clusters_size_ge3": 77,
+    "largest": 4077,
+    "pair_precision_vs_reference": 0.005,
+    "pair_recall_vs_reference": 0.724,
+    "label_pure_cluster_share": 0.9221,
+    "ham_in_spam_majority_clusters": 3,
+    "ham_total": 4150
+   },
+   "0.8": {
+    "clusters_size_ge3": 151,
+    "largest": 2132,
+    "pair_precision_vs_reference": 0.1625,
+    "pair_recall_vs_reference": 0.3599,
+    "label_pure_cluster_share": 0.9603,
+    "ham_in_spam_majority_clusters": 6,
+    "ham_total": 4150
+   },
+   "0.9": {
+    "clusters_size_ge3": 229,
+    "largest": 191,
+    "pair_precision_vs_reference": 0.8306,
+    "pair_recall_vs_reference": 0.1604,
+    "label_pure_cluster_share": 0.9869,
+    "ham_in_spam_majority_clusters": 0,
+    "ham_total": 4150
+   }
+  },
+  "privacy": {
+   "distinct_structural_vocab": 7008,
+   "messages_with_unique_fingerprint_set": 0.7752,
+   "cross_epoch_shared_keyed_tokens": 0,
+   "cross_epoch_mean_signature_similarity": 0.0,
+   "reference_campaigns_spanning_gt1_week": 0.6031,
+   "store_clusters": 2409,
+   "releasable_aggregates_k3": 151
+  }
+ }
+}
