@@ -126,3 +126,20 @@ REVIEW and INCOMPLETE behave the same way.
 - **Held items wait while the security pipeline is down.** With the gate ON, mail-derived items wait until a verdict exists. That is the intended fail-closed cost. They are visible as holds, but there is no dedicated "held, no verdict yet" count in the UI.
 - **Release latency is one runner interval** after the verdict commits.
 - **Held payloads have the same sensitivity as the target tables:** templated titles that include the sender string, and no body text.
+
+## Deploy incident (fixed forward)
+
+- **What failed:** the first deploy of `eeb544a` failed in the migrate Job with `value too long for type character varying(32)`. The revision id `019_mail_security_held_promotions` is 33 characters, while Postgres `alembic_version.version_num` is VARCHAR(32).
+- **Why tests missed it:** SQLite does not enforce VARCHAR lengths, and the local up/down test used a 40-wide column.
+- **Database state:** Postgres DDL is transactional, so the database stayed at `018_mail_security_feedback` with no partial table.
+- **Impact:** `api` and `web` had already rolled to `eeb544a`. For about 10 minutes, `GET /api/mail-security/review-queue` failed because the 7.3 loader queries the missing table. With the gate OFF, nothing else touched it.
+- **Fix (`de7ab2d`):**
+  - Renamed the revision to `019_mail_held_promotions` (never applied anywhere, so the rename is safe).
+  - Added `test_every_revision_id_fits_alembic_version_column`, which guards every revision id at 32 characters or fewer.
+- **Verified after the redeploy (counts only, read in the pod):**
+  - images `de7ab2d`;
+  - `alembic_version` = `019_mail_held_promotions`;
+  - `mail_security_held_promotions` has 0 rows;
+  - the review-queue loader returns 4 items;
+  - `gate_mode()` is OFF and `promotion_gate_bound` is never logged;
+  - no failed migrate pods remain.
