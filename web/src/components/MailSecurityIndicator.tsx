@@ -1,64 +1,63 @@
 /**
- * MailSecurityIndicator — NerveShield Phase 1, Task 1.11.
+ * MailSecurityIndicator — the NerveShield safety card (Task 1.11, extended
+ * by Task 7.1).
  *
- * A small, read-only security indicator for a single email thread, embedded in
- * the existing Email view. It consumes the Task 1.10 read-only API
- * (`src/api/mailSecurity.ts`) and surfaces, for one assessment:
+ * A read-only security card for one message. It loads one redacted
+ * assessment, either by assessment id or (Task 7.1) by the committed mail
+ * communication id, and shows (R-020.1):
  *
- *   - the SHADOW-mode context (the system is observing, not enforcing),
- *   - the safety disposition (SAFE_TO_PROCESS / LOW_PRIORITY / REVIEW /
- *     RESTRICTED / INCOMPLETE, plus the UI-only UNKNOWN / "not assessed"),
- *   - a compact "why" (reason codes) and the checks that were skipped / not run
- *     (R-020.1 unavailable checks).
+ *   - the disposition, the SHADOW / observation-only context, and an
+ *     evidence-fidelity badge (how much of the original message the verdict
+ *     was computed from),
+ *   - the "why" (reason codes),
+ *   - structured provenance: email-authentication results, each with where
+ *     the result came from (independent check, provider-reported, untrusted
+ *     header, unknown),
+ *   - structured explanation: each finding's rule, severity, status and
+ *     explanation code,
+ *   - confidence semantics per axis (calibrated / uncalibrated estimate /
+ *     NOT_EVALUATED), never a raw score shown as a probability,
+ *   - NOT_EVALUATED badges for every check that did not run or is missing.
  *
- * Security invariants this component is responsible for (stricter wins):
+ * Security invariants (stricter wins):
  *
- * - SAFE RENDERING (R-020.3, T-05, T-11). Renders NO external/remote resource:
- *   no remote <img>, no background-image URL, no <iframe>, no <script>, no
- *   web-font fetch, no link prefetch. There is NO `dangerouslySetInnerHTML`
- *   anywhere here. Every string sourced from the assessment (disposition,
- *   reason/explanation codes, provenance labels, injection-indicator text) is
- *   rendered as INERT, React-escaped text — never interpreted as HTML and
- *   never executed (T-11). The only network request this component can cause
- *   is the single authorized same-origin XHR to the Task 1.10 API.
+ * - SAFE RENDERING (R-020.3, T-05, T-11). No remote resource of any kind (no
+ *   <img>, background URL, <iframe>, <script>, web font or prefetch) and NO
+ *   `dangerouslySetInnerHTML`. Every string from the assessment is rendered
+ *   as inert, React-escaped text. The only request this component makes is
+ *   one same-origin GET to the mail-security read API.
  *
- * - READING != AUTHORIZING (R-020.4, T-26). This is display-only. It renders
- *   no action button: nothing here can move / mark / delete mail, approve an
- *   action, or trust a sender. There is deliberately no "trust this sender"
- *   control (design §12).
+ * - READING != AUTHORIZING (R-020.4, T-26). Display only: no action control,
+ *   no "trust this sender". The card states that reviewing the message,
+ *   independently verifying the sender, and approving an action are three
+ *   separate things, and that none of them happens here.
  *
- * - SHADOW / fail-closed (design §12/§8.2). SHADOW mode is stated explicitly.
- *   When the API returns nothing — deny-by-default (no `account_scopes`
- *   claim yet), feature produced no data, or mock mode — the component renders
- *   a neutral "not assessed" badge and never throws, so the host view looks
- *   exactly as it does today.
+ * - FAIL CLOSED. No assessment, a safe 401/403/404, mock mode or an error
+ *   all render the neutral "Not assessed" state; the host view never breaks.
  *
- * - ACCESSIBILITY. The disposition is conveyed by text + an inert glyph +ARIA
- *   (an accessible name on a `role="status"` region), never by color alone.
+ * - ACCESSIBILITY. State is carried by text + an inert glyph + an accessible
+ *   name on a `role="status"` region, never by color alone. Details sit in a
+ *   native <details> disclosure (keyboard operable by default).
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   mailSecurityApi,
   type AssessmentDetail,
+  type AssessmentFinding,
+  type AuthenticationResult,
+  type AxisView,
   type Disposition,
 } from '../api/mailSecurity'
 
-/** Props: the assessment id to display, or null/undefined when none is known. */
+/** Exactly one lookup key is used; with neither, nothing is fetched. */
 export interface MailSecurityIndicatorProps {
-  /**
-   * The id of the assessment to show. When null/undefined the component
-   * renders the neutral "not assessed" state (no network request is made).
-   */
+  /** Fetch by assessment id (Task 1.11). */
   assessmentId?: string | null
+  /** Fetch the newest assessment for a mail communication (Task 7.1). */
+  communicationId?: string | null
 }
 
-/**
- * Per-disposition presentation: an accessible label, a short calm description,
- * and an inert text glyph. Color is paired with text + glyph (never color
- * alone). The classes are static Tailwind utility strings — no URL, no remote
- * font, no background-image — so rendering causes zero network activity.
- */
 interface DispositionStyle {
   label: string
   description: string
@@ -104,24 +103,59 @@ const DISPOSITION_STYLES: Record<Disposition, DispositionStyle> = {
   },
   UNKNOWN: {
     label: 'Not assessed',
-    description: 'No security assessment on record for this thread.',
+    description: 'No security assessment on record for this message.',
     glyph: '–',
     className:
       'border-gray-300 dark:border-gray-600 bg-gray-50 dark:bg-gray-800/60 text-muted',
   },
 }
 
-/** Normalize a backend disposition string to a known key (UNKNOWN fallback). */
+/** Evidence fidelity → short plain-language label (unknown values shown raw). */
+const FIDELITY_LABELS: Record<string, string> = {
+  ORIGINAL_RFC822: 'Full original message',
+  PROVIDER_FULL: 'Full provider copy',
+  SELECTED_HEADERS_AND_BODY: 'Some headers + body',
+  BODY_ONLY: 'Body text only',
+  METADATA_ONLY: 'Metadata only',
+  UNKNOWN: 'Source fidelity unknown',
+}
+
+/** Where an authentication result came from (R-020.1 provenance). */
+const PROVENANCE_LABELS: Record<string, string> = {
+  INDEPENDENT: 'checked independently',
+  PROVIDER_REPORTED: 'reported by mail provider',
+  UNTRUSTED_HEADER: 'from an untrusted header',
+  UNKNOWN: 'source unknown',
+}
+
 function toDisposition(value: string | null | undefined): Disposition {
   if (value && value in DISPOSITION_STYLES) return value as Disposition
   return 'UNKNOWN'
 }
 
-/**
- * Render a code/label list as inert chips. Each entry is plain React text, so
- * it is escaped by React and never interpreted as HTML (T-11): even a
- * prompt-injection-indicator string is shown literally, never executed.
- */
+/** Small inert badge. Text only; never markup. */
+function Badge({ children, testId }: { children: string; testId?: string }) {
+  return (
+    <span
+      data-testid={testId}
+      className="rounded-full border border-current/40 px-2 py-0.5 text-xs font-medium"
+    >
+      {children}
+    </span>
+  )
+}
+
+function NotEvaluated() {
+  return (
+    <span
+      data-testid="mail-security-not-evaluated"
+      className="rounded border border-dashed border-current/50 px-1 text-[10px] font-semibold uppercase"
+    >
+      NOT_EVALUATED
+    </span>
+  )
+}
+
 function CodeChips({ title, codes }: { title: string; codes: string[] }) {
   if (codes.length === 0) return null
   return (
@@ -143,29 +177,126 @@ function CodeChips({ title, codes }: { title: string; codes: string[] }) {
   )
 }
 
+function SectionTitle({ children }: { children: string }) {
+  return (
+    <h4 className="mt-2 text-xs font-semibold uppercase tracking-wide opacity-80">
+      {children}
+    </h4>
+  )
+}
+
+/** Authentication results with provenance; missing/UNKNOWN → NOT_EVALUATED. */
+function AuthenticationTable({
+  authentication,
+}: {
+  authentication: Record<string, AuthenticationResult>
+}) {
+  const names = Object.keys(authentication)
+  if (names.length === 0) return null
+  return (
+    <>
+      <SectionTitle>Sender authentication</SectionTitle>
+      <ul className="mt-0.5 space-y-0.5 text-xs" data-testid="mail-security-auth">
+        {names.map((name) => {
+          const entry = authentication[name]
+          const result = entry?.result ?? null
+          const provenance = entry?.provenance ?? null
+          const evaluated = result !== null && result !== 'UNKNOWN'
+          return (
+            <li key={name} className="flex flex-wrap items-center gap-1.5">
+              <span className="w-12 font-mono uppercase">{name}</span>
+              {evaluated ? (
+                <span className="font-mono">{result}</span>
+              ) : (
+                <NotEvaluated />
+              )}
+              {provenance && (
+                <span className="opacity-80">
+                  ({PROVENANCE_LABELS[provenance] ?? provenance})
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ul>
+    </>
+  )
+}
+
+/** One axis: calibrated value, uncalibrated estimate, or NOT_EVALUATED. */
+function AxisLine({ name, axis }: { name: string; axis: AxisView }) {
+  const label = name.replace(/_/g, ' ')
+  let state: ReactNode
+  if (axis.semantics === null || axis.semantics === 'NOT_EVALUATED') {
+    state = <NotEvaluated />
+  } else if (axis.calibrated && typeof axis.value === 'number') {
+    state = <span>{`${Math.round(axis.value * 100)}% (calibrated)`}</span>
+  } else {
+    state = <span>uncalibrated estimate (not a probability)</span>
+  }
+  return (
+    <li className="flex flex-wrap items-center gap-1.5">
+      <span className="capitalize">{label}</span>
+      {state}
+    </li>
+  )
+}
+
+function Findings({ findings }: { findings: AssessmentFinding[] }) {
+  if (findings.length === 0) return null
+  return (
+    <>
+      <SectionTitle>Findings</SectionTitle>
+      <ul className="mt-0.5 space-y-1 text-xs" data-testid="mail-security-findings">
+        {findings.map((f) => (
+          <li key={f.finding_key} className="rounded bg-black/5 dark:bg-white/10 px-1.5 py-1">
+            <span className="font-mono">{f.rule_id}</span>
+            <span className="ml-1.5 opacity-80">
+              {`severity ${f.severity} · ${f.status}`}
+            </span>
+            {f.status === 'NOT_EVALUATED' && (
+              <span className="ml-1.5">
+                <NotEvaluated />
+              </span>
+            )}
+            {f.explanation_code && (
+              <span className="ml-1.5 font-mono opacity-80">{f.explanation_code}</span>
+            )}
+            {f.confidence_type === 'ESTIMATE' && (
+              <span className="ml-1.5 opacity-80">(uncalibrated estimate)</span>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
+  )
+}
+
 export function MailSecurityIndicator({
   assessmentId,
+  communicationId,
 }: MailSecurityIndicatorProps) {
   const [detail, setDetail] = useState<AssessmentDetail | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
 
   useEffect(() => {
     let cancelled = false
-    if (!assessmentId) {
+    const request = assessmentId
+      ? mailSecurityApi.getAssessment(assessmentId)
+      : communicationId
+        ? mailSecurityApi.getForCommunication(communicationId)
+        : null
+    if (request === null) {
       setDetail(null)
       setLoading(false)
       return
     }
     setLoading(true)
-    // getAssessment fails closed: it resolves to null (never throws) on a safe
-    // 401/403/404 or in mock mode, so this never breaks the host view.
-    void mailSecurityApi
-      .getAssessment(assessmentId)
+    void request
       .then((result) => {
         if (!cancelled) setDetail(result)
       })
       .catch(() => {
-        // Defense in depth: any unexpected error degrades to not-assessed.
         if (!cancelled) setDetail(null)
       })
       .finally(() => {
@@ -174,18 +305,19 @@ export function MailSecurityIndicator({
     return () => {
       cancelled = true
     }
-  }, [assessmentId])
+  }, [assessmentId, communicationId])
 
   const disposition = toDisposition(detail?.disposition)
   const style = DISPOSITION_STYLES[disposition]
   const shadow = detail?.mode === 'SHADOW' || detail === null
 
-  // Reason codes (the "why") and the skipped / not-run checks (R-020.1). Both
-  // are opaque code strings from the redacted API, rendered as inert text.
   const reasonCodes = detail?.reason_codes ?? []
   const checksNotRun = detail?.completeness?.checks_not_run ?? []
   const missingChecks = detail?.completeness?.missing ?? []
   const skipped = Array.from(new Set([...checksNotRun, ...missingChecks]))
+  const fidelity = detail?.evidence_fidelity ?? null
+  const axes = detail?.axes ?? {}
+  const axisNames = Object.keys(axes)
 
   const accessibleName = loading
     ? 'Security assessment loading'
@@ -202,22 +334,21 @@ export function MailSecurityIndicator({
       data-disposition={disposition}
       className={`rounded-lg border px-3 py-2 text-sm ${style.className}`}
     >
-      <div className="flex items-center gap-2">
-        {/* Inert glyph — decorative; the accessible name carries the state. */}
+      <div className="flex flex-wrap items-center gap-2">
         <span aria-hidden="true" className="font-semibold">
           {style.glyph}
         </span>
         <span className="font-semibold" data-testid="mail-security-disposition">
           {loading ? 'Checking…' : style.label}
         </span>
-        {shadow && !loading && (
-          <span
-            className="ml-auto rounded-full border border-current/40 px-2 py-0.5 text-xs font-medium"
-            title="Observation only — the system does not act on this"
-          >
-            SHADOW
-          </span>
-        )}
+        <span className="ml-auto flex flex-wrap gap-1">
+          {detail && fidelity && (
+            <Badge testId="mail-security-fidelity">
+              {FIDELITY_LABELS[fidelity] ?? fidelity}
+            </Badge>
+          )}
+          {shadow && !loading && <Badge>SHADOW</Badge>}
+        </span>
       </div>
 
       {!loading && (
@@ -233,7 +364,48 @@ export function MailSecurityIndicator({
           <CodeChips title="Why" codes={reasonCodes} />
 
           {skipped.length > 0 && (
-            <CodeChips title="Checks not run" codes={skipped} />
+            <div className="mt-1.5" data-testid="mail-security-not-run">
+              <p className="text-xs font-semibold uppercase tracking-wide opacity-80">
+                Checks not run
+              </p>
+              <ul className="mt-0.5 flex flex-wrap gap-1">
+                {skipped.map((code) => (
+                  <li
+                    key={code}
+                    className="flex items-center gap-1 rounded bg-black/5 dark:bg-white/10 px-1.5 py-0.5 text-xs font-mono"
+                  >
+                    {code}
+                    <NotEvaluated />
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {detail && (
+            <details className="mt-2" data-testid="mail-security-details">
+              <summary className="cursor-pointer text-xs font-semibold underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-current rounded">
+                Provenance and explanation
+              </summary>
+              <AuthenticationTable authentication={detail.authentication ?? {}} />
+              {axisNames.length > 0 && (
+                <>
+                  <SectionTitle>Confidence</SectionTitle>
+                  <ul className="mt-0.5 space-y-0.5 text-xs" data-testid="mail-security-axes">
+                    {axisNames.map((name) => (
+                      <AxisLine key={name} name={name} axis={axes[name]} />
+                    ))}
+                  </ul>
+                </>
+              )}
+              <Findings findings={detail.findings ?? []} />
+              <SectionTitle>What this card does not do</SectionTitle>
+              <ul className="mt-0.5 list-disc pl-4 text-xs opacity-90">
+                <li>Reviewing the message is only reading it.</li>
+                <li>Verifying the sender means contacting them through a channel you already trust.</li>
+                <li>Approving an action is a separate, explicit step. Nothing here approves anything.</li>
+              </ul>
+            </details>
           )}
         </>
       )}

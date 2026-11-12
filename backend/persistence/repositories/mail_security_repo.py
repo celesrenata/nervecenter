@@ -602,6 +602,47 @@ class MailSecurityRepository:
             result = await session.execute(stmt)
             return list(result.scalars().all())
 
+    async def source_key_for_content_ref(
+        self, account_scope: str, content_ref: str
+    ) -> str | None:
+        """The job ``source_key`` scheduled for one opaque ``content_ref``.
+
+        Scope-enforced (R-023.4): another account's ref resolves to ``None``.
+        Both the live seam and the backfill store the same ref on the job.
+        """
+        async with self._sessions() as session:
+            stmt = (
+                select(MailSecurityJobRow.source_key)
+                .where(
+                    MailSecurityJobRow.account_scope == account_scope,
+                    MailSecurityJobRow.meta["content_ref"].as_string() == content_ref,
+                )
+                .order_by(MailSecurityJobRow.created_at.desc())
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
+    async def latest_assessment_for_source(
+        self, account_scope: str, source_id: str
+    ) -> MailSecurityAssessmentRow | None:
+        """Newest assessment (highest revision, then newest) for one source."""
+        async with self._sessions() as session:
+            stmt = (
+                select(MailSecurityAssessmentRow)
+                .where(
+                    MailSecurityAssessmentRow.account_scope == account_scope,
+                    MailSecurityAssessmentRow.source_id == source_id,
+                )
+                .order_by(
+                    MailSecurityAssessmentRow.revision.desc(),
+                    MailSecurityAssessmentRow.created_at.desc(),
+                )
+                .limit(1)
+            )
+            result = await session.execute(stmt)
+            return result.scalar_one_or_none()
+
     async def get_findings(
         self, account_scope: str, assessment_id: str
     ) -> list[MailSecurityFindingRow]:

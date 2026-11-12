@@ -51,7 +51,11 @@ Hard contract (requirements/design/threat-model — stricter behavior wins):
   The cursor is an opaque base64 offset token following the repo's
   ``_meta(total/page/per_page)`` + envelope convention.
 
-A third read-only route, ``GET /api/mail-security/health`` (Task 2.6), returns
+``GET /api/mail-security/assessments/for-communication/{communication_id}``
+(Task 7.1) returns the same redacted detail for the newest assessment of one
+committed mail communication, under the same scope rules and safe ``404``.
+
+A further read-only route, ``GET /api/mail-security/health`` (Task 2.6), returns
 the per-stage health summary computed by :mod:`backend.mail_security.
 observability` for the caller's authorized account scopes ONLY. A caller with no
 scopes gets the same safe ``404`` as the detail route and never sees a global
@@ -68,6 +72,7 @@ from __future__ import annotations
 import base64
 import binascii
 import os
+import re
 from datetime import UTC, datetime
 from typing import Annotated, Any
 from uuid import uuid4
@@ -495,6 +500,58 @@ async def list_assessments(
         ),
     )
     return {**envelope.model_dump(mode="json"), "next_cursor": next_cursor}
+
+
+#: Communication ids the mail worker mints: ``comm-mail-<24 lowercase hex>``.
+_COMMUNICATION_ID_RE = re.compile(r"comm-mail-(?P<digest>[0-9a-f]{24})")
+
+
+@router.get("/assessments/for-communication/{communication_id}")
+async def get_assessment_for_communication(
+    request: Request,
+    communication_id: str,
+    claims: Annotated[dict[str, Any], Depends(current_access)],
+) -> dict[str, Any]:
+    """The newest redacted assessment for one committed mail communication.
+
+    Resolution (Task 7.1): communication -> its opaque ``content_ref`` ->
+    owning ``conn:<id>`` scope (must be one of the caller's scopes) -> the job
+    scheduled for that exact ref -> its ``source_key`` -> the newest assessment
+    for that source. The ref's digest must equal the communication id's digest
+    (both are ``sha256(conn:mail_id)[:24]``), binding the row to its id. Every
+    miss, malformed id or other-account row is the same safe ``404``.
+    """
+    from backend.mail_security.backfill import parse_content_ref
+
+    match = _COMMUNICATION_ID_RE.fullmatch(communication_id)
+    repo = _repo(request)
+    registry = getattr(request.app.state, "repository_registry", None)
+    if match is None or repo is None or registry is None:
+        raise _safe_error(404, "not_found")
+    scopes = set(await _caller_scopes(request, claims))
+    if not scopes:
+        raise _safe_error(404, "not_found")
+    try:
+        rows = await registry.communications.get_communications_by_ids(
+            [communication_id]
+        )
+    except Exception:  # noqa: BLE001 - absent plane / lookup error is a 404
+        raise _safe_error(404, "not_found") from None
+    ref = getattr(rows[0], "content_ref", None) if rows else None
+    parsed = parse_content_ref(ref)
+    if parsed is None or parsed.object_digest != match["digest"]:
+        raise _safe_error(404, "not_found")
+    scope = f"conn:{parsed.connection_id}"
+    if scope not in scopes:
+        raise _safe_error(404, "not_found")
+    source_key = await repo.source_key_for_content_ref(scope, str(ref))
+    if source_key is None:
+        raise _safe_error(404, "not_found")
+    row = await repo.latest_assessment_for_source(scope, source_key)
+    if row is None:
+        raise _safe_error(404, "not_found")
+    findings = await repo.get_findings(scope, row.assessment_id)
+    return _redact_detail(row, findings)
 
 
 @router.get("/assessments/{assessment_id}")

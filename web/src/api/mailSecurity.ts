@@ -11,6 +11,9 @@
  *   GET /api/mail-security/assessments/{assessment_id}
  *     → AssessmentDetail (summary + authentication + axes + completeness +
  *                         findings; R-020.1 "checks not run")
+ *   GET /api/mail-security/assessments/for-communication/{communication_id}
+ *     → AssessmentDetail for the newest assessment of one mail communication
+ *       (Task 7.1; same scope rules and safe 404)
  *
  * Hard contract (requirements/design/threat-model — stricter behavior wins):
  *
@@ -146,6 +149,12 @@ export interface MailSecurityClient {
    * view renders a neutral "not assessed" state rather than an error.
    */
   getAssessment(assessmentId: string): Promise<AssessmentDetail | null>
+  /**
+   * Task 7.1: the newest redacted assessment for one committed mail
+   * communication. `null` on a safe 401/403/404 (absent, not yours, not yet
+   * assessed) — never a fabricated verdict.
+   */
+  getForCommunication(communicationId: string): Promise<AssessmentDetail | null>
 }
 
 // ─── Real API implementation ─────────────────────────────────────────────────
@@ -191,6 +200,17 @@ export const realMailSecurityApi: MailSecurityClient = {
     if (!res.ok) throw await apiErrorFromResponse(res)
     return (await res.json()) as AssessmentDetail
   },
+
+  getForCommunication: async (communicationId: string) => {
+    const res = await apiFetch(
+      `/api/mail-security/assessments/for-communication/${encodeURIComponent(communicationId)}`,
+    )
+    if (res.status === 401 || res.status === 403 || res.status === 404) {
+      return null
+    }
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as AssessmentDetail
+  },
 }
 
 // ─── Mock mode: honest empty (no backend → nothing assessed) ──────────────────
@@ -201,6 +221,7 @@ export const realMailSecurityApi: MailSecurityClient = {
 export const mockMailSecurityApi: MailSecurityClient = {
   listAssessments: async () => emptyList(),
   getAssessment: async () => null,
+  getForCommunication: async () => null,
 }
 
 // ─── Exported client (mock-aware, mirrors communicationsApi / todayApi) ───────

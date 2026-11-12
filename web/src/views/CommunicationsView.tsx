@@ -1,5 +1,6 @@
-import { useCallback, useState, type FormEvent } from 'react'
+import { useCallback, useId, useState, type FormEvent } from 'react'
 import { Link } from 'react-router-dom'
+import { MailSecurityIndicator } from '../components/MailSecurityIndicator'
 import {
   communicationsApi,
   type CommunicationRow,
@@ -61,6 +62,33 @@ const CHANNELS: { value: string; label: string }[] = [
   { value: 'voicemail', label: 'Voicemail' },
 ]
 
+/**
+ * NerveShield Task 7.1: per-row safety card for email rows. Collapsed by
+ * default; the card (and its single same-origin GET) mounts only when the
+ * user opens it, so a results list never fans out N security requests.
+ */
+function SecurityDisclosure({ communicationId }: { communicationId: string }) {
+  const [open, setOpen] = useState(false)
+  const panelId = useId()
+  return (
+    <div className="mt-2">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={panelId}
+        data-testid={`comm-security-toggle-${communicationId}`}
+        onClick={() => setOpen((v) => !v)}
+        className="rounded text-[11px] font-medium text-blue-600 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 dark:text-blue-400"
+      >
+        {open ? 'Hide security card' : 'Show security card'}
+      </button>
+      <div id={panelId} hidden={!open} className="mt-1.5">
+        {open && <MailSecurityIndicator communicationId={communicationId} />}
+      </div>
+    </div>
+  )
+}
+
 function ResultRow({ row }: { row: CommunicationRow }) {
   const subject = subjectOf(row)
   const who = row.sender || (row.recipients[0] ?? 'Unknown')
@@ -90,6 +118,9 @@ function ResultRow({ row }: { row: CommunicationRow }) {
           <span className="italic">unlinked</span>
         )}
       </div>
+      {row.channel === 'email' && (
+        <SecurityDisclosure communicationId={row.communication_id} />
+      )}
     </li>
   )
 }

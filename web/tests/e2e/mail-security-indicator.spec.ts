@@ -10,8 +10,10 @@ import { seedBreakGlassSession } from './helpers/auth-seed'
  * real assessment data (it is deny-by-default today).
  *
  * What it covers:
- *   - The indicator renders its disposition text + the SHADOW context badge.
- *   - "Why" reason codes and "Checks not run" (R-020.1) appear as inert text.
+ *   - Task 7.1 regression: relay threads have no link to an assessment, so
+ *     the card stays "Not assessed" and the view makes no mail-security
+ *     request, even when an unrelated assessment exists. The populated card
+ *     is covered by mail-safety-card.spec.ts (Communications view).
  *   - R-020.3 / T-05: rendering the view + indicator issues NO request to a
  *     remote / third-party origin — only same-origin `/api/...` XHRs (the one
  *     authorized Task 1.10 call plus the view's own email calls).
@@ -156,13 +158,19 @@ test.beforeEach(() => {
 })
 
 test.describe('NerveShield security indicator (Task 1.11)', () => {
-  test('renders disposition + SHADOW context + why/checks-not-run, no remote requests', async ({
+  test('Task 7.1 regression: a thread never shows an arbitrary assessment', async ({
     page,
   }) => {
     const cap: ConsoleCapture = { errors: [], pageErrors: [], failedRequests: [] }
     const detach = attachCaptures(page, cap)
+    const securityCalls: string[] = []
+    page.on('request', (req) => {
+      if (req.url().includes('/api/mail-security/')) securityCalls.push(req.url())
+    })
 
     await routeEmail(page)
+    // The old defect: the view took the first row of an unrelated list and
+    // showed it on every thread. Serve such a row; it must NOT be used.
     await page.route('**/api/mail-security/assessments?**', (route: Route) =>
       route.fulfill({
         status: 200,
@@ -185,39 +193,23 @@ test.describe('NerveShield security indicator (Task 1.11)', () => {
     try {
       await visitAuthenticated(page, '/email')
       await expect(page.locator('main h1')).toHaveText('Email')
-
-      // Open the seeded thread → the indicator mounts in the conversation pane.
       await page.getByText('Claims Dept').click()
 
       const indicator = page.getByTestId('mail-security-indicator')
       await expect(indicator).toBeVisible()
-
-      // Disposition surfaced as text (not color-only).
-      await expect(
-        page.getByTestId('mail-security-disposition'),
-      ).toHaveText('Review')
-      await expect(indicator).toHaveAttribute('data-disposition', 'REVIEW')
-
-      // SHADOW observation context is explicit.
+      await expect(page.getByTestId('mail-security-disposition')).toHaveText(
+        'Not assessed',
+      )
+      await expect(indicator).toHaveAttribute('data-disposition', 'UNKNOWN')
       await expect(indicator).toContainText('SHADOW')
-      await expect(indicator).toContainText(/observation only/i)
-
-      // Accessible name conveys the state (role=status region).
       await expect(indicator).toHaveAttribute(
         'aria-label',
-        /Security assessment: Review/i,
+        /Security assessment: Not assessed/i,
       )
-
-      // "Why" reason codes + "Checks not run" render as inert text. The
-      // prompt-injection-indicator code is shown literally (T-11), never
-      // interpreted as markup.
-      await expect(indicator).toContainText('SENDER_UNVERIFIED')
-      await expect(indicator).toContainText('PROMPT_INJECTION_SUSPECTED')
-      await expect(indicator).toContainText('SEMANTIC_OBSERVATION')
+      await expect(indicator).not.toContainText('SENDER_UNVERIFIED')
 
       await page.waitForTimeout(500)
-
-      // R-020.3 / T-05: zero remote/third-party requests.
+      expect(securityCalls, 'mail-security requests from Email view').toEqual([])
       expect(REMOTE_ORIGINS, 'remote/third-party requests').toEqual([])
       expect(cap.pageErrors, 'uncaught exceptions').toEqual([])
       expect(cap.failedRequests, 'failed network requests').toEqual([])
