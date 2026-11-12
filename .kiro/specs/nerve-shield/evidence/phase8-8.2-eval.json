@@ -1,0 +1,100 @@
+{
+ "seed": 7,
+ "per_kind": 400,
+ "categories": {
+  "L_REPLY": {
+   "distribution": {
+    "CONTINUOUS": 400
+   },
+   "flagged_rate": 0.0,
+   "broken_rate": 0.0
+  },
+  "L_NEW_COLLEAGUE": {
+   "distribution": {
+    "SUSPECT": 400
+   },
+   "flagged_rate": 1.0,
+   "broken_rate": 0.0
+  },
+  "L_LIST_FORWARD": {
+   "distribution": {
+    "CONTINUOUS": 400
+   },
+   "flagged_rate": 0.0,
+   "broken_rate": 0.0
+  },
+  "L_NEVER_AUTH": {
+   "distribution": {
+    "CONTINUOUS": 400
+   },
+   "flagged_rate": 0.0,
+   "broken_rate": 0.0
+  },
+  "L_TICKET_REPLY_TO": {
+   "distribution": {
+    "CONTINUOUS": 400
+   },
+   "flagged_rate": 0.0,
+   "broken_rate": 0.0
+  },
+  "L_COLD_LEDGER": {
+   "distribution": {
+    "UNKNOWN": 400
+   },
+   "flagged_rate": 0.0,
+   "broken_rate": 0.0
+  },
+  "L_VENDOR_PAYMENT_CHANGE": {
+   "distribution": {
+    "BROKEN": 400
+   },
+   "flagged_rate": 1.0,
+   "broken_rate": 1.0
+  },
+  "A_UNRELATED_INJECT": {
+   "distribution": {
+    "SUSPECT": 400
+   },
+   "flagged_rate": 1.0,
+   "broken_rate": 0.0
+  },
+  "A_LOOKALIKE": {
+   "distribution": {
+    "BROKEN": 400
+   },
+   "flagged_rate": 1.0,
+   "broken_rate": 1.0
+  },
+  "A_COMPROMISED_PAYMENT": {
+   "distribution": {
+    "BROKEN": 400
+   },
+   "flagged_rate": 1.0,
+   "broken_rate": 1.0
+  },
+  "A_SPOOFED_FROM_REPLY_TO": {
+   "distribution": {
+    "BROKEN": 358,
+    "SUSPECT": 42
+   },
+   "flagged_rate": 1.0,
+   "broken_rate": 0.895
+  },
+  "A_FABRICATED_REFS": {
+   "distribution": {
+    "UNKNOWN": 400
+   },
+   "flagged_rate": 0.0,
+   "broken_rate": 0.0
+  },
+  "A_RE_SUBJECT_ONLY": {
+   "distribution": {
+    "UNKNOWN": 400
+   },
+   "flagged_rate": 0.0,
+   "broken_rate": 0.0
+  }
+ },
+ "legit_flagged_rate_excl_vendor_change": 0.1667,
+ "legit_broken_rate_excl_vendor_change": 0.0
+}
