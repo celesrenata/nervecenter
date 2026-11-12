@@ -92,3 +92,23 @@ The new tests cover:
 **How it was written.** A one-off busybox pod mounted the Secret read-only (mode 0400) and the backup export, wrote the file under `umask 077`, and checked that the file's key digest matches the Secret's. The key never left the cluster or passed through the operator machine. The pod was deleted afterwards.
 
 **Tradeoff stated to the owner.** The backup sits on the same NAS as the ciphertext. It protects against losing the cluster Secret, but not against a compromise of the NAS itself.
+
+## Old plaintext copies deleted (owner: "delete old copies", 2026-11-12)
+
+**Verify-then-delete.** This ran inside the api pod, as follows:
+1. Take every `communications` mail ref.
+2. Read the MinIO object.
+3. Require that the encrypted copy's decrypted bytes and digest match it exactly.
+4. Only then delete the MinIO object, and confirm it's gone.
+
+**Result:** `{"keys": 632, "deleted": 631, "already_absent": 1}`, with no object kept unverified and no failed delete.
+
+**The absent key is the first live ingest write after the cutover.** That email exists only in the encrypted store. Its plaintext digest matches and its `message_id` metadata decrypts, which confirms the live write path.
+
+**Bucket check:** `mc ls --recursive` on NerveCenter's bucket afterwards shows **0** objects.
+
+**Removed:** `NERVECENTER_OBJECT_STORE_PREVIOUS_URL`, from the Secret. There is no MinIO rollback target any more; the cutover is one-way.
+
+**Kept:** the bucket and its credentials, which are unused, so the bootstrap Job's `file://` skip path stays simple.
+
+The only remaining copy of stored mail is the AES-256-GCM ciphertext on NFS. The key is in the `nervecenter-object-key` Secret, with a backup on `/volume1/Backups/nervecenter`.
