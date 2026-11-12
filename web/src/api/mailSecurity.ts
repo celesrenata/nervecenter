@@ -140,6 +140,31 @@ export interface FeedbackEntry {
   applied: false
 }
 
+/** Task 7.3: one prioritized review-queue item (codes and ids only). */
+export interface ReviewQueueItem {
+  assessment_id: string
+  account_scope: string
+  communication_id: string | null
+  disposition: string
+  created_at: string
+  tier: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
+  score: number
+  delivery: 'INTERRUPT' | 'QUEUE'
+  reasons: string[]
+  deliver_after: string | null
+  verification_advice: string[]
+  important_sender: boolean
+  commitments: { kind: string; ref_id: string; status: 'REVIEW_CANDIDATE' }[]
+}
+
+export interface ReviewQueue {
+  data: ReviewQueueItem[]
+  digest: { count: number; by_reason: Record<string, number> }
+  excluded_reviewed: number
+  quiet_until: string | null
+  policy_version: string
+}
+
 /** The list envelope: redacted rows + opaque continuation cursor. */
 export interface AssessmentListResponse {
   data: AssessmentSummary[]
@@ -175,6 +200,8 @@ export interface MailSecurityClient {
    * assessed) — never a fabricated verdict.
    */
   getForCommunication(communicationId: string): Promise<AssessmentDetail | null>
+  /** Task 7.3: the review queue; `null` on a safe 401/403/404. */
+  getReviewQueue(): Promise<ReviewQueue | null>
   /** Task 7.2: feedback on one assessment; `[]` on a safe 401/403/404. */
   listFeedback(assessmentId: string): Promise<FeedbackEntry[]>
   /**
@@ -243,6 +270,13 @@ export const realMailSecurityApi: MailSecurityClient = {
     return (await res.json()) as AssessmentDetail
   },
 
+  getReviewQueue: async () => {
+    const res = await apiFetch('/api/mail-security/review-queue')
+    if (res.status === 401 || res.status === 403 || res.status === 404) return null
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as ReviewQueue
+  },
+
   listFeedback: async (assessmentId: string) => {
     const res = await apiFetch(
       `/api/mail-security/assessments/${encodeURIComponent(assessmentId)}/feedback`,
@@ -275,6 +309,7 @@ export const mockMailSecurityApi: MailSecurityClient = {
   listAssessments: async () => emptyList(),
   getAssessment: async () => null,
   getForCommunication: async () => null,
+  getReviewQueue: async () => null,
   listFeedback: async () => [],
   submitFeedback: async () => {
     throw new Error('No backend: feedback was not recorded')

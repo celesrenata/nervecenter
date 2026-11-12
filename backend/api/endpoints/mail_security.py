@@ -509,6 +509,73 @@ async def list_assessments(
     return {**envelope.model_dump(mode="json"), "next_cursor": next_cursor}
 
 
+def _queue_item_view(item: Any) -> dict[str, Any]:
+    c = item.candidate
+    return {
+        "assessment_id": c.assessment_id,
+        "account_scope": c.account_scope,
+        "communication_id": c.communication_id,
+        "disposition": c.disposition,
+        "created_at": c.created_at.isoformat(),
+        "tier": item.tier.value,
+        "score": item.score,
+        "delivery": item.delivery.value,
+        "reasons": [r.value for r in item.reasons],
+        "deliver_after": item.deliver_after.isoformat() if item.deliver_after else None,
+        "verification_advice": list(c.verification_advice),
+        "important_sender": c.important_sender,
+        # Preserved by id only; never promoted or acted on from here.
+        "commitments": [
+            {"kind": r.kind, "ref_id": r.ref_id, "status": r.status} for r in c.commitments
+        ],
+    }
+
+
+@router.get("/review-queue")
+async def get_review_queue(
+    request: Request,
+    claims: Annotated[dict[str, Any], Depends(current_access)],
+) -> dict[str, Any]:
+    """Task 7.3: the prioritized, budgeted security review queue.
+
+    Read-only and account-scoped: built only from the caller's scopes. Items
+    are SHADOW review candidates; ``INTERRUPT`` is advisory (nothing is sent
+    from here). An active local quiet period defers interrupts. No scopes or
+    no durable plane is a safe ``404``.
+    """
+    from backend.attention.policy import get_attention_policy
+    from backend.mail_security.review_queue import (
+        QueueSettings,
+        build_queue,
+        quiet_until_from,
+    )
+    from backend.persistence.repositories.mail_security_review_repo import (
+        load_queue_candidates,
+    )
+
+    registry = getattr(request.app.state, "repository_registry", None)
+    factory = getattr(registry, "session_factory", None)
+    scopes = await _caller_scopes(request, claims)
+    if factory is None or not scopes:
+        raise _safe_error(404, "not_found")
+
+    now = datetime.now(UTC)
+    period = get_attention_policy().active_quiet_period(now)
+    quiet_until = quiet_until_from(period.ends_at if period else None, now)
+    candidates = []
+    for scope in scopes:
+        candidates.extend(await load_queue_candidates(factory, scope))
+    result = build_queue(candidates, now=now, settings=QueueSettings(quiet_until=quiet_until))
+    visible = [i for i in result.items if i.delivery.value != "DIGEST"]
+    return {
+        "data": [_queue_item_view(i) for i in visible],
+        "digest": {"count": result.digest.count, "by_reason": result.digest.by_reason},
+        "excluded_reviewed": result.excluded_reviewed,
+        "quiet_until": quiet_until.isoformat() if quiet_until else None,
+        "policy_version": result.policy_version,
+    }
+
+
 #: Communication ids the mail worker mints: ``comm-mail-<24 lowercase hex>``.
 _COMMUNICATION_ID_RE = re.compile(r"comm-mail-(?P<digest>[0-9a-f]{24})")
 
