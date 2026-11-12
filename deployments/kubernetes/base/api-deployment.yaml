@@ -59,6 +59,10 @@ spec:
             limits:
               memory: "1Gi"
               cpu: "1"
+          volumeMounts:
+            # Encrypted durable object store (file:// + AES-256-GCM).
+            - name: objects
+              mountPath: /data/objects
           securityContext:
             runAsNonRoot: true
             runAsUser: 10001
@@ -66,5 +70,9 @@ spec:
             readOnlyRootFilesystem: false
             capabilities:
               drop: ["ALL"]
+      volumes:
+        - name: objects
+          persistentVolumeClaim:
+            claimName: nervecenter-objects
       imagePullSecrets:
         - name: harbor-pull

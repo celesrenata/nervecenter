@@ -1,0 +1,44 @@
+# Durable object store volume (NerveShield owner item: object-store encryption).
+#
+# Static NFS PV on the NAS (same server as other durable cluster data), Retain
+# reclaim policy so deleting the claim never deletes mail evidence. The api
+# mounts it at /data/objects and writes ONLY ciphertext there: the factory
+# wraps the file:// store with AES-256-GCM (payload and metadata), keyed from
+# the out-of-band `nervecenter-object-key` Secret. Directory on the NAS is
+# owned by uid/gid 10001 (the api user), mode 0700.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nervecenter-objects-nfs-pv
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: object-store
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs
+  mountOptions:
+    - vers=4.1
+  nfs:
+    server: 192.168.42.8
+    path: /volume1/Kubernetes/NerveCenter/objects
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nervecenter-objects
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: object-store
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs
+  volumeName: nervecenter-objects-nfs-pv
+  resources:
+    requests:
+      storage: 50Gi

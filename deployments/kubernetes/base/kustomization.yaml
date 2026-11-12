@@ -18,6 +18,7 @@ resources:
   - namespace.yaml
   - configmap.yaml
   - postgres-pvc.yaml
+  - object-store-nfs.yaml
   - postgres-statefulset.yaml
   - postgres-service.yaml
   - nats-deployment.yaml

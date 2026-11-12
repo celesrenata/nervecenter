@@ -56,6 +56,10 @@ ENV_OBJECT_STORE_REGION = "NERVECENTER_OBJECT_STORE_REGION"
 #: Environment variable forcing plain HTTP for ``http://`` endpoints.
 ENV_OBJECT_STORE_SECURE = "NERVECENTER_OBJECT_STORE_SECURE"
 
+#: Client-side encryption keyring (see backend.storage.encrypted). Mirrored
+#: here so the config module does not import cryptography at import time.
+ENV_ENCRYPTION_KEYS = "NERVECENTER_OBJECT_STORE_ENCRYPTION_KEYS"
+
 #: Every ``NERVECENTER_OBJECT_STORE_*`` variable this module reads.
 ENV_OBJECT_STORE_VARS = (
     ENV_OBJECT_STORE_URL,
@@ -102,7 +106,7 @@ class ObjectStoreConfig:
     secure: bool
 
     def __post_init__(self) -> None:  # pragma: no cover - validation only
-        if self.scheme not in ("memory", "s3"):
+        if self.scheme not in ("memory", "s3", "file"):
             raise ValueError(
                 "object store scheme must be 'memory' or 's3'; got "
                 f"{self.scheme!r}"
@@ -140,10 +144,33 @@ def config_from_env(env: dict[str, str] | None = None) -> ObjectStoreConfig:
             region=DEFAULT_REGION,
             secure=True,
         )
+    if scheme == "file":
+        # Durable mounted volume (e.g. NFS). Always client-side encrypted:
+        # the factory refuses to build it without a keyring.
+        path = url.split("://", 1)[1]
+        if not path.startswith("/") or ".." in path.split("/"):
+            raise ObjectStoreConfigError(
+                f"{ENV_OBJECT_STORE_URL} file:// path must be absolute"
+            )
+        if not source.get(ENV_ENCRYPTION_KEYS, "").strip():
+            raise ObjectStoreConfigError(
+                f"{ENV_OBJECT_STORE_URL} names a file:// store but "
+                f"{ENV_ENCRYPTION_KEYS} is not set (file stores are always encrypted)",
+                missing=(ENV_ENCRYPTION_KEYS,),
+            )
+        return ObjectStoreConfig(
+            scheme="file",
+            url=url,
+            bucket=None,
+            access_key=None,
+            secret_key=None,
+            region=DEFAULT_REGION,
+            secure=True,
+        )
     if scheme not in _S3_SCHEMES:
         raise ObjectStoreConfigError(
             f"{ENV_OBJECT_STORE_URL} has unsupported scheme {scheme!r}; "
-            "expected s3://, http://, https://, or memory://",
+            "expected s3://, http://, https://, file://, or memory://",
         )
 
     missing: list[str] = []
@@ -232,6 +259,17 @@ def object_store_status(env: dict[str, str] | None = None) -> dict[str, Any]:
             "unsupported_scheme": False,
             "missing": (),
         }
+    if scheme == "file":
+        missing_keys = () if source.get(ENV_ENCRYPTION_KEYS, "").strip() else (
+            ENV_ENCRYPTION_KEYS,
+        )
+        return {
+            "status": "configured" if not missing_keys else "incomplete",
+            "scheme": "file",
+            "unsupported_scheme": False,
+            "missing": missing_keys,
+            "encrypted": True,
+        }
     if scheme not in _S3_SCHEMES:
         return {
             "status": "incomplete",
@@ -271,6 +309,18 @@ def create_object_store_from_env(env: dict[str, str] | None = None):
         from .memory import InMemoryObjectStore
 
         return InMemoryObjectStore()
+    from .encrypted import EncryptedObjectStore, keyring_from_env
+
+    source = dict(env) if env is not None else dict(os.environ)
+    if config.scheme == "file":
+        from .filesystem import FileObjectStore
+
+        return EncryptedObjectStore(
+            FileObjectStore(config.url.split("://", 1)[1]), keyring_from_env(source)
+        )
     from .s3 import S3ObjectStore
 
-    return S3ObjectStore(config)
+    store = S3ObjectStore(config)
+    if source.get(ENV_ENCRYPTION_KEYS, "").strip():
+        return EncryptedObjectStore(store, keyring_from_env(source))
+    return store

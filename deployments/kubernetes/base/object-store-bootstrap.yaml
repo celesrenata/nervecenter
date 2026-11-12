@@ -68,6 +68,13 @@ spec:
             - "-c"
             - |
               set -eu
+              case "$NERVECENTER_OBJECT_STORE_URL" in
+                file://*)
+                  # Encrypted NFS file store: no bucket to create. The api
+                  # verifies the volume itself (health / object_store_status).
+                  echo "file:// object store configured; no MinIO bucket to bootstrap"
+                  exit 0 ;;
+              esac
               echo "Bootstrapping bucket '$NERVECENTER_OBJECT_STORE_BUCKET' at $NERVECENTER_OBJECT_STORE_URL"
               /usr/bin/mc alias set nervcenter \
                 "$NERVECENTER_OBJECT_STORE_URL" \
