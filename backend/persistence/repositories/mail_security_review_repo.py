@@ -37,6 +37,7 @@ from backend.persistence.models.mail_security import (
     MailSecurityAssessmentRow,
     MailSecurityFeedbackRow,
     MailSecurityFindingRow,
+    MailSecurityHeldPromotionRow,
     MailSecurityJobRow,
 )
 from backend.persistence.models.personal import (
@@ -200,6 +201,22 @@ async def load_queue_candidates(session_factory: Any, account_scope: str) -> lis
             ).all()
             for cid, aids in _match(attention, comm_ids).items():
                 commitments[cid].extend(CommitmentRef("attention", str(a)) for a in aids)
+            # Task 7.4: actionable writes the gate is holding for this message.
+            cid_by_ref = {ref: cid for ref, (cid, _pid) in comm_by_ref.items()}
+            for ref, kind, target_id in (
+                await s.execute(
+                    select(
+                        MailSecurityHeldPromotionRow.content_ref,
+                        MailSecurityHeldPromotionRow.target_kind,
+                        MailSecurityHeldPromotionRow.target_id,
+                    ).where(
+                        MailSecurityHeldPromotionRow.account_scope == account_scope,
+                        MailSecurityHeldPromotionRow.content_ref.in_(sorted(cid_by_ref)),
+                        MailSecurityHeldPromotionRow.status.in_(("HELD", "REVIEW_CANDIDATE")),
+                    )
+                )
+            ).all():
+                commitments[cid_by_ref[ref]].append(CommitmentRef(f"held_{kind}", str(target_id)))
 
     out: list[QueueCandidate] = []
     for a in rows:

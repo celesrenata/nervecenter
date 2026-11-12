@@ -177,6 +177,8 @@ TABLES_WITH_ID = frozenset(
         "mail_intel_overrides",
         # NerveShield reviewer feedback ledger, Alembic 018 (Phase 7 Task 7.2).
         "mail_security_feedback",
+        # NerveShield pre-promotion gate holds, Alembic 019 (Phase 7 Task 7.4).
+        "mail_security_held_promotions",
     }
 )
 

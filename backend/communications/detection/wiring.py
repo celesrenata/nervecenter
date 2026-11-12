@@ -245,12 +245,16 @@ class CommunicationPipeline:
         attention: AttentionService,
         commitment_store: DurableCommitmentStore | None = None,
         attention_store: DurableAttentionStore | None = None,
+        promotion_gate: Any | None = None,
     ) -> None:
         self._detection = detection
         self._followups = followups
         self._attention = attention
         self._commitment_store = commitment_store
         self._attention_store = attention_store
+        #: NerveShield Task 7.4 pre-promotion trust gate. ``None`` (default,
+        #: and always when the gate flag is OFF) leaves every path unchanged.
+        self._promotion_gate = promotion_gate
         #: Commitment finding keys (``<kind>:<finding_id>``) already mirrored
         #: to the durable store, so re-ingesting the same communication in
         #: process never schedules a duplicate write (mirrors the follow-up
@@ -382,6 +386,16 @@ class CommunicationPipeline:
         clock = _ensure_utc(now)
         report = self._detection.detect(communication, now=clock)
 
+        # NerveShield Task 7.4: decide once per ingest whether this message's
+        # actionable writes are held for a security verdict. ``None`` when no
+        # gate is bound (flag OFF) or the message has no NerveShield source.
+        gate = self._gate_for(communication)
+        if gate is not None:
+            # The in-memory queue (/api/attention) must not show a gated
+            # item as actionable either: suppress what detection just fed.
+            for aid in dict(report.attention_ids).values():
+                self._attention.suppress(aid)
+
         # Extend-only durability seam: mirror each detected commitment into
         # the durable personal plane (no-op when no store is injected).
         # ``ingest`` stays synchronous — writes run in the background, never
@@ -389,6 +403,8 @@ class CommunicationPipeline:
         self._persist_commitments(
             report.findings,
             person_id=communication.person_id,
+            communication=communication,
+            gate=gate,
         )
 
         # S4 durable attention seam: mirror each detected finding into the
@@ -404,6 +420,7 @@ class CommunicationPipeline:
             [f for f in report.findings if not self._follows_up(f, communication)],
             communication,
             now=clock,
+            gate=gate,
         )
 
         links: list[FollowUpLink] = []
@@ -447,6 +464,17 @@ class CommunicationPipeline:
             links=links,
             evaluated=list(evaluated),
         )
+
+    def _gate_for(self, communication: Communication) -> Any | None:
+        """The bound promotion gate when it applies to ``communication``."""
+        gate = self._promotion_gate
+        if gate is None:
+            return None
+        try:
+            return gate if gate.applies(communication) else None
+        except Exception:  # noqa: BLE001 - an unsure gate holds (fail closed)
+            _logger.warning("promotion gate applies() failed; holding")
+            return gate
 
     # -- follow-up eligibility / idempotency --------------------------------
     @staticmethod
@@ -504,6 +532,8 @@ class CommunicationPipeline:
         findings: Sequence[Any],
         *,
         person_id: str | None,
+        communication: Communication | None = None,
+        gate: Any | None = None,
     ) -> None:
         """Mirror detected commitment findings into the durable store.
 
@@ -532,6 +562,8 @@ class CommunicationPipeline:
                 person_id=person_id,
                 store=store,
                 lock=lock,
+                communication=communication,
+                gate=gate,
             )
             try:
                 loop = asyncio.get_running_loop()
@@ -551,6 +583,8 @@ class CommunicationPipeline:
         person_id: str | None,
         store: DurableCommitmentStore,
         lock: asyncio.Lock | None = None,
+        communication: Communication | None = None,
+        gate: Any | None = None,
     ) -> None:
         """Persist a single commitment finding via the resolved store.
 
@@ -590,13 +624,12 @@ class CommunicationPipeline:
             ]
             if due_iso is not None:
                 templated_why.append(f"due {due_iso}")
-            await store.create_commitment(
-                id=f"ct-{digest}",
-                person_id=person_id,
-                text=text,
-                due_at=finding.due,
-                state="open",
-                evidence={
+            columns = {
+                "person_id": person_id,
+                "text": text,
+                "due_at": finding.due,
+                "state": "open",
+                "evidence": {
                     "finding_id": finding.finding_id,
                     "finding_kind": finding.kind,
                     "created_from": finding.created_from,
@@ -605,7 +638,17 @@ class CommunicationPipeline:
                     "model_used": finding.model_used,
                     "why": templated_why,
                 },
-            )
+            }
+            if gate is not None:
+                # Task 7.4: hold under the exact id; never write actionable.
+                await gate.hold(
+                    kind="commitment",
+                    target_id=f"ct-{digest}",
+                    communication=communication,
+                    columns=columns,
+                )
+                return
+            await store.create_commitment(id=f"ct-{digest}", **columns)
 
         if lock is None:
             await _write()
@@ -746,7 +789,12 @@ class CommunicationPipeline:
         }
 
     def _persist_attention(
-        self, findings: Sequence[Any], communication: Communication, *, now: datetime
+        self,
+        findings: Sequence[Any],
+        communication: Communication,
+        *,
+        now: datetime,
+        gate: Any | None = None,
     ) -> None:
         """Mirror detected findings into the durable attention table.
 
@@ -775,6 +823,7 @@ class CommunicationPipeline:
                 store=store,
                 lock=lock,
                 now=now,
+                gate=gate,
             )
             try:
                 loop = asyncio.get_running_loop()
@@ -793,6 +842,7 @@ class CommunicationPipeline:
         store: DurableAttentionStore,
         lock: asyncio.Lock | None = None,
         now: datetime,
+        gate: Any | None = None,
     ) -> None:
         """Persist a single finding as a durable attention item.
 
@@ -805,6 +855,15 @@ class CommunicationPipeline:
         columns = self._attention_columns(finding, communication, now=now)
 
         async def _write() -> None:
+            if gate is not None:
+                # Task 7.4: hold under the exact id; never write actionable.
+                await gate.hold(
+                    kind="attention",
+                    target_id=self._attention_id_for(finding),
+                    communication=communication,
+                    columns=columns,
+                )
+                return
             await store.create_attention_item(
                 id=self._attention_id_for(finding),
                 **columns,
@@ -956,6 +1015,22 @@ def set_attention_store(store: DurableAttentionStore | None) -> None:
         _pipeline._attention_store = store
 
 
+_pending_promotion_gate: Any | None = None
+
+
+def set_promotion_gate(gate: Any | None) -> None:
+    """App seam: bind (or unbind) the NerveShield pre-promotion gate (7.4).
+
+    Called at startup only when ``NERVE_MAIL_SECURITY_PROMOTION_GATE`` is
+    exactly ``review_gated`` with mail security ON; otherwise never called,
+    so the pipeline keeps ``promotion_gate=None`` and behaves as before.
+    """
+    global _pipeline, _pending_promotion_gate
+    _pending_promotion_gate = gate
+    if _pipeline is not None:
+        _pipeline._promotion_gate = gate
+
+
 def get_pipeline() -> CommunicationPipeline:
     """Bind the three existing process-wide singletons into one pipeline."""
     global _pipeline
@@ -966,6 +1041,7 @@ def get_pipeline() -> CommunicationPipeline:
             attention=get_attention_service(),
             commitment_store=_pending_store,
             attention_store=_pending_attention_store,
+            promotion_gate=_pending_promotion_gate,
         )
     return _pipeline
 
@@ -973,10 +1049,11 @@ def get_pipeline() -> CommunicationPipeline:
 def reset_pipeline() -> None:
     """Test hook — forget the composed pipeline and any bound store
     (singletons untouched; restores the pure default)."""
-    global _pipeline, _pending_store, _pending_attention_store
+    global _pipeline, _pending_store, _pending_attention_store, _pending_promotion_gate
     _pipeline = None
     _pending_store = None
     _pending_attention_store = None
+    _pending_promotion_gate = None
 
 
 __all__ = [
@@ -989,4 +1066,5 @@ __all__ = [
     "reset_pipeline",
     "set_attention_store",
     "set_commitment_store",
+    "set_promotion_gate",
 ]

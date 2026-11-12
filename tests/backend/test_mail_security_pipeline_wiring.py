@@ -351,6 +351,8 @@ class TestFailureIsolation:
             "SCOPE_DRAIN_FAILED",
             # Defect 2: the backfill provider's scope listing failed.
             "BACKFILL_SCOPES_FAILED",
+            # Task 7.4: the gate release pass failed (gate ON only).
+            "RELEASE_PASS_FAILED",
         }
 
 

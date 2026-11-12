@@ -345,6 +345,32 @@ async def wire_dependencies(target: FastAPI) -> None:
                 set_attention_store(
                     target.state.repository_registry.attention
                 )
+                # NerveShield Task 7.4: bind the pre-promotion trust gate ONLY
+                # when NERVE_MAIL_SECURITY_PROMOTION_GATE=review_gated and mail
+                # security is ON. Otherwise nothing is bound and the pipeline
+                # path is unchanged.
+                from backend.mail_security.trust_gate import (
+                    GateMode,
+                    MailPromotionGate,
+                    gate_mode,
+                )
+
+                if gate_mode() is GateMode.REVIEW_GATED:
+                    from backend.communications.detection.wiring import (
+                        set_promotion_gate,
+                    )
+                    from backend.persistence.repositories.mail_security_gate_repo import (
+                        HeldPromotionRepository,
+                    )
+
+                    set_promotion_gate(
+                        MailPromotionGate(
+                            HeldPromotionRepository(
+                                target.state.repository_registry.session_factory
+                            )
+                        )
+                    )
+                    log.warning("api.wiring.promotion_gate_bound", mode="REVIEW_GATED")
                 # P1-107 step 2: bind the durable communications store onto the
                 # process-wide ingest seam so BOTH the mail worker and the
                 # ``POST /api/communications/ingest`` endpoint persist people +
@@ -620,11 +646,31 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
             jobs=repo,
             batch_size=batch_size_from_env(),
         )
+        # Task 7.4: the gate release pass runs only when the gate is ON.
+        from backend.mail_security.trust_gate import GateMode, gate_mode
+
+        post_pass = None
+        if gate_mode() is GateMode.REVIEW_GATED:
+            from backend.persistence.repositories.mail_security_gate_repo import (
+                HeldPromotionRepository,
+                release_pass,
+            )
+
+            holds = HeldPromotionRepository(registry.session_factory)
+
+            async def post_pass() -> dict[str, int]:
+                return await release_pass(
+                    holds,
+                    attention=registry.attention,
+                    commitments=registry.commitments,
+                )
+
         runner = MailSecurityPipelineRunner(
             repository=repo,
             worker_factory=make_worker,
             sources_provider=sources,
             interval_seconds=max(1.0, interval),
+            post_pass=post_pass,
         )
         task = runner.start()
         target.state.mail_security_runner = runner

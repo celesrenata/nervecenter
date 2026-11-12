@@ -78,6 +78,7 @@ class RunnerFailure(StrEnum):
     SCOPE_SWEEP_FAILED = "SCOPE_SWEEP_FAILED"
     SCOPE_DRAIN_FAILED = "SCOPE_DRAIN_FAILED"
     BACKFILL_SCOPES_FAILED = "BACKFILL_SCOPES_FAILED"
+    RELEASE_PASS_FAILED = "RELEASE_PASS_FAILED"
 
 
 WorkerFactory = Callable[[str], Any]
@@ -100,8 +101,11 @@ class MailSecurityPipelineRunner:
         env: dict[str, str] | None = None,
         alert_quiet_seconds: float = DEFAULT_ALERT_QUIET_SECONDS,
         alert_thresholds: HealthThresholds | None = None,
+        post_pass: Callable[[], Awaitable[Any]] | None = None,
     ) -> None:
         self._repo = repository
+        #: Task 7.4 gate release pass; only supplied when the gate is ON.
+        self._post_pass = post_pass
         self._factory = worker_factory
         self._policy = policy or QueuePolicy()
         self._sources = sources_provider
@@ -159,6 +163,13 @@ class MailSecurityPipelineRunner:
         if not scopes or any(swept):
             note_sweep(now)
         await self._emit_alerts(list(scopes), now)
+        if self._post_pass is not None:
+            try:
+                counts = await self._post_pass()
+                if counts:
+                    log.info("mail_security.gate_release_pass", **dict(counts))
+            except Exception as exc:  # noqa: BLE001 - never affects processing
+                self._fail(RunnerFailure.RELEASE_PASS_FAILED, exc)
         return list(scopes)
 
     async def _emit_alerts(self, scopes: list[str], now: datetime) -> None:

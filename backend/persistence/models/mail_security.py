@@ -500,11 +500,54 @@ class MailSecurityFeedbackRow(Base):
     )
 
 
+class MailSecurityHeldPromotionRow(Base):
+    """One legacy actionable write held by the pre-promotion gate (Task 7.4).
+
+    Table ``mail_security_held_promotions``. ``target_kind`` + ``target_id``
+    are the exact deterministic id the ungated pipeline would have written
+    (``attention`` / ``at-<..>``, ``commitment`` / ``ct-<..>``), unique so a
+    replayed ingest never stacks a second hold. ``payload`` is the templated
+    column set the legacy writer would have stored (same sensitivity as the
+    target table; no body text). ``status`` is HELD / RELEASED /
+    REVIEW_CANDIDATE; the deciding disposition and assessment id are kept for
+    audit.
+    """
+
+    __tablename__ = "mail_security_held_promotions"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+    schema_version: Mapped[str] = mapped_column(String(32), default="mail-promotion-gate@1")
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    content_ref: Mapped[str] = mapped_column(String(200), nullable=False)
+    communication_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    target_kind: Mapped[str] = mapped_column(String(24), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(Jsonb, default=dict, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="HELD")
+    decided_disposition: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    decided_assessment_id: Mapped[str | None] = mapped_column(String(160), nullable=True)
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index(
+            "ix_mail_security_held_target",
+            "target_kind",
+            "target_id",
+            unique=True,
+        ),
+        Index("ix_mail_security_held_scope_status", "account_scope", "status"),
+        Index("ix_mail_security_held_content_ref", "content_ref"),
+    )
+
+
 __all__ = [
     "MailEvidenceRow",
     "MailIntelIndicatorRow",
     "MailIntelOverrideRow",
     "MailSecurityFeedbackRow",
+    "MailSecurityHeldPromotionRow",
     "MailSecurityAssessmentRow",
     "MailSecurityFindingRow",
     "MailSecurityJobRow",
