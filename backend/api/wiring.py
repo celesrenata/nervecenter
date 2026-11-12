@@ -353,6 +353,7 @@ async def wire_dependencies(target: FastAPI) -> None:
                     GateMode,
                     MailPromotionGate,
                     gate_mode,
+                    gate_scopes,
                 )
 
                 if gate_mode() is GateMode.REVIEW_GATED:
@@ -363,14 +364,20 @@ async def wire_dependencies(target: FastAPI) -> None:
                         HeldPromotionRepository,
                     )
 
+                    canary = gate_scopes()
                     set_promotion_gate(
                         MailPromotionGate(
                             HeldPromotionRepository(
                                 target.state.repository_registry.session_factory
-                            )
+                            ),
+                            scopes=canary,
                         )
                     )
-                    log.warning("api.wiring.promotion_gate_bound", mode="REVIEW_GATED")
+                    log.warning(
+                        "api.wiring.promotion_gate_bound",
+                        mode="REVIEW_GATED",
+                        scopes="ALL" if canary is None else len(canary),
+                    )
                 # P1-107 step 2: bind the durable communications store onto the
                 # process-wide ingest seam so BOTH the mail worker and the
                 # ``POST /api/communications/ingest`` endpoint persist people +

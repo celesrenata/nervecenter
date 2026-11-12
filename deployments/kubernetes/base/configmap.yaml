@@ -35,6 +35,17 @@ data:
   # once per 30 s and only when the dashboard is viewed. Literal private IPs
   # only, up to 4, comma-separated. Remove this key to report NOT_CONFIGURED.
   NERVE_MAIL_SECURITY_ARCFORGE_URL: "http://10.1.1.15:8100,http://10.1.1.12:8100"
+  # NerveShield Task 7.8 REVIEW_GATED canary (owner opt-in, all accounts).
+  # Mail-derived Today items / commitments are HELD until a verdict exists;
+  # SAFE_TO_PROCESS / LOW_PRIORITY release with the exact original id;
+  # REVIEW / RESTRICTED / INCOMPLETE stay review candidates. No provider mail
+  # is changed. Scopes are listed explicitly so a new account never joins
+  # silently. ROLLBACK: delete both keys and roll api. Items still HELD then
+  # are no longer released automatically (the release pass only runs with
+  # the gate ON) — see evidence/phase7-7.8-results.md for the one-off
+  # release command. REVIEW_CANDIDATE items stay in the review queue.
+  NERVE_MAIL_SECURITY_PROMOTION_GATE: "review_gated"
+  NERVE_MAIL_SECURITY_PROMOTION_GATE_SCOPES: "conn:53b03939-bdf6-4313-a7e3-b91144c598d2,conn:fc4e3c57-2f5f-49b6-87e7-9f3e87fd813e"
   # NOTE: the object store (§14) is NOT configured here. Its NERVECENTER_*
   # variables (NERVECENTER_OBJECT_STORE_URL / _BUCKET / _ACCESS_KEY /
   # _SECRET_KEY / _REGION / _SECURE) belong in the out-of-band

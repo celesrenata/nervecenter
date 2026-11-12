@@ -38,6 +38,7 @@ A hold failure never falls back to the actionable write.
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Mapping
 from datetime import datetime
 from enum import StrEnum
@@ -91,6 +92,24 @@ def gate_mode(env: Mapping[str, str] | None = None) -> GateMode:
     return GateMode.REVIEW_GATED
 
 
+ENV_PROMOTION_GATE_SCOPES = "NERVE_MAIL_SECURITY_PROMOTION_GATE_SCOPES"
+_SCOPE_ENTRY = re.compile(r"conn:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+
+
+def gate_scopes(env: Mapping[str, str] | None = None) -> frozenset[str] | None:
+    """Canary allow-list. ``*`` -> ``None`` (all mail accounts); a list of
+    ``conn:<uuid>`` -> that set; unset, empty or any malformed entry ->
+    empty set (no account gated)."""
+    source = env if env is not None else os.environ
+    raw = str(source.get(ENV_PROMOTION_GATE_SCOPES, "") or "").strip()
+    if raw == "*":
+        return None
+    entries = [e.strip() for e in raw.split(",") if e.strip()]
+    if not entries or not all(_SCOPE_ENTRY.fullmatch(e) for e in entries):
+        return frozenset()
+    return frozenset(entries)
+
+
 def gate_scope(content_ref: object) -> str | None:
     """``conn:<uuid>`` for a committed mail ref, else ``None`` (not gated)."""
     parsed = parse_content_ref(content_ref)
@@ -138,11 +157,21 @@ class MailPromotionGate:
 
     policy_version = GATE_POLICY_VERSION
 
-    def __init__(self, store: HeldPromotionStore) -> None:
+    def __init__(self, store: HeldPromotionStore, scopes: frozenset[str] | None = None) -> None:
         self._store = store
+        #: Canary allow-list (Task 7.8). ``None`` means every mail account
+        #: (``*``); an empty set means none.
+        self._scopes = scopes
+
+    @property
+    def scopes(self) -> frozenset[str] | None:
+        return self._scopes
 
     def applies(self, communication: Any) -> bool:
-        return gate_scope(getattr(communication, "content_ref", None)) is not None
+        scope = gate_scope(getattr(communication, "content_ref", None))
+        if scope is None:
+            return False
+        return self._scopes is None or scope in self._scopes
 
     async def hold(
         self,
@@ -169,6 +198,7 @@ class MailPromotionGate:
 __all__ = [
     "CANDIDATE_DISPOSITIONS",
     "ENV_PROMOTION_GATE",
+    "ENV_PROMOTION_GATE_SCOPES",
     "GATE_POLICY_VERSION",
     "GATE_REVIEW_GATED",
     "RELEASE_DISPOSITIONS",
@@ -183,4 +213,5 @@ __all__ = [
     "encode_payload",
     "gate_mode",
     "gate_scope",
+    "gate_scopes",
 ]

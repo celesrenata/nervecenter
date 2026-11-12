@@ -503,3 +503,45 @@ async def test_held_items_show_in_review_queue_as_candidates(env):
     assert [(c.kind, c.status) for c in cand.commitments] == [
         ("held_attention", "REVIEW_CANDIDATE")
     ]
+
+
+# -- Task 7.8 canary allow-list -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (None, frozenset()),
+        ("", frozenset()),
+        ("*", None),
+        (SCOPE, frozenset({SCOPE})),
+        (f"{SCOPE}, {OTHER_SCOPE}", frozenset({SCOPE, OTHER_SCOPE})),
+        (f"{SCOPE},conn:not-a-uuid", frozenset()),  # any malformed entry -> none
+        ("all", frozenset()),
+    ],
+)
+def test_gate_scopes_parsing(raw, expected):
+    from backend.mail_security.trust_gate import ENV_PROMOTION_GATE_SCOPES, gate_scopes
+
+    env_map = {} if raw is None else {ENV_PROMOTION_GATE_SCOPES: raw}
+    assert gate_scopes(env_map) == expected
+
+
+async def test_canary_gates_only_listed_accounts(env):
+    gate = MailPromotionGate(env.holds, scopes=frozenset({SCOPE}))
+    in_id, in_ref = _mail_ref(CONN, "m-canary")
+    out_id, out_ref = _mail_ref(OTHER, "m-outside")
+    await _ingest(env.pipeline(gated=True, gate=gate), _comm(in_ref, in_id))
+    await _ingest(env.pipeline(gated=True, gate=gate), _comm(out_ref, out_id))
+    held = await env.holds_rows()
+    assert [h.account_scope for h in held] == [SCOPE]
+    # The non-canary account behaves exactly as with the gate OFF.
+    assert len(await _active(env)) == 1
+
+
+async def test_empty_canary_gates_nothing(env):
+    gate = MailPromotionGate(env.holds, scopes=frozenset())
+    comm_id, ref = _mail_ref(CONN, "m-none")
+    await _ingest(env.pipeline(gated=True, gate=gate), _comm(ref, comm_id))
+    assert await env.count(MailSecurityHeldPromotionRow) == 0
+    assert len(await _active(env)) == 1
