@@ -58,8 +58,11 @@ from email.message import Message
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
+import structlog
 
 from backend.api.models import MailConnector
+
+log = structlog.get_logger(__name__)
 
 __all__ = [
     "MailItem",
@@ -167,6 +170,10 @@ class MailItem:
     timestamp: datetime
     headers: dict[str, str] = field(default_factory=dict)
     source: str = "imap"
+    #: Unmodified RFC822 bytes (Gmail ``format=raw``), present only when full
+    #: capture is opted in (NS-ADR-064). Transient like ``content_bytes``: the
+    #: worker stores it as a separate encrypted object for the security plane.
+    raw_bytes: bytes | None = None
 
     def subject_or_first_line(self) -> str:
         """Subject line / first non-empty line (§6 durable row ``subject``)."""
@@ -619,10 +626,17 @@ class GmailClient:
         base_url: str = "https://gmail.googleapis.com",
         timeout: float = 10.0,
         max_items: int = 25,
+        *,
+        capture_raw: bool = False,
+        raw_max_bytes: int = 32 * 1024 * 1024,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._timeout = timeout
         self._max_items = max_items
+        # NS-ADR-064: opt-in second ``format=raw`` fetch per message. OFF keeps
+        # the exact request sequence and items of the body-only path.
+        self._capture_raw = bool(capture_raw)
+        self._raw_max_bytes = int(raw_max_bytes)
 
     async def run(
         self,
@@ -762,6 +776,7 @@ class GmailClient:
                     timestamp=ts,
                     headers={k: v for k, v in headers.items()},
                     source="gmail",
+                    raw_bytes=await self._maybe_fetch_raw(client, token, mid),
                 )
             )
         return baseline, seen
@@ -850,6 +865,9 @@ class GmailClient:
                             timestamp=ts,
                             headers={k: v for k, v in headers.items()},
                             source="gmail",
+                            raw_bytes=await self._maybe_fetch_raw(
+                                client, token, mid
+                            ),
                         )
                     )
                     if len(items) >= self._max_items:
@@ -914,6 +932,49 @@ class GmailClient:
             )
         }
         return headers, _extract_text_body(payload)
+
+    async def _maybe_fetch_raw(
+        self, client: httpx.AsyncClient, token: str, message_id: str
+    ) -> bytes | None:
+        """Fetch the unmodified RFC822 bytes (``format=raw``) when opted in.
+
+        Best-effort by design (NS-ADR-064): any failure, an oversized message,
+        or a malformed payload returns ``None`` so the message still ingests on
+        the body-only path with honest ``BODY_ONLY`` fidelity. It never fails
+        the poll and never touches the cursor. Only a safe code is logged.
+        """
+        if not self._capture_raw:
+            return None
+        try:
+            resp = await client.get(
+                f"{self._base_url}/gmail/v1/users/me/messages/{message_id}",
+                headers={"Authorization": f"Bearer {token}"},
+                params={"format": "raw"},
+            )
+        except httpx.HTTPError as exc:
+            log.warning("gmail.raw_fetch_failed", error_type=type(exc).__name__)
+            return None
+        if resp.status_code != 200:
+            log.warning("gmail.raw_fetch_failed", status=resp.status_code)
+            return None
+        try:
+            encoded = str(resp.json().get("raw") or "")
+        except ValueError:
+            log.warning("gmail.raw_fetch_failed", error_type="invalid_json")
+            return None
+        # base64url inflates by 4/3; reject before decoding an oversized blob.
+        if not encoded or len(encoded) > (self._raw_max_bytes * 4) // 3 + 4:
+            log.warning("gmail.raw_fetch_skipped", reason="empty_or_oversized")
+            return None
+        try:
+            raw = base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4))
+        except (binascii.Error, ValueError):
+            log.warning("gmail.raw_fetch_failed", error_type="invalid_base64")
+            return None
+        if not raw or len(raw) > self._raw_max_bytes:
+            log.warning("gmail.raw_fetch_skipped", reason="empty_or_oversized")
+            return None
+        return raw
 
 
 # -- test stub ----------------------------------------------------------------

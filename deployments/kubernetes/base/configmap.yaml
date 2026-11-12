@@ -46,6 +46,15 @@ data:
   # release command. REVIEW_CANDIDATE items stay in the review queue.
   NERVE_MAIL_SECURITY_PROMOTION_GATE: "review_gated"
   NERVE_MAIL_SECURITY_PROMOTION_GATE_SCOPES: "conn:53b03939-bdf6-4313-a7e3-b91144c598d2,conn:fc4e3c57-2f5f-49b6-87e7-9f3e87fd813e"
+  # NerveShield full-email capture (NS-ADR-064, G8 item 1, owner-approved).
+  # New Gmail mail is also fetched with format=raw and the unmodified RFC822
+  # bytes are stored as a separate encrypted object for the security plane
+  # only (SHADOW; no model sees them). Set "0" (and roll api) to go back to
+  # body-only; already-stored raw objects stay encrypted on the NAS.
+  NERVE_MAIL_SECURITY_FULL_CAPTURE: "1"
+  # NerveShield attachment scanning (NS-ADR-065): the clamd sidecar's UNIX
+  # socket. Remove this key to report attachments as NOT_RUN again.
+  NERVE_CLAMD_SOCKET: "/run/clamav/clamd.sock"
   # NOTE: the object store (§14) is NOT configured here. Its NERVECENTER_*
   # variables (NERVECENTER_OBJECT_STORE_URL / _BUCKET / _ACCESS_KEY /
   # _SECRET_KEY / _REGION / _SECURE) belong in the out-of-band

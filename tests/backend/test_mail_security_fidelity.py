@@ -241,10 +241,22 @@ async def test_worker_persists_body_only_for_unusable_job_mode(
 # --------------------------------------------------------------------------
 # 4. raw fidelities are unreachable today, reachable only via a future seam
 # --------------------------------------------------------------------------
-def test_raw_capture_seam_is_disabled_today() -> None:
-    assert acquisition.RAW_CAPTURE_SEAM_ENABLED is False
-    for mode in ("IMAP_RFC822", "GMAIL_RAW", "GMAIL_FULL", "EML", "TAKEOUT_MBOX"):
+def test_only_gmail_raw_has_a_trusted_raw_seam() -> None:
+    """NS-ADR-064: GMAIL_RAW is the only allow-listed raw seam, and only with a
+    well-formed raw ref. Every other raw mode stays demoted even with one."""
+    assert acquisition.RAW_SEAM_MODES == frozenset({AcquisitionMode.GMAIL_RAW})
+    good = "content://raw/c1/abc"
+    for mode in ("IMAP_RFC822", "GMAIL_FULL", "EML", "TAKEOUT_MBOX"):
         assert trusted_mode_for_write(mode) is AcquisitionMode.LEGACY_BODY_ONLY
+        assert trusted_mode_for_write(mode, raw_ref=good) is AcquisitionMode.LEGACY_BODY_ONLY
+    assert trusted_mode_for_write("GMAIL_RAW") is AcquisitionMode.LEGACY_BODY_ONLY
+    for bad in (None, "", "content://raw/", "content://mail/c1/abc", "raw/c1/x",
+                "content://raw/../mail/x", 7):
+        assert (
+            trusted_mode_for_write("GMAIL_RAW", raw_ref=bad)
+            is AcquisitionMode.LEGACY_BODY_ONLY
+        )
+    assert trusted_mode_for_write("GMAIL_RAW", raw_ref=good) is AcquisitionMode.GMAIL_RAW
 
 
 async def test_seam_demotes_raw_mode_on_write(harness, monkeypatch) -> None:
@@ -265,43 +277,44 @@ async def test_seam_demotes_raw_mode_on_write(harness, monkeypatch) -> None:
     assert row2.meta[ACQUISITION_META_KEY] == "LEGACY_BODY_ONLY"
 
 
-async def test_future_raw_seam_is_the_only_way_to_original_fidelity(
+async def test_gmail_raw_seam_is_the_only_way_to_original_fidelity(
     harness, monkeypatch
 ) -> None:
-    """With the (future) trusted raw seam enabled, a recorded raw mode maps to
-    its fidelity and header auth evidence is honored; truncation still demotes."""
-    monkeypatch.setattr(acquisition, "RAW_CAPTURE_SEAM_ENABLED", True)
+    """Only GMAIL_RAW with a raw ref reaches ORIGINAL_RFC822 (NS-ADR-064); an
+    IMAP/provider-full mode with the same raw ref stays body-only, and header
+    auth evidence is still never INDEPENDENT for a forged header."""
     await H.ingest(harness, monkeypatch, H.mailitem("<raw-1@example.com>", H.forged_auth_mime()))
     repo = harness.registry.mail_security
     base = (await repo.list_jobs(harness.scope))[0]
-    await repo.upsert_job(
-        account_scope=harness.scope,
-        outbox_job_key="k-raw",
-        source_key="src-raw",
-        analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
-        state="PENDING",
-        meta={**base.meta, ACQUISITION_META_KEY: "IMAP_RFC822"},
-    )
-    await repo.upsert_job(
-        account_scope=harness.scope,
-        outbox_job_key="k-full",
-        source_key="src-full",
-        analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
-        state="PENDING",
-        meta={**base.meta, ACQUISITION_META_KEY: "GMAIL_FULL"},
-    )
-    for _ in range(3):
+    await harness.store.put("raw/test/raw1", H.forged_auth_mime())
+    raw_ref = "content://raw/test/raw1"
+    for key, mode in (("raw", "GMAIL_RAW"), ("imap", "IMAP_RFC822"), ("full", "GMAIL_FULL")):
+        await repo.upsert_job(
+            account_scope=harness.scope,
+            outbox_job_key=f"k-{key}",
+            source_key=f"src-{key}",
+            analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
+            state="PENDING",
+            meta={**base.meta, ACQUISITION_META_KEY: mode, "raw_ref": raw_ref},
+        )
+    for _ in range(4):
         await H.security_worker(harness).process_one()
     by_key = {
         r.assessment["source_ref"]: r
         for r in await repo.list_assessments(harness.scope)
     }
     assert by_key["src-raw"].evidence_fidelity == "ORIGINAL_RFC822"
-    assert by_key["src-full"].evidence_fidelity == "PROVIDER_FULL"
+    assert by_key["src-imap"].evidence_fidelity == "BODY_ONLY"
+    assert by_key["src-full"].evidence_fidelity == "BODY_ONLY"
     assert by_key[base.source_key].evidence_fidelity == "BODY_ONLY"
     raw_manifest = await repo.get_evidence(harness.scope, "src-raw", 1)
-    assert raw_manifest.acquisition_mode == "IMAP_RFC822"
+    assert raw_manifest.acquisition_mode == "GMAIL_RAW"
     assert raw_manifest.missing_parts == []
+    assert raw_manifest.raw_content_ref == "content:raw_test_raw1"
+    assert raw_manifest.normalized_content_ref is not None
+    imap_manifest = await repo.get_evidence(harness.scope, "src-imap", 1)
+    assert imap_manifest.acquisition_mode == "LEGACY_BODY_ONLY"
+    assert imap_manifest.normalized_content_ref is None
     # Even with raw fidelity, a forged non-boundary header is never INDEPENDENT.
     assert all(
         a["provenance"] != "INDEPENDENT" for a in _auth_axes(by_key["src-raw"]).values()

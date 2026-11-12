@@ -449,6 +449,17 @@ def _content_key(connection_id: str, mail_id: str) -> str:
     return f"mail/{connection_id}/{digest}"
 
 
+def _raw_content_key(connection_id: str, mail_id: str) -> str:
+    """Object-store key for one message's raw RFC822 bytes (NS-ADR-064).
+
+    Same secret-free digest as the body key, under a separate ``raw/`` prefix
+    so raw objects never collide with (or replace) the body object the 7.1 and
+    7.4 joins key on.
+    """
+    digest = hashlib.sha256(f"{connection_id}:{mail_id}".encode()).hexdigest()[:24]
+    return f"raw/{connection_id}/{digest}"
+
+
 def security_account_scope(connection_id: str) -> str:
     """NerveShield account scope for a mail connection (R-023). The connection
     id is a UUID in the identifier alphabet; never an address or secret."""
@@ -970,11 +981,15 @@ class MailIngestWorker:
             # gate, or mark the message safe (R-001.3, I-07). Carries only
             # keys + the opaque content_ref + boolean flags — never raw
             # subject/body/addresses or credentials (T-14).
+            raw_ref = await self._store_raw_capture(
+                item, mail_id=mail_id, account=account
+            )
             await self._schedule_security_job(
                 conn,
                 mail_id=mail_id,
                 content_ref=content_ref,
                 flags=flags,
+                raw_ref=raw_ref,
             )
             if bool(result.get("created")):
                 ingested += 1
@@ -989,6 +1004,7 @@ class MailIngestWorker:
         mail_id: str,
         content_ref: str,
         flags: dict[str, bool],
+        raw_ref: str | None = None,
     ) -> None:
         """Schedule one opt-in NerveShield security job for a fetched message
         (Task 1.8). Inert unless the feature flag is ON *and* a durable
@@ -1017,10 +1033,52 @@ class MailIngestWorker:
             ),
             content_ref=content_ref,
             flags=flags,
-            # Trusted acquisition provenance (NS-ADR-024): this worker stores
-            # DECODED body text, not raw RFC822, so it is LEGACY_BODY_ONLY.
-            acquisition_mode=AcquisitionMode.LEGACY_BODY_ONLY.value,
+            # Trusted acquisition provenance (NS-ADR-024/064): ``content_ref``
+            # is always the DECODED body. Only when this worker also stored the
+            # unmodified Gmail ``format=raw`` bytes does it record GMAIL_RAW,
+            # together with the raw object's ref; otherwise LEGACY_BODY_ONLY.
+            acquisition_mode=(
+                AcquisitionMode.GMAIL_RAW.value
+                if raw_ref
+                else AcquisitionMode.LEGACY_BODY_ONLY.value
+            ),
+            raw_ref=raw_ref,
         )
+
+    async def _store_raw_capture(
+        self, item: Any, *, mail_id: str, account: str
+    ) -> str | None:
+        """Store the unmodified RFC822 bytes as a separate object (NS-ADR-064).
+
+        Returns the ``content://raw/...`` ref, or ``None`` when full capture is
+        OFF, the item has no raw bytes, it is not a Gmail item, or the write
+        fails. Best-effort: a failure only means this message stays body-only;
+        it never fails the ingest or the cursor gate. The object store is the
+        encrypted one in production (NS-ADR-062), so raw bytes are encrypted at
+        rest under the same keyring as bodies.
+        """
+        from backend.mail_security.ingestion_seam import (
+            RAW_CAPTURE_MAX_BYTES,
+            full_capture_enabled,
+        )
+
+        raw = getattr(item, "raw_bytes", None)
+        if not raw or not full_capture_enabled():
+            return None
+        if self.cursor_kind != "gmail_history" or len(raw) > RAW_CAPTURE_MAX_BYTES:
+            return None
+        key = _raw_content_key(self.connection_id, mail_id)
+        try:
+            meta = await self._object_store.put(
+                key,
+                bytes(raw),
+                content_type="message/rfc822",
+                metadata={"account": account, "message_id": mail_id},
+            )
+        except Exception as exc:  # noqa: BLE001 - raw capture is best-effort
+            log.warning("ingest.raw_capture_failed", error_type=type(exc).__name__)
+            return None
+        return f"content://{getattr(meta, 'key', key)}"
 
     def _seed_person(self, address: str, display_name: str | None) -> str | None:
         """Derive the deterministic person id for a sender and seed the

@@ -23,6 +23,54 @@ spec:
       labels:
         app: api
     spec:
+      initContainers:
+        # NerveShield attachment scanner (NS-ADR-065): clamd as a native
+        # sidecar, UNIX socket only (/run/clamav/clamd.sock in a pod-private
+        # emptyDir), signatures read-only from the freshclam pod's volume (see
+        # clamav.yaml). It waits for a database instead of crash-looping, so an
+        # empty cache can never block or flap the api; until clamd answers the
+        # scanner reports UNAVAILABLE and attachments stay INCOMPLETE, never
+        # clean.
+        - name: clamd
+          image: "clamav/clamav:1.5.4_base@sha256:64ca916618842ba469ef38a501e6c2f42a68281c064c03749b0126c0fb085ce5"
+          imagePullPolicy: IfNotPresent
+          restartPolicy: Always
+          command:
+            - sh
+            - -c
+            - |
+              until [ -s /var/lib/clamav/main.cvd ] || [ -s /var/lib/clamav/main.cld ]; do
+                echo "clamd: waiting for signature database"; sleep 15
+              done
+              exec clamd --foreground --config-file=/etc/clamav-nc/clamd.conf
+          resources:
+            # Full signature set ~1.2 GiB resident; ConcurrentDatabaseReload
+            # briefly holds two copies during a SelfCheck reload.
+            requests:
+              memory: "1536Mi"
+              cpu: "0.1"
+            limits:
+              memory: "4Gi"
+              cpu: "2"
+          volumeMounts:
+            - name: clamav-db
+              mountPath: /var/lib/clamav
+              readOnly: true
+            - name: clamav-config
+              mountPath: /etc/clamav-nc
+              readOnly: true
+            - name: clamd-run
+              mountPath: /run/clamav
+            - name: clamd-tmp
+              mountPath: /tmp
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
       containers:
         - name: api
           image: "registry.celestium.life/nervecenter/api:latest"
@@ -67,6 +115,9 @@ spec:
             # Encrypted durable object store (file:// + AES-256-GCM).
             - name: objects
               mountPath: /data/objects
+            # clamd UNIX socket (NERVE_CLAMD_SOCKET in the ConfigMap).
+            - name: clamd-run
+              mountPath: /run/clamav
           securityContext:
             runAsNonRoot: true
             runAsUser: 10001
@@ -78,5 +129,19 @@ spec:
         - name: objects
           persistentVolumeClaim:
             claimName: nervecenter-objects
+        - name: clamav-db
+          persistentVolumeClaim:
+            claimName: nervecenter-clamav
+            readOnly: true
+        - name: clamav-config
+          configMap:
+            name: clamav-config
+        - name: clamd-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: clamd-tmp
+          emptyDir:
+            sizeLimit: 512Mi
       imagePullSecrets:
         - name: harbor-pull

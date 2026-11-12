@@ -82,12 +82,30 @@ def _reconcile_interval_s(env: dict[str, str] | None = None) -> float:
         return 30.0
 
 
-def _build_transport(kind: str, config: dict[str, Any]) -> Any:
-    """Construct the transport for a connection kind (gmail vs generic imap)."""
+def _build_transport(
+    kind: str, config: dict[str, Any], env: dict[str, str] | None = None
+) -> Any:
+    """Construct the transport for a connection kind (gmail vs generic imap).
+
+    ``env`` defaults to the process environment, which is where the opt-in
+    full-capture flag (NS-ADR-064) lives in production.
+    """
     cursor_kind, _ = _KIND_TO_CURSOR[kind]
     if cursor_kind == "gmail_history":
+        from backend.mail_security.ingestion_seam import (
+            RAW_CAPTURE_MAX_BYTES,
+            full_capture_enabled,
+        )
+
         base_url = str(config.get("gmail_api_base") or "https://gmail.googleapis.com")
-        return GmailClient(base_url=base_url)
+        if not full_capture_enabled(env):
+            # Flag OFF: the exact body-only client of before (NS-ADR-064).
+            return GmailClient(base_url=base_url)
+        return GmailClient(
+            base_url=base_url,
+            capture_raw=True,
+            raw_max_bytes=RAW_CAPTURE_MAX_BYTES,
+        )
     return ImapPollClient()
 
 

@@ -19,6 +19,9 @@ resources:
   - configmap.yaml
   - postgres-pvc.yaml
   - object-store-nfs.yaml
+  # NerveShield attachment scanning (NS-ADR-065): clamd sidecar config,
+  # freshclam updater pod + its signature volume and NetworkPolicy.
+  - clamav.yaml
   - postgres-statefulset.yaml
   - postgres-service.yaml
   - nats-deployment.yaml

@@ -11,12 +11,13 @@ make it begin with ``From:``/``Authentication-Results:`` lines. So:
 - The security worker derives fidelity from that recorded mode ONLY. A missing,
   unknown or unparseable mode fails safe to ``LEGACY_BODY_ONLY``/``BODY_ONLY``.
   Content bytes never promote fidelity (I-05, T-28).
-- Raw-bytes fidelities (``ORIGINAL_RFC822`` and friends) are structurally
-  UNREACHABLE today: :data:`RAW_CAPTURE_SEAM_ENABLED` is ``False`` and both the
-  seam (on write) and :func:`effective_acquisition_mode` (on read) demote any
-  raw mode to ``LEGACY_BODY_ONLY`` while it is. Only a future trusted raw
-  capture seam (NS-ADR-002) may flip it, together with its own tests. This is
-  deliberate, like the unreachable ``SAFE_TO_PROCESS`` (NS-ADR-013).
+- Raw-bytes fidelities are reachable ONLY through an allow-listed trusted raw
+  seam (:data:`RAW_SEAM_MODES`, NS-ADR-064): today just ``GMAIL_RAW``, written
+  by the live mail worker when full capture is opted in, and only together
+  with a well-formed ``raw_ref`` to the separately stored raw object. Both the
+  seam (on write) and :func:`effective_acquisition_mode` (on read) demote every
+  other raw mode (IMAP, Takeout mbox, EML, provider-full) and any raw mode
+  without a raw ref to ``LEGACY_BODY_ONLY``.
 """
 from __future__ import annotations
 
@@ -35,9 +36,20 @@ ACQUISITION_META_KEY = "acquisition_mode"
 #: Safe default for anything missing/unknown/garbled (fails safe, T-28).
 SAFE_DEFAULT_MODE = AcquisitionMode.LEGACY_BODY_ONLY
 
-#: Flipped to ``True`` only by a future trusted raw-capture seam (NS-ADR-002)
-#: that really stores unmodified RFC822 bytes. Do not flip it for decoded text.
-RAW_CAPTURE_SEAM_ENABLED = False
+#: Job ``meta`` key carrying the opaque ref of the separately stored raw
+#: RFC822 object (NS-ADR-064). ``content_ref`` stays the decoded body ref so
+#: the 7.1 safety-card and 7.4 gate joins keep working unchanged.
+RAW_REF_META_KEY = "raw_ref"
+
+#: The only ref prefix a trusted raw-capture seam writes raw objects under.
+RAW_REF_PREFIX = "content://raw/"
+
+#: Raw modes with a real trusted capture seam (NS-ADR-064). Only the Gmail
+#: ``format=raw`` path in the live mail worker stores unmodified RFC822 bytes.
+#: Every other raw mode (IMAP, Takeout mbox, EML, provider-full) stays demoted
+#: until its own seam exists, with its own tests. Do not add a mode here for
+#: decoded text.
+RAW_SEAM_MODES: frozenset[AcquisitionMode] = frozenset({AcquisitionMode.GMAIL_RAW})
 
 #: Modes that claim the stored object is raw message bytes / provider-full.
 _RAW_BYTES_MODES = frozenset(
@@ -81,11 +93,27 @@ def coerce_acquisition_mode(value: object) -> AcquisitionMode:
     return SAFE_DEFAULT_MODE
 
 
-def trusted_mode_for_write(mode: object) -> AcquisitionMode:
-    """Mode the seam may record: raw modes are demoted while no raw seam exists."""
+def is_raw_ref(value: object) -> bool:
+    """True for a well-formed raw-object ref written by the trusted seam."""
+    return (
+        isinstance(value, str)
+        and value.startswith(RAW_REF_PREFIX)
+        and len(value) > len(RAW_REF_PREFIX)
+        and ".." not in value
+    )
+
+
+def trusted_mode_for_write(mode: object, *, raw_ref: object = None) -> AcquisitionMode:
+    """Mode the seam may record.
+
+    A raw mode survives only when it has a trusted capture seam
+    (:data:`RAW_SEAM_MODES`) AND the caller recorded a well-formed raw-object
+    ref. Anything else is demoted to the safe default (fails safe, T-28).
+    """
     resolved = coerce_acquisition_mode(mode)
-    if resolved in _RAW_BYTES_MODES and not RAW_CAPTURE_SEAM_ENABLED:
-        return SAFE_DEFAULT_MODE
+    if resolved in _RAW_BYTES_MODES:
+        if resolved not in RAW_SEAM_MODES or not is_raw_ref(raw_ref):
+            return SAFE_DEFAULT_MODE
     return resolved
 
 
@@ -93,7 +121,24 @@ def effective_acquisition_mode(meta: Mapping[str, Any] | None) -> AcquisitionMod
     """Acquisition mode for a job, from its ``meta`` ONLY (never from content)."""
     if not isinstance(meta, Mapping):
         return SAFE_DEFAULT_MODE
-    return trusted_mode_for_write(meta.get(ACQUISITION_META_KEY))
+    return trusted_mode_for_write(
+        meta.get(ACQUISITION_META_KEY), raw_ref=meta.get(RAW_REF_META_KEY)
+    )
+
+
+def scan_ref_for(meta: Mapping[str, Any] | None) -> str | None:
+    """The ref the security worker should scan for this job.
+
+    The raw object when the trusted mode is raw, else the body ref. Derived
+    from the same trusted ``meta`` as the mode, so the two cannot disagree.
+    """
+    if not isinstance(meta, Mapping):
+        return None
+    body_ref = str(meta.get("content_ref") or "") or None
+    mode = effective_acquisition_mode(meta)
+    if mode in RAW_SEAM_MODES:
+        return str(meta.get(RAW_REF_META_KEY))
+    return body_ref
 
 
 def fidelity_for_mode(mode: AcquisitionMode) -> EvidenceFidelity:
@@ -114,11 +159,15 @@ def missing_parts_for_mode(mode: AcquisitionMode) -> list[Code]:
 __all__ = [
     "ACQUISITION_META_KEY",
     "BODY_ONLY_MISSING_PARTS",
-    "RAW_CAPTURE_SEAM_ENABLED",
+    "RAW_REF_META_KEY",
+    "RAW_REF_PREFIX",
+    "RAW_SEAM_MODES",
     "SAFE_DEFAULT_MODE",
     "coerce_acquisition_mode",
     "effective_acquisition_mode",
     "fidelity_for_mode",
+    "is_raw_ref",
+    "scan_ref_for",
     "is_body_only",
     "missing_parts_for_mode",
     "trusted_mode_for_write",

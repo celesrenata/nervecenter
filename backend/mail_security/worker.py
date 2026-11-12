@@ -93,10 +93,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 import structlog
 
 from backend.mail_security.acquisition import (
+    RAW_SEAM_MODES,
     effective_acquisition_mode,
     fidelity_for_mode,
     is_body_only,
     missing_parts_for_mode,
+    scan_ref_for,
 )
 from backend.mail_security.attachment_wiring import (
     AttachmentAssessment,
@@ -418,10 +420,15 @@ class MailSecurityWorker:
         # Fidelity comes from the TRUSTED acquisition mode recorded by the
         # ingest seam in the job meta, never from the content (NS-ADR-024).
         acquisition_mode = effective_acquisition_mode(job.meta)
+        # NS-ADR-064: scan the raw RFC822 object when (and only when) the
+        # trusted mode is a raw seam mode; ``content_ref`` stays the body ref
+        # for the 7.1/7.4 joins. A missing raw object fails closed to
+        # INCOMPLETE below, never silently falls back to the body.
+        scan_ref = scan_ref_for(job.meta)
         attempts = int(getattr(job, "attempts", 0) or 0)
 
         try:
-            content = await self._resolve_content(account_scope, content_ref)
+            content = await self._resolve_content(account_scope, scan_ref)
             lap = self._lap(LatencyStage.RESOLVE, lap)
         except Exception:  # noqa: BLE001 - resolution failure is INCOMPLETE, never clean
             return await self._fail_job(
@@ -433,7 +440,7 @@ class MailSecurityWorker:
         if content is None:
             # Absent / unresolved content can never be clean (I-02). Persist an
             # honest INCOMPLETE verdict and fail the job with a typed code.
-            code = _CODE_NO_CONTENT_REF if not content_ref else _CODE_CONTENT_UNRESOLVED
+            code = _CODE_NO_CONTENT_REF if not scan_ref else _CODE_CONTENT_UNRESOLVED
             return await self._fail_job(
                 job, attempts, code=code,
                 account_scope=account_scope, source_key=source_key,
@@ -793,6 +800,7 @@ class MailSecurityWorker:
             evidence=evidence,
             evidence_fidelity=assessment.evidence_fidelity,
             acquisition_mode=effective_acquisition_mode(job.meta),
+            scan_ref=scan_ref_for(job.meta),
         )
         outcome = await self._repo.commit_verdict_fenced(
             job.account_scope,
@@ -818,8 +826,18 @@ class MailSecurityWorker:
         evidence: ParsedEvidence | None,
         evidence_fidelity: EvidenceFidelity,
         acquisition_mode: AcquisitionMode = AcquisitionMode.LEGACY_BODY_ONLY,
+        scan_ref: str | None = None,
     ) -> MessageEvidenceManifest:
-        """Build the immutable per-revision evidence manifest (design §4.1)."""
+        """Build the immutable per-revision evidence manifest (design §4.1).
+
+        For a trusted raw capture (NS-ADR-064) the manifest points
+        ``raw_content_ref`` at the raw RFC822 object and
+        ``normalized_content_ref`` at the decoded body; otherwise the body ref
+        is the only ref, as before.
+        """
+        raw_capture = acquisition_mode in RAW_SEAM_MODES and bool(scan_ref)
+        raw_ref = scan_ref if raw_capture else content_ref
+        normalized_ref = content_ref if raw_capture else None
         sha = evidence.source_sha256 if evidence is not None else None
         missing = list(evidence.completeness_codes()) if evidence is not None else []
         # R-002.3: a body-only capture explicitly marks the evidence it lacks.
@@ -834,8 +852,8 @@ class MailSecurityWorker:
             provider_uid=source_key,
             acquisition_mode=acquisition_mode,
             acquired_at=self._clock(),
-            raw_content_ref=_opaque_ref(content_ref),
-            normalized_content_ref=None,
+            raw_content_ref=_opaque_ref(raw_ref),
+            normalized_content_ref=_opaque_ref(normalized_ref),
             sha256=sha,
             evidence_fidelity=evidence_fidelity,
             missing_parts=missing,

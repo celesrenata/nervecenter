@@ -66,6 +66,9 @@ import structlog
 
 from backend.mail_security.acquisition import (
     ACQUISITION_META_KEY,
+    RAW_REF_META_KEY,
+    RAW_SEAM_MODES,
+    is_raw_ref,
     trusted_mode_for_write,
 )
 from backend.mail_security.identifiers import (
@@ -81,6 +84,17 @@ log = structlog.get_logger(__name__)
 #: OFF unless the env var is set to something other than ``""`` / ``"0"``.
 #: Defaults OFF per the NerveShield steering contract (SHADOW, opt-in).
 ENV_MAIL_SECURITY_ENABLED = "NERVE_MAIL_SECURITY_ENABLED"
+
+#: Opt-in full-email capture (NS-ADR-064, G8 item 1). When ON *and* the
+#: security seam is ON, the Gmail transport also fetches ``format=raw`` and the
+#: mail worker stores the unmodified RFC822 bytes as a separate encrypted
+#: object for the security plane. Defaults OFF; OFF is byte-identical to the
+#: body-only behavior.
+ENV_MAIL_SECURITY_FULL_CAPTURE = "NERVE_MAIL_SECURITY_FULL_CAPTURE"
+
+#: Upper bound on one stored raw message (decoded bytes). Larger messages are
+#: not raw-captured; they keep the body-only path and its honest fidelity.
+RAW_CAPTURE_MAX_BYTES = 32 * 1024 * 1024
 
 #: The analysis-profile/version token that, with the source key, fixes a job's
 #: logical identity (Task 1.2 ``outbox_job_key``). SHADOW profile for Phase 1.
@@ -130,6 +144,18 @@ def mail_security_enabled(env: dict[str, str] | None = None) -> bool:
     """
     source = dict(env) if env is not None else dict(os.environ)
     return source.get(ENV_MAIL_SECURITY_ENABLED, "").strip() not in ("", "0")
+
+
+def full_capture_enabled(env: dict[str, str] | None = None) -> bool:
+    """``True`` only when BOTH the security seam and full capture are opted in.
+
+    Raw bytes are only worth fetching and storing when a security job will be
+    scheduled to read them, so full capture can never run on its own.
+    """
+    source = dict(env) if env is not None else dict(os.environ)
+    if not mail_security_enabled(source):
+        return False
+    return source.get(ENV_MAIL_SECURITY_FULL_CAPTURE, "").strip() not in ("", "0")
 
 
 class MailSecurityIngestionSeam:
@@ -188,6 +214,7 @@ class MailSecurityIngestionSeam:
         content_ref: str | None = None,
         flags: dict[str, bool] | None = None,
         acquisition_mode: str | None = None,
+        raw_ref: str | None = None,
     ) -> Any | None:
         """Upsert one ``PENDING`` security job for a message (idempotent).
 
@@ -230,6 +257,7 @@ class MailSecurityIngestionSeam:
                     content_ref=content_ref,
                     flags=flags,
                     acquisition_mode=acquisition_mode,
+                    raw_ref=raw_ref,
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - scheduling must never fail ingest
@@ -247,6 +275,7 @@ def _safe_job_meta(
     content_ref: str | None,
     flags: dict[str, bool] | None,
     acquisition_mode: str | None = None,
+    raw_ref: str | None = None,
 ) -> dict[str, Any]:
     """Build the bounded, safe ``meta`` payload for a scheduled job.
 
@@ -259,9 +288,14 @@ def _safe_job_meta(
     # Trusted acquisition provenance (NS-ADR-024): recorded by the ingest code
     # that stored the object. Missing/unknown/raw-without-a-raw-seam all
     # collapse to LEGACY_BODY_ONLY; fidelity is never inferred from content.
-    meta[ACQUISITION_META_KEY] = trusted_mode_for_write(acquisition_mode).value
+    mode = trusted_mode_for_write(acquisition_mode, raw_ref=raw_ref)
+    meta[ACQUISITION_META_KEY] = mode.value
     if content_ref is not None:
         meta["content_ref"] = str(content_ref)
+    # NS-ADR-064: the raw ref is recorded only when it backs a trusted raw
+    # mode, so a demoted job never carries a ref the worker would scan.
+    if mode in RAW_SEAM_MODES and is_raw_ref(raw_ref):
+        meta[RAW_REF_META_KEY] = str(raw_ref)
     if flags:
         meta["flags"] = {
             str(k): bool(v) for k, v in flags.items() if isinstance(v, bool)
@@ -320,8 +354,11 @@ async def scan_missing_jobs(
 __all__ = [
     "DEFAULT_ANALYSIS_PROFILE_VERSION",
     "ENV_MAIL_SECURITY_ENABLED",
+    "ENV_MAIL_SECURITY_FULL_CAPTURE",
     "JOB_STATE_PENDING",
+    "RAW_CAPTURE_MAX_BYTES",
     "MailSecurityIngestionSeam",
+    "full_capture_enabled",
     "get_mail_security_repository",
     "mail_security_enabled",
     "scan_missing_jobs",

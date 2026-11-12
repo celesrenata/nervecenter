@@ -1,0 +1,207 @@
+# NerveShield attachment scanning: ClamAV (NS-ADR-065, G8 item 5).
+#
+# Split by design (backend/mail_security/clamav.py "Deployment requirements"):
+#
+# * clamd runs as a native sidecar INSIDE the api pod (api-deployment.yaml)
+#   and listens ONLY on a UNIX socket in a pod-private emptyDir. The client
+#   refuses anything but a UNIX socket or loopback, so attachment bytes never
+#   leave the pod. No TCP listener is configured.
+# * freshclam is a SEPARATE updater pod. It is the only ClamAV component with
+#   outbound access, it never sees attachment bytes or the api's secrets, and
+#   it writes the signature database to a dedicated NFS directory that the
+#   clamd sidecar mounts read-only. clamd picks up new signatures through
+#   SelfCheck. The database is a cache: losing it only means a re-download.
+#
+# Image: the official clamav/clamav `_base` variant (no baked database),
+# pinned by digest. Both containers run as uid 10001, non-root, read-only root.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: clamav-config
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: clamav
+data:
+  clamd.conf: |
+    Foreground yes
+    LogTime yes
+    LogClean no
+    ExtendedDetectionInfo yes
+    # UNIX socket only, in the pod-private emptyDir shared with the api.
+    LocalSocket /run/clamav/clamd.sock
+    LocalSocketMode 660
+    FixStaleSocket yes
+    DatabaseDirectory /var/lib/clamav
+    TemporaryDirectory /tmp
+    # Reload signatures written by the freshclam pod.
+    SelfCheck 600
+    ConcurrentDatabaseReload yes
+    MaxThreads 4
+    MaxConnectionQueueLength 16
+    # The client caps a stream at 16 MiB; clamd's cap sits above it so the
+    # client limit triggers first.
+    StreamMaxLength 20M
+    MaxFileSize 25M
+    MaxScanSize 100M
+    MaxRecursion 16
+    MaxFiles 10000
+  freshclam.conf: |
+    Foreground yes
+    LogTime yes
+    DatabaseDirectory /var/lib/clamav
+    DatabaseMirror database.clamav.net
+    # Every 2 hours: well inside the client's 3-day signature-age limit and
+    # within the mirror's fair-use guidance.
+    Checks 12
+    ConnectTimeout 30
+    ReceiveTimeout 600
+    TestDatabases yes
+    Bytecode yes
+---
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: nervecenter-clamav-nfs-pv
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: clamav
+spec:
+  capacity:
+    storage: 5Gi
+  accessModes:
+    - ReadWriteMany
+  # A cache, but Retain keeps behavior identical to the other NAS volumes.
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: nfs
+  mountOptions:
+    - vers=4.1
+  nfs:
+    server: 192.168.42.8
+    path: /volume1/Kubernetes/NerveCenter/clamav
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: nervecenter-clamav
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: clamav
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: nfs
+  volumeName: nervecenter-clamav-nfs-pv
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clamav-freshclam
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: clamav-freshclam
+spec:
+  replicas: 1
+  # One writer at a time on the shared database directory.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: clamav-freshclam
+  template:
+    metadata:
+      labels:
+        app: clamav-freshclam
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: freshclam
+          image: "clamav/clamav:1.5.4_base@sha256:64ca916618842ba469ef38a501e6c2f42a68281c064c03749b0126c0fb085ce5"
+          imagePullPolicy: IfNotPresent
+          command:
+            - freshclam
+            - --daemon
+            - --foreground
+            - --config-file=/etc/clamav-nc/freshclam.conf
+          resources:
+            # TestDatabases loads the new database once per update.
+            requests:
+              memory: "512Mi"
+              cpu: "0.1"
+            limits:
+              memory: "2Gi"
+              cpu: "1"
+          volumeMounts:
+            - name: db
+              mountPath: /var/lib/clamav
+            - name: config
+              mountPath: /etc/clamav-nc
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: db
+          persistentVolumeClaim:
+            claimName: nervecenter-clamav
+        - name: config
+          configMap:
+            name: clamav-config
+        - name: tmp
+          emptyDir: {}
+---
+# freshclam: no ingress at all; egress only DNS and HTTP(S) to public
+# addresses (the ClamAV CDN has no stable IPs to pin). Private ranges are
+# excluded, so the updater cannot reach the api, the database or the NAS
+# over the pod network (its NFS volume is mounted by the kubelet, not the pod).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: clamav-freshclam
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: clamav-freshclam
+spec:
+  podSelector:
+    matchLabels:
+      app: clamav-freshclam
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+              - 100.64.0.0/10
+      ports:
+        - protocol: TCP
+          port: 443
+        - protocol: TCP
+          port: 80
