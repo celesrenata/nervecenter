@@ -38,6 +38,10 @@ spec:
                 name: nervecenter-env
             - configMapRef:
                 name: nervcenter-config
+            # Object-store encryption keyring (out-of-band Secret; see
+            # object-store-nfs.yaml). Losing it makes stored mail unreadable.
+            - secretRef:
+                name: nervecenter-object-key
           readinessProbe:
             httpGet:
               path: /api/health
