@@ -179,6 +179,8 @@ TABLES_WITH_ID = frozenset(
         "mail_security_feedback",
         # NerveShield pre-promotion gate holds, Alembic 019 (Phase 7 Task 7.4).
         "mail_security_held_promotions",
+        # NerveShield explicit confirmations, Alembic 020 (Phase 7 Task 7.6).
+        "mail_security_confirmations",
     }
 )
 

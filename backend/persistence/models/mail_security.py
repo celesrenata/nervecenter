@@ -542,10 +542,52 @@ class MailSecurityHeldPromotionRow(Base):
     )
 
 
+class MailSecurityConfirmationRow(Base):
+    """One explicit confirmation of an email-origin proposal action (Task 7.6).
+
+    Table ``mail_security_confirmations``. Holds the validated proposal
+    payload (enums, dates, bounded amounts, opaque refs only), the exact
+    execution hash the approval binds to, the action and risk class, status,
+    the issued approval record, the single-use step-up proof id (unique), the
+    out-of-band sender attestation, a coded reject reason and a codes-only
+    audit trail.
+    """
+
+    __tablename__ = "mail_security_confirmations"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    updated_at: Mapped[datetime] = _updated_at()
+    schema_version: Mapped[str] = mapped_column(String(32), default="mail-confirmation@1")
+    confirmation_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    proposal_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    proposal: Mapped[dict[str, Any]] = mapped_column(Jsonb, default=dict, nullable=False)
+    execution_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    action: Mapped[str] = mapped_column(String(80), nullable=False)
+    risk: Mapped[str] = mapped_column(String(32), nullable=False)
+    target: Mapped[str] = mapped_column(String(255), nullable=False)
+    requested_by: Mapped[str] = mapped_column(String(80), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    approval: Mapped[dict[str, Any] | None] = mapped_column(Jsonb, nullable=True)
+    step_up_proof_id: Mapped[str | None] = mapped_column(String(96), nullable=True)
+    sender_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    reject_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    audit: Mapped[list[dict[str, Any]]] = mapped_column(Jsonb, default=list, nullable=False)
+
+    __table_args__ = (
+        Index("ix_mail_security_conf_id", "confirmation_id", unique=True),
+        Index("ix_mail_security_conf_scope", "account_scope", "status"),
+        Index("ix_mail_security_conf_step_up", "step_up_proof_id", unique=True),
+    )
+
+
 __all__ = [
     "MailEvidenceRow",
     "MailIntelIndicatorRow",
     "MailIntelOverrideRow",
+    "MailSecurityConfirmationRow",
     "MailSecurityFeedbackRow",
     "MailSecurityHeldPromotionRow",
     "MailSecurityAssessmentRow",
