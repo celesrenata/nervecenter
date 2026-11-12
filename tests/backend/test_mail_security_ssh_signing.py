@@ -170,3 +170,19 @@ def test_owner_tools_are_not_imported_by_the_service() -> None:
         if "owner_tools" not in p.parts and pattern.search(p.read_text(encoding="utf-8"))
     ]
     assert offenders == []
+
+
+def test_owner_sign_dataset_tool_round_trip(tmp_path: Path) -> None:
+    from backend.owner_tools import sign_dataset
+
+    key, pub = _keypair(tmp_path, "owner")
+    body_path = tmp_path / "unsigned.json"
+    body_path.write_text(json.dumps(_body()))
+    out = tmp_path / "signed.json"
+    result = sign_dataset.sign(body_path, "owner", key, out)
+    assert result["signing_key_id"] == "ssh:" + SshPublicKey.from_line(pub).fingerprint
+    assert oct(out.stat().st_mode & 0o777) == "0o600"
+    assert (
+        verify_manifest_ssh(out.read_text(), pinned_ssh_keys([pub]))["review"]["reviewer_ref"]
+        == "owner"
+    )
