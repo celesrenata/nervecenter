@@ -1,4 +1,10 @@
-# DNS fixes for owner mail domains (draft, NOT applied)
+# DNS fixes for owner mail domains (draft, NOT applied; on hold)
+
+> **Status 2026-11-13: on hold.** The owner reports "we don't have dns". Public
+> lookups show both zones ARE hosted on Amazon Route 53 (`awsdns` name servers),
+> so some AWS account or registrar-managed Route 53 setup controls them. These
+> records can be applied only by whoever has that access. The `frameshift.net`
+> spoofability finding stands until then.
 
 Date: 2026-11-13. Owner: "go ahead" (draft the exact records and rollout order). Read-only `dig` lookups only; nothing was changed. Both zones are on **Route 53** (`awsdns` name servers).
 

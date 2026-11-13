@@ -50,3 +50,7 @@ Key point for B: because Google is the first hop, a journal copy does **not** gi
 - **D-1 (answered by DNS):** owner domains are `celestium.life` and `frameshift.net`, both on Google Workspace.
 - **D-2:** Fix the DNS records above yourself, or want me to prepare exact records and a rollout order (`p=none` → `reject`)?
 - **D-3:** Close this spec at G0 (recommended), or keep B open with a re-open trigger, e.g. "independent auth needed for > N% of mail"?
+
+## Closed (2026-11-13)
+
+Owner: "we don't have local smtp as we're on comcast ... all email goes through google's gmail to celes@celestium.life and celes@frameshift.net and soon celes.renata66@gmail.com but that's it". Residential Comcast blocks inbound port 25 and there is no relay, so options A and B have no place to terminate. **Spec closed at G0.** Option C (Gmail API raw, NS-ADR-064) is the permanent acquisition path for all three mailboxes. Re-open only if mail moves off Google onto an owner-run MTA.
