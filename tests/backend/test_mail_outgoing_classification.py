@@ -4,6 +4,7 @@ Live defect: the Gmail history poll has no INBOX filter, so the owner's own sent
 mail (and drafts) were ingested as INCOMING communications from the owner and
 assessed as inbound threats (304 of 348 messages on one account were SENT).
 """
+
 from __future__ import annotations
 
 import base64
@@ -90,8 +91,10 @@ async def test_transport_classifies_by_labels(monkeypatch) -> None:
         raw={m: (200, {"raw": _b64(b"From: x\r\n\r\nbody")}) for m in ("in1", "sent1", "draft1")},
         entries=[_gentry(1, 5, "in1"), _gentry(2, 5, "sent1"), _gentry(3, 5, "draft1")],
         messages={
-            "in1": (200, _resource("in1", ["INBOX", "UNREAD"], From="Bob <bob@partner.example>",
-                                   To=OWNER)),
+            "in1": (
+                200,
+                _resource("in1", ["INBOX", "UNREAD"], From="Bob <bob@partner.example>", To=OWNER),
+            ),
             "sent1": (200, _resource("sent1", ["SENT"])),
             "draft1": (200, _resource("draft1", ["DRAFT"])),
         },
@@ -99,7 +102,8 @@ async def test_transport_classifies_by_labels(monkeypatch) -> None:
     )
     _install_gmail(monkeypatch, fake)
     items, cursor = await GmailClient(capture_raw=True).run(
-        _connector(), {"history_id": 5, "account": _ACCOUNT.lower()},
+        _connector(),
+        {"history_id": 5, "account": _ACCOUNT.lower()},
         credentials={"access_token": "tok"},
     )
     by_id = {i.message_id: i for i in items}
@@ -118,10 +122,12 @@ async def test_transport_classifies_by_labels(monkeypatch) -> None:
 
 
 def test_parse_recipients_orders_and_dedupes() -> None:
-    got = _parse_recipients({
-        "To": "Bob <BOB@partner.example>, undisclosed-recipients:;",
-        "Cc": "bob@partner.example, Carol <carol@other.example>",
-    })
+    got = _parse_recipients(
+        {
+            "To": "Bob <BOB@partner.example>, undisclosed-recipients:;",
+            "Cc": "bob@partner.example, Carol <carol@other.example>",
+        }
+    )
     assert got == [("BOB@partner.example", "Bob"), ("carol@other.example", "Carol")]
 
 
@@ -139,11 +145,20 @@ async def harness(tmp_path):
 
 def _item(mid: str, labels: tuple[str, ...], raw: bytes | None = None) -> MailItem:
     return MailItem(
-        message_id=mid, account=H.ACCOUNT, subject="Re: plan",
-        content_bytes=b"I'll send it Friday.\n", timestamp=H.TS,
-        headers={"From": f"Owner <{H.ACCOUNT}>", "To": "Bob <bob@partner.example>",
-                 "Message-ID": mid, "Date": "Mon, 27 Oct 2026 09:00:00 +0000"},
-        source="gmail", raw_bytes=raw, labels=labels,
+        message_id=mid,
+        account=H.ACCOUNT,
+        subject="Re: plan",
+        content_bytes=b"I'll send it Friday.\n",
+        timestamp=H.TS,
+        headers={
+            "From": f"Owner <{H.ACCOUNT}>",
+            "To": "Bob <bob@partner.example>",
+            "Message-ID": mid,
+            "Date": "Mon, 27 Oct 2026 09:00:00 +0000",
+        },
+        source="gmail",
+        raw_bytes=raw,
+        labels=labels,
     )
 
 
@@ -185,11 +200,14 @@ async def test_sent_mail_is_outgoing_to_the_recipient(harness, monkeypatch) -> N
 
 async def test_inbox_mail_is_unchanged(harness, monkeypatch) -> None:
     item = MailItem(
-        message_id="gmail:in-1", account=H.ACCOUNT, subject="Hello",
-        content_bytes=b"hi\n", timestamp=H.TS,
-        headers={"From": "Bob <bob@partner.example>", "To": H.ACCOUNT,
-                 "Message-ID": "gmail:in-1"},
-        source="gmail", labels=("INBOX",),
+        message_id="gmail:in-1",
+        account=H.ACCOUNT,
+        subject="Hello",
+        content_bytes=b"hi\n",
+        timestamp=H.TS,
+        headers={"From": "Bob <bob@partner.example>", "To": H.ACCOUNT, "Message-ID": "gmail:in-1"},
+        source="gmail",
+        labels=("INBOX",),
     )
     await _ingest(harness, monkeypatch, item)
     (row,) = await _rows(harness)
@@ -211,3 +229,38 @@ async def test_backfill_never_schedules_outgoing(harness, monkeypatch) -> None:
     )
     # The backfill provider reads only this query, so outgoing is never scheduled.
     assert rows == []
+
+
+async def test_sent_promise_becomes_an_outgoing_commitment(harness, monkeypatch) -> None:
+    """End to end through the real worker + detection pipeline: a promise in
+    the owner's sent mail is a COMMITMENT on an OUTGOING communication
+    attributed to the recipient (it was a misread incoming request before
+    NS-ADR-066)."""
+    seam = DefaultIngestSeam(communications_store=harness.registry.communications)
+    results: list[Any] = []
+    run = seam.run_pipeline
+    monkeypatch.setattr(
+        seam,
+        "run_pipeline",
+        lambda c, *, now: results.append((c, run(c, now=now))) or results[-1][1],
+    )
+    monkeypatch.setenv(ENV_MAIL_SECURITY_ENABLED, "1")
+    set_mail_security_repository(harness.registry.mail_security)
+    await MailIngestWorker(
+        connection_id=harness.conn.id,
+        cursor_kind="gmail_history",
+        connections=harness.registry.connections,
+        imports=harness.registry.imports,
+        object_store=harness.store,
+        transport=StubMailTransport(
+            items=[_item("gmail:promise-1", ("SENT",))], next_cursor={"history_id": 9}
+        ),
+        seam=seam,
+        poll_interval_s=30.0,
+    ).poll_once()
+    ((comm, result),) = results
+    assert comm.direction.value == "outgoing"
+    report = seam.pipeline.detection.report_for(comm.communication_id)
+    kinds = sorted({f.kind for f in report.findings})
+    assert "commitment" in kinds and "request" not in kinds
+    assert result.finding_ids
