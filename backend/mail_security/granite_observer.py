@@ -744,11 +744,13 @@ class CompactObservationV2(BaseModel):
 
     category: MessageCategory
     sender_role: ClaimedRole
-    claims_to_be: Literal["ORGANIZATION", "PERSON", "NONE"]
-    claim_matches_sender: Literal["YES", "NO", "UNSURE"]
-    asks_secret: Literal["YES", "NO"]
-    asks_money: Literal["YES", "NO"]
-    asks_identity_data: Literal["YES", "NO"]
+    # UNKNOWN is accepted where the prompt's general "if unsure, use UNKNOWN"
+    # collides with a fact's own value; it is never read as YES.
+    claims_to_be: Literal["ORGANIZATION", "PERSON", "NONE", "UNKNOWN"]
+    claim_matches_sender: Literal["YES", "NO", "UNSURE", "UNKNOWN"]
+    asks_secret: Literal["YES", "NO", "UNKNOWN"]
+    asks_money: Literal["YES", "NO", "UNKNOWN"]
+    asks_identity_data: Literal["YES", "NO", "UNKNOWN"]
     requests: list[_ReqItemV2] = Field(max_length=16)
     link_risk: list[_RiskItem] = Field(max_length=MAX_LINKS)
     attachment_risk: list[_RiskItem] = Field(max_length=MAX_ATTACHMENTS)
@@ -761,10 +763,20 @@ class V2Decision:
     """Fixed rule over compact@2 facts plus trusted context (NS-ADR-080).
 
     The model reports facts; this code, not the model, decides
-    PHISHING_SUSPECTED: a high-impact ask (secret, money or identity data)
-    combined with impersonation (a claimed sender that does not own the From
-    domain) or a provider-reported DMARC failure. A model-chosen
-    PHISHING_SUSPECTED category is kept as well. Still only an observation.
+    PHISHING_SUSPECTED when any of these holds:
+
+    * a high-impact ask (secret, money or identity data) together with a
+      suspicious identity (the claimed sender does not own the From domain,
+      an organization writes from free mail, or the model's own
+      IMPERSONATION / SENDER_MISMATCH signal) or a provider-reported DMARC
+      failure;
+    * an ask for a secret from a sender with no provider-verified DMARC
+      result (credentials should only ever be requested by authenticated
+      senders);
+    * a money ask with new payment details (invoice fraud);
+    * the model chose PHISHING_SUSPECTED itself.
+
+    Still only an observation: it never changes a disposition.
     """
 
     phishing: bool
@@ -776,12 +788,23 @@ def decide_v2(compact: CompactObservationV2, packet: EvidencePacket) -> V2Decisi
     secret = compact.asks_secret == "YES"
     money = compact.asks_money == "YES"
     identity = compact.asks_identity_data == "YES"
-    impersonation = (
-        compact.claims_to_be != "NONE" and compact.claim_matches_sender == "NO"
-    ) or (compact.claims_to_be == "ORGANIZATION" and packet.sender_freemail)
+    claims = compact.claims_to_be in ("ORGANIZATION", "PERSON")
+    impersonation = (claims and compact.claim_matches_sender == "NO") or (
+        compact.claims_to_be == "ORGANIZATION" and packet.sender_freemail
+    )
     ask = secret or money or identity
-    phishing = compact.category is MessageCategory.PHISHING_SUSPECTED or (
-        ask and (impersonation or packet.sender_auth == "DMARC_FAIL")
+    model_signals = set(compact.signals)
+    suspicious_identity = impersonation or bool(
+        model_signals & {"IMPERSONATION", "SENDER_MISMATCH"}
+    )
+    new_payment_details = "PAYMENT_DETAILS_CHANGE" in model_signals or any(
+        item.startswith("CHANGE_PAYMENT_DETAILS ") for item in compact.requests
+    )
+    phishing = (
+        compact.category is MessageCategory.PHISHING_SUSPECTED
+        or (ask and (suspicious_identity or packet.sender_auth == "DMARC_FAIL"))
+        or (secret and packet.sender_auth == "UNKNOWN")
+        or (money and new_payment_details)
     )
     signals = tuple(
         name
@@ -993,7 +1016,7 @@ def expand_compact(
             "YES": IdentityConsistency.CONSISTENT.value,
             "NO": IdentityConsistency.INCONSISTENT.value,
         }.get(compact.claim_matches_sender, IdentityConsistency.INSUFFICIENT_EVIDENCE.value)
-        if compact.claims_to_be == "NONE":
+        if compact.claims_to_be not in ("ORGANIZATION", "PERSON"):
             consistency = IdentityConsistency.INSUFFICIENT_EVIDENCE.value
     doc_out = {
         "schema_version": SCHEMA_VERSION,

@@ -175,9 +175,20 @@ def _expand(packet: EvidencePacket | None = None, **kw: Any):
         ({"claim_matches_sender": "NO"}, "DMARC_PASS", False),
         # No claimed sender: a "NO" match is not impersonation.
         ({"claims_to_be": "NONE", "claim_matches_sender": "NO", "asks_secret": "YES"},
-         "UNKNOWN", False),
+         "DMARC_PASS", False),
         # UNSURE is not impersonation.
-        ({"claim_matches_sender": "UNSURE", "asks_secret": "YES"}, "UNKNOWN", False),
+        ({"claim_matches_sender": "UNSURE", "asks_secret": "YES"}, "DMARC_PASS", False),
+        # A secret asked by a sender without verified DMARC.
+        ({"asks_secret": "YES"}, "UNKNOWN", True),
+        # Money plus new payment details (invoice fraud), any auth.
+        ({"asks_money": "YES", "signals": ["PAYMENT_DETAILS_CHANGE"]}, "DMARC_PASS", True),
+        ({"asks_money": "YES", "requests": ["CHANGE_PAYMENT_DETAILS HIGH 0"]}, "UNKNOWN", True),
+        # The model's own impersonation signal plus an ask.
+        ({"asks_money": "YES", "signals": ["SENDER_MISMATCH"]}, "UNKNOWN", True),
+        # UNKNOWN facts are never read as YES.
+        ({"asks_secret": "UNKNOWN", "claim_matches_sender": "UNKNOWN"}, "UNKNOWN", False),
+        ({"claims_to_be": "UNKNOWN", "claim_matches_sender": "NO", "asks_money": "YES"},
+         "DMARC_PASS", False),
         # A model-chosen PHISHING_SUSPECTED is kept.
         ({"category": "PHISHING_SUSPECTED"}, "DMARC_PASS", True),
     ],
@@ -443,7 +454,8 @@ def test_runtime_rejects_bad_contract_or_role() -> None:
 
 
 def test_eval_set_is_balanced_unique_and_synthetic() -> None:
-    assert len(BENIGN) == 20 and len(PHISHING) == 15
+    assert len(BENIGN) == 22 and len(PHISHING) == 15
+    assert any(c.sender_auth == "UNKNOWN" for c in BENIGN)  # unauthenticated benign too
     ids = [c.case_id for c in CASES]
     assert len(set(ids)) == len(ids)
     assert all(c.categories for c in CASES)

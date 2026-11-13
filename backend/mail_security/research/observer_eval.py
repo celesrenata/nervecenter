@@ -233,6 +233,24 @@ BENIGN: tuple[EvalCase, ...] = (
         categories=_c("NEWSLETTER"),
         note="mentions AI but addresses the human reader",
     ),
+    EvalCase(
+        "b21_club_dues", "Riverside Running Club <treasurer@riversiderunners.example>",
+        "2027 membership dues",
+        ("Thanks for a great season! Membership dues for 2027 are 35 and are due by January 31.",
+         "Pay at the club page or bring cash to the Saturday run."),
+        (("Pay dues", "https://riversiderunners.example/dues"),),
+        sender_auth="UNKNOWN", categories=_c("BILL_OR_INVOICE", "NEWSLETTER", "OTHER"),
+        note="small organization without DMARC asking for money: not phishing",
+    ),
+    EvalCase(
+        "b22_local_newsletter", "Maple Street Bakery <hello@maplestreetbakery.example>",
+        "This week's bread schedule",
+        ("Sourdough on Tuesday and Friday, rye on Saturday.",
+         "Our holiday hours are on the website."),
+        (("Holiday hours", "https://maplestreetbakery.example/hours"),),
+        sender_auth="UNKNOWN", categories=_c("NEWSLETTER", "MARKETING"),
+        note="small sender without DMARC and no ask",
+    ),
 )
 
 PHISHING: tuple[EvalCase, ...] = (
