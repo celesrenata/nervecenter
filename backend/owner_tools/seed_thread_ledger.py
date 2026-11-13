@@ -64,15 +64,25 @@ async def _seed_connection(conn: Any, reg: Any, repo: Any, key: bytes, *, days: 
         )
         counts["listed"] = len(ids)
         for mid in reversed(ids):  # oldest first so replies find their parents
-            r = await client.get(
-                f"{_API}/messages/{mid}",
-                headers=auth,
-                params=[("format", "metadata"), *(("metadataHeaders", h) for h in _HEADERS)],
-            )
+            r = None
+            for attempt in range(6):
+                r = await client.get(
+                    f"{_API}/messages/{mid}",
+                    headers=auth,
+                    params=[("format", "metadata"), *(("metadataHeaders", h) for h in _HEADERS)],
+                )
+                # Gmail per-user quota: back off on 429 / 403 rate limits / 5xx.
+                if r.status_code in (429, 403) or r.status_code >= 500:
+                    if r.status_code == 403 and "rateLimit" not in r.text:
+                        break
+                    await asyncio.sleep(min(30.0, 2.0 ** attempt))
+                    continue
+                break
             if r.status_code == 401:
                 raise SystemExit("access token expired: run after a successful poll")
             if r.status_code != 200:
                 counts["errors"] += 1
+                counts[f"http_{r.status_code}"] = counts.get(f"http_{r.status_code}", 0) + 1
                 continue
             body = r.json()
             labels = tuple(body.get("labelIds") or ())
