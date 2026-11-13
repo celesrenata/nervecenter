@@ -40,7 +40,9 @@ async def _bounded_json(resp: httpx.Response) -> Any:
 class HttpRegistryTransport:
     """Read-only OmniRoute registry access for the route guard."""
 
-    def __init__(self, base_url: str, api_key: str, *, timeout: float = 5.0) -> None:
+    def __init__(self, base_url: str, api_key: str, *, timeout: float = 12.0) -> None:
+        # Live /api/combos occasionally takes >3 s; the resolver's overall
+        # budget (15 s) still bounds the three GETs together.
         self._base = base_url.rstrip("/").removesuffix("/v1")
         self._key = api_key
         self._timeout = timeout
