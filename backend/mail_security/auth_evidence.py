@@ -64,7 +64,9 @@ extending them. No model change is required.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+import os
+import re
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 
 from backend.mail_security._domains import domain_of as _shared_domain_of
@@ -83,6 +85,9 @@ from backend.mail_security.models import (
     FindingStatus,
     SecurityFinding,
 )
+
+#: A plausible authserv-id: a hostname-like token (no spaces, ``;`` or ``=``).
+_AUTHSERV_RE = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?")
 
 # -- detector identity -------------------------------------------------------
 
@@ -138,8 +143,16 @@ class TrustedReceiverBoundary:
     """
 
     authserv_ids: frozenset[str] = field(default_factory=frozenset)
+    #: NS-ADR-070: attest ONLY the topmost ``Authentication-Results`` header.
+    #: The receiving provider prepends its own result above every header the
+    #: sender wrote, so a header further down that names the same authserv-id
+    #: is attacker-writable and must stay ``UNTRUSTED_HEADER``.
+    topmost_only: bool = False
 
-    def __init__(self, authserv_ids: Iterable[str] | None = None) -> None:
+    def __init__(
+        self, authserv_ids: Iterable[str] | None = None, *, topmost_only: bool = False
+    ) -> None:
+        object.__setattr__(self, "topmost_only", bool(topmost_only))
         normalized: set[str] = set()
         if authserv_ids is not None:
             if isinstance(authserv_ids, str):
@@ -318,11 +331,13 @@ def classify_authentication(
     saw_untrusted_origin = False
     saw_malformed = False
 
-    for value in raw_values:
+    for index, value in enumerate(raw_values):
         parsed = _parse_authentication_results(value)
         if not parsed.methods and parsed.authserv_id is None:
             saw_malformed = True
-        is_trusted = boundary.attests(parsed.authserv_id)
+        is_trusted = boundary.attests(parsed.authserv_id) and (
+            index == 0 or not boundary.topmost_only
+        )
         if not is_trusted and (parsed.methods or parsed.authserv_id is None):
             # A header that asserts something but is not attested is forgeable.
             if parsed.methods:
@@ -383,6 +398,21 @@ def classify_authentication(
             )
         )
 
+    if trusted_results.get("dmarc") is AuthResult.FAIL:
+        # NS-ADR-070: the receiving provider itself reported DMARC=fail — the
+        # From domain's owner says this message is not theirs. An observation,
+        # never an independent verdict.
+        findings.append(
+            _finding(
+                finding_key="auth-provider-reported-dmarc-fail",
+                rule_id=_RULE_AUTH_PROVENANCE,
+                category=FindingCategory.AUTH_PROVENANCE,
+                severity=FindingSeverity.MEDIUM,
+                status=FindingStatus.OBSERVED,
+                explanation_code="AUTH_PROVIDER_REPORTED_DMARC_FAIL",
+            )
+        )
+
     if saw_malformed:
         findings.append(
             _finding(
@@ -410,6 +440,20 @@ def classify_authentication(
 # =============================================================================
 # public: offline sender provenance inspection
 # =============================================================================
+
+
+ENV_TRUSTED_AUTHSERV_IDS = "NERVE_MAIL_SECURITY_TRUSTED_AUTHSERV_IDS"
+
+
+def boundary_from_env(env: Mapping[str, str] | None = None) -> TrustedReceiverBoundary:
+    """Production boundary (NS-ADR-070): comma-separated authserv-ids from
+    ``NERVE_MAIL_SECURITY_TRUSTED_AUTHSERV_IDS``, always topmost-only. Unset or
+    malformed -> the empty boundary (nothing attested, the safe default)."""
+    raw = ((env if env is not None else os.environ).get(ENV_TRUSTED_AUTHSERV_IDS) or "").strip()
+    ids = [t.strip().lower() for t in raw.split(",") if t.strip()]
+    if not ids or any(not _AUTHSERV_RE.fullmatch(t) for t in ids):
+        return TrustedReceiverBoundary()
+    return TrustedReceiverBoundary(ids, topmost_only=True)
 
 
 def inspect_sender_provenance(addresses: SenderAddresses) -> list[SecurityFinding]:

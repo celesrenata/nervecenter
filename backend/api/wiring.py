@@ -645,6 +645,10 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
 
         attachment_scanner = scanner_from_env()
 
+        from backend.mail_security.auth_evidence import boundary_from_env
+
+        auth_boundary = boundary_from_env()
+
         def make_worker(scope: str) -> MailSecurityWorker:
             return MailSecurityWorker(
                 repository=repo,
@@ -653,6 +657,9 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
                 analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
                 intel_store=intel_store,
                 attachment_scanner=attachment_scanner,
+                # NS-ADR-070: the receiving provider's topmost result only;
+                # empty (nothing attested) unless configured.
+                boundary=auth_boundary,
             )
 
         try:

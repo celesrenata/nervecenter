@@ -405,9 +405,14 @@ class MailSecurityWorker:
     async def _process_job(self, job: Any) -> Any:
         """Process one claimed job, recording total latency (Task 2.6)."""
         started = self._latency_clock() if self._latency_sink is not None else None
+        # NS-ADR-071: a re-acquisition (e.g. the full-capture backfill) records
+        # a new immutable source revision in the trusted job meta; verdicts are
+        # never overwritten, the newer revision is added beside the old one.
+        self._source_revision = source_revision_of(job.meta)
         try:
             return await self._process_job_inner(job, started)
         finally:
+            self._source_revision = 1
             self._lap(LatencyStage.TOTAL, started)
 
     async def _process_job_inner(self, job: Any, lap: float | None) -> Any:
@@ -991,6 +996,19 @@ def _provider_from_source_key(source_key: str) -> str:
     only; it never affects the disposition.
     """
     return "unknown"
+
+
+#: Job meta key for the source revision (NS-ADR-071); bounded, default 1.
+SOURCE_REVISION_META_KEY = "source_revision"
+_MAX_SOURCE_REVISION = 100
+
+
+def source_revision_of(meta: Any) -> int:
+    """Revision from trusted job meta; anything unusable is revision 1."""
+    value = meta.get(SOURCE_REVISION_META_KEY) if isinstance(meta, dict) else None
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 1
+    return value if 1 <= value <= _MAX_SOURCE_REVISION else 1
 
 
 def _opaque_ref(content_ref: str | None) -> str | None:

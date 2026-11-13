@@ -52,6 +52,12 @@ data:
   # only (SHADOW; no model sees them). Set "0" (and roll api) to go back to
   # body-only; already-stored raw objects stay encrypted on the NAS.
   NERVE_MAIL_SECURITY_FULL_CAPTURE: "1"
+  # NerveShield trusted receiver (NS-ADR-070): Gmail's own receiving server.
+  # Only the TOPMOST Authentication-Results header is attested (Gmail
+  # prepends it above everything the sender wrote); lower copies naming the
+  # same server stay UNTRUSTED. Results become PROVIDER_REPORTED, never
+  # INDEPENDENT. Remove this key to attest nothing again.
+  NERVE_MAIL_SECURITY_TRUSTED_AUTHSERV_IDS: "mx.google.com"
   # NerveShield attachment scanning (NS-ADR-065): the clamd sidecar's UNIX
   # socket. Remove this key to report attachments as NOT_RUN again.
   NERVE_CLAMD_SOCKET: "/run/clamav/clamd.sock"
