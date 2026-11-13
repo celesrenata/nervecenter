@@ -45,3 +45,7 @@ Detonation would only help the unresolved 14 (about 4% of messages), and some of
 - **D-3:** Guest images (Linux only, or Windows with a licence)? (Same condition.)
 - **D-4:** Approve the static deep-inspection spec as the next step? (Recommended.)
 - **D-5:** Add a default-deny NetworkPolicy for the `nervecenter` namespace?
+
+## Closed (2026-11-13)
+
+Owner deferred ("i have no clue on any of this"). Closed by default: superseded by static deep inspection (NS-ADR-086/087), which is live and covers every attachment type seen. Re-open only if executables or encrypted documents start arriving that static inspection can't judge.
