@@ -22,6 +22,8 @@ set -euo pipefail
 REGISTRY="registry.celestium.life"
 API_IMAGE="${REGISTRY}/nervecenter/api"
 WEB_IMAGE="${REGISTRY}/nervecenter/web"
+# NerveShield static deep-inspection sidecar (NS-ADR-086).
+INSPECTOR_IMAGE="${REGISTRY}/nervecenter/inspector"
 NS="nervecenter"
 KUSTOMIZE_DIR="deployments/kubernetes"
 INGRESS_HOST="nervecenter.celestium.life"
@@ -55,6 +57,7 @@ if [[ -z "${TAG}" ]]; then
 fi
 API_TAG="${API_IMAGE}:${TAG}"
 WEB_TAG="${WEB_IMAGE}:${TAG}"
+INSPECTOR_TAG="${INSPECTOR_IMAGE}:${TAG}"
 log "tag: ${TAG} (api=${API_TAG}, web=${WEB_TAG})"
 
 # --- 3. harbor login ----------------------------------------------------------
@@ -110,6 +113,8 @@ log "building ${API_TAG} (linux/amd64)"
 docker build --platform linux/amd64 -f Dockerfile.api -t "${API_TAG}" .
 log "building ${WEB_TAG} (linux/amd64)"
 docker build --platform linux/amd64 -f web/Dockerfile -t "${WEB_TAG}" web/
+log "building ${INSPECTOR_TAG} (linux/amd64)"
+docker build --platform linux/amd64 -f Dockerfile.inspector -t "${INSPECTOR_TAG}" .
 # Optional self-host app artifacts (web/dist/downloads) are baked in when
 # staged; without them /downloads/ simply 404s (mount a volume at
 # /usr/share/nginx/downloads to override). See web/README.md + web/verify-downloads-packaging.sh.
@@ -121,6 +126,7 @@ fi
 log "pushing images"
 docker push "${API_TAG}"
 docker push "${WEB_TAG}"
+docker push "${INSPECTOR_TAG}"
 
 # --- 5. namespace + per-namespace pull secret ------------------------------------
 log "ensuring namespace ${NS}"
@@ -162,7 +168,7 @@ kubectl -n "${NS}" delete job nervecenter-migrate --ignore-not-found=true
 kubectl -n "${NS}" delete job nervecenter-object-store-bootstrap --ignore-not-found=true
 # Render and retag the :latest placeholders.
 kubectl kustomize "${KUSTOMIZE_DIR}" \
-  | sed "s|${API_IMAGE}:latest|${API_IMAGE}:${TAG}|g; s|${WEB_IMAGE}:latest|${WEB_IMAGE}:${TAG}|g" \
+  | sed "s|${API_IMAGE}:latest|${API_IMAGE}:${TAG}|g; s|${WEB_IMAGE}:latest|${WEB_IMAGE}:${TAG}|g; s|${INSPECTOR_IMAGE}:latest|${INSPECTOR_IMAGE}:${TAG}|g" \
   > /tmp/rendered.yaml
 # A bound PVC's spec is immutable (only resources.requests /
 # volumeAttributesClassName may change), so re-applying the rendered

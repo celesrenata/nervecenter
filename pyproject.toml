@@ -69,6 +69,12 @@ ml = [
     "torch==2.15.0",
     "transformers==5.22.2",
 ]
+inspector = [
+    # NerveShield static deep inspection (NS-ADR-086): the analyzer sidecar
+    # image (Dockerfile.inspector) and its tests only; never the api image.
+    "pikepdf==10.18.1",
+    "defusedxml==0.7.1",
+]
 
 [tool.setuptools.packages.find]
 include = ["backend*", "schemas*", "mcp*"]

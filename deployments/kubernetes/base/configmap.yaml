@@ -70,6 +70,10 @@ data:
   # context, model reports facts, code decides PHISHING_SUSPECTED. Real mail
   # 37% -> 4.4% phishing labels; synthetic FP 19% -> 0%. Remove = compact@1.
   NERVE_MAIL_SECURITY_OBSERVER_CONTRACT: "COMPACT_V2"
+  # Static deep inspection (NS-ADR-086, owner "go ahead"): PDF/OOXML/ZIP
+  # structure via the no-execution `inspector` sidecar's UNIX socket. Remove
+  # this key to stop (attachments then record ATTACHMENT_DEEP_INSPECTION_NOT_RUN).
+  NERVE_MAIL_SECURITY_STATIC_INSPECTION_SOCKET: "/run/inspector/inspector.sock"
   # NerveShield personal expectedness (NS-ADR-075, owner "sure"). Per-account
   # HMAC sender keys -> request-type counts only; scores each ask against the
   # sender's history (fixed population prior, abstains under 5 messages).

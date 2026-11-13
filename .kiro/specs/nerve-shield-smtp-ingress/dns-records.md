@@ -33,7 +33,7 @@ The `frameshift.net` apex points at `24.19.103.182` (looks residential). If a ho
 
 **Phase 3 (after another 2 weeks).** Set `frameshift.net` to `p=reject` (matching `celestium.life`), and optionally SPF `-all`.
 
-Reports go to `dmarc-reports@celestium.life`. Create that mailbox, or a Gmail alias or group, first, or swap in any address you own. Because `frameshift.net` reports go to a different domain, DMARC needs an authorization record on the receiving side, which is included below.
+Reports go to `celes+dmarc@celestium.life`. Owner decision: no new mailbox (each costs $10/month); Gmail delivers plus-addresses to the existing `celes@` mailbox, and a filter on `to:celes+dmarc@celestium.life` can label or skip-inbox them. Because `frameshift.net` reports go to a different domain, DMARC needs an authorization record on the receiving side, which is included below.
 
 ## Route 53 change batches (ready to apply, not applied)
 
@@ -46,7 +46,7 @@ Reports go to `dmarc-reports@celestium.life`. Create that mailbox, or a Gmail al
     {"Action": "CREATE", "ResourceRecordSet": {"Name": "frameshift.net.", "Type": "TXT", "TTL": 300,
       "ResourceRecords": [{"Value": "\"v=spf1 include:_spf.google.com ~all\""}]}},
     {"Action": "CREATE", "ResourceRecordSet": {"Name": "_dmarc.frameshift.net.", "Type": "TXT", "TTL": 300,
-      "ResourceRecords": [{"Value": "\"v=DMARC1; p=none; rua=mailto:dmarc-reports@celestium.life; adkim=r; aspf=r\""}]}}
+      "ResourceRecords": [{"Value": "\"v=DMARC1; p=none; rua=mailto:celes+dmarc@celestium.life; adkim=r; aspf=r\""}]}}
   ]
 }
 ```
@@ -60,7 +60,7 @@ Reports go to `dmarc-reports@celestium.life`. Create that mailbox, or a Gmail al
     {"Action": "UPSERT", "ResourceRecordSet": {"Name": "celestium.life.", "Type": "TXT", "TTL": 300,
       "ResourceRecords": [{"Value": "\"v=spf1 include:_spf.google.com ~all\""}]}},
     {"Action": "UPSERT", "ResourceRecordSet": {"Name": "_dmarc.celestium.life.", "Type": "TXT", "TTL": 300,
-      "ResourceRecords": [{"Value": "\"v=DMARC1; p=reject; rua=mailto:dmarc-reports@celestium.life\""}]}},
+      "ResourceRecords": [{"Value": "\"v=DMARC1; p=reject; rua=mailto:celes+dmarc@celestium.life\""}]}},
     {"Action": "CREATE", "ResourceRecordSet": {"Name": "frameshift.net._report._dmarc.celestium.life.", "Type": "TXT", "TTL": 300,
       "ResourceRecords": [{"Value": "\"v=DMARC1\""}]}}
   ]

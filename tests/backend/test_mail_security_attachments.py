@@ -408,7 +408,8 @@ def test_module_imports_no_network_or_subprocess():
 # (owner-requested Task 2.4 amendment) talks to a local UNIX socket / loopback
 # only (enforced at construction; see test_mail_security_clamav.py). Every other
 # module, attachments.py included, must stay free of socket/connection code.
-LOCAL_IPC_EXEMPT_MODULES = frozenset({"clamav.py"})
+# NS-ADR-086: the static deep-inspection client is local IPC too (UNIX socket only).
+LOCAL_IPC_EXEMPT_MODULES = frozenset({"clamav.py", "static_inspection.py"})
 # urllib.parse (pure string parsing, used by intel.py) is not network I/O.
 _NET_IMPORTS = {
     "socket", "ssl", "http", "urllib.request", "requests", "httpx", "aiohttp", "subprocess",
@@ -450,9 +451,11 @@ def test_only_clamav_module_may_use_local_ipc_everything_else_offline():
     }
     assert {k: v for k, v in offenders.items() if v} == {}
     # the exemption is exact: one module, and it really is the one using the primitives
-    assert LOCAL_IPC_EXEMPT_MODULES == {"clamav.py"}
+    assert LOCAL_IPC_EXEMPT_MODULES == {"clamav.py", "static_inspection.py"}
     assert (root / "clamav.py") in modules
     assert {"open_connection", "open_unix_connection"} <= _net_usage(root / "clamav.py")
+    # the deep-inspection client may only use the UNIX-socket primitive
+    assert _net_usage(root / "static_inspection.py") == {"open_unix_connection"}
     # attachments.py itself is explicitly not exempt
     assert "attachments.py" not in LOCAL_IPC_EXEMPT_MODULES
     assert _net_usage(Path(att.__file__)) == set()

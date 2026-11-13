@@ -1,0 +1,22 @@
+# syntax=docker/dockerfile:1
+# NerveShield static deep-inspection sidecar (NS-ADR-086).
+#
+# Parses PDF / OOXML / ZIP STRUCTURE only; never executes, renders or emulates
+# anything. Holds only the analyzer and its two pinned parsers; no NerveCenter
+# code, no secrets. Runs as a native sidecar of the api pod and answers on a
+# UNIX socket (/run/inspector/inspector.sock). Each sample is parsed in a fresh
+# rlimited child that seals its file descriptors before touching the bytes.
+#
+# Build (from repo root):
+#   docker build -f Dockerfile.inspector -t registry.celestium.life/nervecenter/inspector:TAG .
+FROM python:3.11-slim
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/opt/inspector
+RUN pip install "pikepdf==10.18.1" "defusedxml==0.7.1" \
+    && python -c "import pikepdf, defusedxml; print(pikepdf.__version__, pikepdf.__libqpdf_version__)"
+COPY inspector/nerve_inspector /opt/inspector/nerve_inspector
+USER 10001:10001
+CMD ["python", "-s", "-B", "-m", "nerve_inspector.server"]

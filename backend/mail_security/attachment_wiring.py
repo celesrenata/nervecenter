@@ -43,6 +43,13 @@ from backend.mail_security.attachments import (
 from backend.mail_security.clamav import ClamdConfig, ClamdConfigError, ClamdScanner
 from backend.mail_security.models import Code, SecurityFinding
 from backend.mail_security.parser import ParsedEvidence
+from backend.mail_security.static_inspection import (
+    CODE_DEEP_INCOMPLETE,
+    CODE_DEEP_NOT_RUN,
+    StaticInspector,
+    deep_inspect,
+    wants_deep_inspection,
+)
 
 log = structlog.get_logger(__name__)
 
@@ -127,8 +134,10 @@ async def collect_attachment_results(
     scanner: AttachmentScanner | None,
     limits: AttachmentLimits = DEFAULT_LIMITS,
     timeout_seconds: float = DEFAULT_SCAN_TIMEOUT_SECONDS,
+    deep_inspector: StaticInspector | None = None,
 ) -> AttachmentAssessment:
-    """Static inspection (always) plus the optional scan for each attachment.
+    """Static inspection (always), the optional scan, and the optional deep
+    structural inspection (NS-ADR-086, PDF/OOXML/ZIP only) per attachment.
 
     Never raises. Retained payloads are cleared before returning.
     """
@@ -137,6 +146,7 @@ async def collect_attachment_results(
         return AttachmentAssessment()
     findings: dict[str, SecurityFinding] = {}
     incomplete: list[Code] = []
+    deep_wanted = False
     try:
         for descriptor in attachments:
             payload = descriptor.payload
@@ -154,6 +164,14 @@ async def collect_attachment_results(
                 findings.setdefault(finding.finding_key, finding)
             if result.incomplete:
                 incomplete.append(CODE_STATIC_INCOMPLETE)
+            if wants_deep_inspection(payload):
+                deep_wanted = True
+                if deep_inspector is not None:
+                    deep = await deep_inspect(deep_inspector, descriptor.evidence_ref, payload)
+                    for finding in deep.findings:
+                        findings.setdefault(finding.finding_key, finding)
+                    if deep.incomplete:
+                        incomplete.append(CODE_DEEP_INCOMPLETE)
             if scanner is None or payload == b"":
                 continue  # nothing configured / nothing to scan
             record = await run_scan(
@@ -172,7 +190,10 @@ async def collect_attachment_results(
     ordered = sorted(findings.values(), key=lambda f: f.finding_key)
     return AttachmentAssessment(
         findings=ordered,
-        checks_not_run=[CODE_SCAN_NOT_RUN] if scanner is None else [],
+        checks_not_run=[
+            *([CODE_SCAN_NOT_RUN] if scanner is None else []),
+            *([CODE_DEEP_NOT_RUN] if deep_wanted and deep_inspector is None else []),
+        ],
         incomplete_codes=list(dict.fromkeys(incomplete)),
     )
 

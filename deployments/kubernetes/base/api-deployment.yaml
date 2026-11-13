@@ -23,7 +23,39 @@ spec:
       labels:
         app: api
     spec:
+      # The api never calls the Kubernetes API; no container needs a token.
+      automountServiceAccountToken: false
       initContainers:
+        # NerveShield static deep inspection (NS-ADR-086): parses PDF/OOXML/ZIP
+        # structure, never executes. No env, no secrets, no SA token, read-only
+        # root FS; only the shared UNIX socket volume is mounted.
+        - name: inspector
+          image: "registry.celestium.life/nervecenter/inspector:latest"
+          imagePullPolicy: Always
+          restartPolicy: Always
+          env:
+            - name: NERVE_INSPECTOR_SOCKET
+              value: /run/inspector/inspector.sock
+          resources:
+            requests:
+              memory: "64Mi"
+              cpu: "0.05"
+            limits:
+              memory: "2Gi"
+              cpu: "1"
+          volumeMounts:
+            - name: inspector-run
+              mountPath: /run/inspector
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            runAsGroup: 10001
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+            seccompProfile:
+              type: RuntimeDefault
         # NerveShield attachment scanner (NS-ADR-065): clamd as a native
         # sidecar, UNIX socket only (/run/clamav/clamd.sock in a pod-private
         # emptyDir), signatures read-only from the freshclam pod's volume (see
@@ -124,6 +156,9 @@ spec:
             # clamd UNIX socket (NERVE_CLAMD_SOCKET in the ConfigMap).
             - name: clamd-run
               mountPath: /run/clamav
+            # Static inspector socket (NS-ADR-086).
+            - name: inspector-run
+              mountPath: /run/inspector
           securityContext:
             runAsNonRoot: true
             runAsUser: 10001
@@ -149,5 +184,9 @@ spec:
         - name: clamd-tmp
           emptyDir:
             sizeLimit: 512Mi
+        - name: inspector-run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
       imagePullSecrets:
         - name: harbor-pull

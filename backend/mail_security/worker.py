@@ -269,8 +269,13 @@ class MailSecurityWorker:
         latency_clock: Callable[[], float] | None = None,
         intel_store: Any | None = None,
         attachment_scanner: Any | None = None,
+        static_inspector: Any | None = None,
     ) -> None:
         self._repo = repository
+        # Optional static deep-inspection sidecar (NS-ADR-086). ``None``
+        # (default): PDF/OOXML/ZIP attachments record
+        # ATTACHMENT_DEEP_INSPECTION_NOT_RUN; nothing is sent anywhere.
+        self._static_inspector = static_inspector
         # Optional local attachment scanner (NS-ADR-014). ``None`` (default)
         # means no scanner: attachments get static inspection only and an
         # explicit ATTACHMENT_SCAN_NOT_RUN note. No socket is ever opened.
@@ -485,7 +490,7 @@ class MailSecurityWorker:
             now=self._clock(),
         )
         attachment_result = await collect_attachment_results(
-            evidence, scanner=self._attachment_scanner
+            evidence, scanner=self._attachment_scanner, deep_inspector=self._static_inspector
         )
         assessment = self._assess(
             account_scope=account_scope,
@@ -624,7 +629,9 @@ class MailSecurityWorker:
         evidence = parse_mime_evidence(
             content,
             limits=self._limits,
-            retain_attachment_payloads=self._attachment_scanner is not None,
+            retain_attachment_payloads=(
+                self._attachment_scanner is not None or self._static_inspector is not None
+            ),
         )
         if (
             self._scan_deadline_seconds is not None

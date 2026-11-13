@@ -710,6 +710,11 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
         from backend.mail_security.attachment_wiring import scanner_from_env
 
         attachment_scanner = scanner_from_env()
+        # Static deep-inspection sidecar (NS-ADR-086): UNIX socket only; unset
+        # (default) => not run, recorded as ATTACHMENT_DEEP_INSPECTION_NOT_RUN.
+        from backend.mail_security.static_inspection import inspector_from_env
+
+        static_inspector = inspector_from_env()
 
         from backend.mail_security.auth_evidence import boundary_from_env
 
@@ -723,6 +728,7 @@ def start_mail_security_runner(target: Any) -> asyncio.Task[None] | None:
                 analysis_profile_version=DEFAULT_ANALYSIS_PROFILE_VERSION,
                 intel_store=intel_store,
                 attachment_scanner=attachment_scanner,
+                static_inspector=static_inspector,
                 # NS-ADR-070: the receiving provider's topmost result only;
                 # empty (nothing attested) unless configured.
                 boundary=auth_boundary,
