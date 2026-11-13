@@ -1,4 +1,4 @@
-# Static deep inspection of attachments — spec (DRAFT, G0 pending)
+# Static deep inspection of attachments — spec (G0 approved 2026-11-13; built, G1 pending)
 
 Origin: detonation G0 (`nerve-shield-detonation/g0-gate.md`, D-4). Owner: "go ahead" (2026-11-13). This is the **intermediate step instead of detonation**: deeper analysis of attachment structure, **without executing anything**, in an isolated container with no network and no secrets. Nothing is built.
 
@@ -26,7 +26,7 @@ Volume is tiny (about 4% of messages), so latency and throughput are not constra
 ## 3. Requirements
 
 1. **SI-1 No execution.** No macro, script, JavaScript or embedded code is ever run, emulated or rendered. Only parsers read bytes. No external tool is invoked with the sample as an argument except the reviewed parsers below.
-2. **SI-2 Isolation.** The analyzer runs as its own container, a sidecar of the api pod like clamd (NS-ADR-065), reached over a UNIX socket. Its NetworkPolicy/pod settings mean **no network at all**: no egress, no service account token, a read-only root filesystem, non-root, all capabilities dropped, seccomp `RuntimeDefault`, and no secrets or env from `nervecenter-env`. The sample goes in over the socket and only a bounded JSON report comes out.
+2. **SI-2 Isolation.** The analyzer runs as its own container, a sidecar of the api pod like clamd (NS-ADR-065), reached over a UNIX socket. As a sidecar it shares the pod's network namespace, so isolation is per process: each parse child seals its descriptors (`RLIMIT_NOFILE=3`) before reading bytes, so it cannot create any socket (see `g1-evidence.md`). Container settings: no egress, no service account token, a read-only root filesystem, non-root, all capabilities dropped, seccomp `RuntimeDefault`, and no secrets or env from `nervecenter-env`. The sample goes in over the socket and only a bounded JSON report comes out.
 3. **SI-3 Bounded.** Per-sample hard limits:
    - input bytes;
    - decompressed bytes (zip-bomb guard, ratio and absolute);
