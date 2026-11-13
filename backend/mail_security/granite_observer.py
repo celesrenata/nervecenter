@@ -943,6 +943,10 @@ def expand_compact(
 
     links = [x.ref for x in packet.links]
     atts = [x.ref for x in packet.attachments]
+    #: compact@2 (NS-ADR-080): 6% of live replies cited a LINK number that was
+    #: not listed. That is a model slip, not an injected ref (numbers are
+    #: mapped by code), so it no longer fails the whole observation.
+    lenient_numbers = reply_model is CompactObservationV2
 
     def risks(items: list[str], count: int) -> dict[int, str]:
         out: dict[int, str] = {}
@@ -952,6 +956,8 @@ def expand_compact(
                 raise GraniteObserverError(code.OUTPUT_SCHEMA_INVALID)
             number = int(match.group(1))
             if not 1 <= number <= count:
+                if lenient_numbers:
+                    continue  # compact@2: an unlisted item number is dropped
                 raise GraniteObserverError(code.OUTPUT_UNKNOWN_EVIDENCE_REF)
             if number in out:
                 raise GraniteObserverError(code.OUTPUT_SCHEMA_INVALID)
@@ -979,7 +985,11 @@ def expand_compact(
         )
         number = int(match.group(3))
         if number > len(links):
-            raise GraniteObserverError(code.OUTPUT_UNKNOWN_EVIDENCE_REF)
+            if not lenient_numbers:
+                raise GraniteObserverError(code.OUTPUT_UNKNOWN_EVIDENCE_REF)
+            # compact@2: the ask is kept, attached to the message itself.
+            # Refs are always mapped by code, so the model can never name one.
+            number = 0
         ref = links[number - 1] if number else packet.source_ref
         high = req_type in _HIGH_IMPACT
         requests.append(

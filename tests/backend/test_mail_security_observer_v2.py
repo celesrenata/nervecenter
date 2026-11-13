@@ -142,9 +142,8 @@ def test_v2_reply_expands_and_discards_gist() -> None:
 @pytest.mark.parametrize(
     ("kw", "code"),
     [
-        ({"requests": ["OPEN_LINK LOW 3"]}, ObserverErrorCode.OUTPUT_UNKNOWN_EVIDENCE_REF),
-        ({"link_risk": ["9 HIGH"]}, ObserverErrorCode.OUTPUT_UNKNOWN_EVIDENCE_REF),
         ({"category": "SPAM"}, ObserverErrorCode.OUTPUT_SCHEMA_INVALID),
+        ({"link_risk": ["1 LOW", "1 HIGH"]}, ObserverErrorCode.OUTPUT_SCHEMA_INVALID),
         ({"extra": 1}, ObserverErrorCode.OUTPUT_SCHEMA_INVALID),
     ],
 )
@@ -299,6 +298,23 @@ def test_build_packet_flags_free_mail_and_eval_domains_only_when_reserved() -> N
         ObserverRuntime(combos=Combos([_row()]), transport=Chat(), repository=None,
                         resolver=LocalOnlyRouteResolver(Registry(), omniroute_base_url=BASE),
                         extra_freemail_domains=frozenset({"gmail.com"}))
+
+
+def test_v2_unlisted_link_numbers_are_tolerated_but_never_become_refs() -> None:
+    obs = _expand(requests=["OPEN_LINK LOW 3", "PAY HIGH 99"], link_risk=["9 HIGH", "2 LOW"])
+    allowed = {"msg:1", "link_0", "link_1"}
+    refs = {ref for r in obs.requests for ref in r.evidence_refs}
+    assert refs == {"msg:1"} and refs <= allowed
+    assert [(c.evidence_ref, c.risk_level.value) for c in obs.links] == [
+        ("link_0", "NOT_EVALUATED"), ("link_1", "LOW")
+    ]
+    # compact@1 keeps failing closed on the same slip.
+    from backend.mail_security.granite_observer import COMPACT_EXAMPLE
+
+    v1 = dict(COMPACT_EXAMPLE, requests=["OPEN_LINK LOW 3"])
+    with pytest.raises(GraniteObserverError) as exc:
+        expand_compact(json.dumps(v1), _packet())
+    assert exc.value.code is ObserverErrorCode.OUTPUT_UNKNOWN_EVIDENCE_REF
 
 
 def test_v2_reply_missing_key_is_schema_invalid() -> None:
