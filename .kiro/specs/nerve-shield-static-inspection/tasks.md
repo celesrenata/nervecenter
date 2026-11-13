@@ -10,4 +10,4 @@
 - [x] 1.7 ~~Policy@6~~ not needed: existing rules already map MEDIUM/HIGH ATTACHMENT to REVIEW (see g1-evidence.md). Was: Policy@6: SHADOW review reasons for REVIEW-impact codes; never lowers. **Req:** SI-6.
 - [x] 1.8 Deployment: sidecar in the api pod (read-only root FS, non-root, no caps, seccomp, no env/secrets, shared socket `emptyDir`); isolation probes. **Req:** SI-2.
 - [x] 1.9 Synthetic malicious/benign corpus tests; live SHADOW run over the 13 attachment-bearing messages (aggregate only). **Req:** §4.
-- [ ] 1.10 **G1 gate — STOP.** (evidence: `g1-evidence.md`) Evidence and owner approval to keep the feature enabled.
+- [x] 1.10 **G1 gate — STOP.** (evidence: `g1-evidence.md`) _Owner "reassess" 2026-11-13: kept enabled; reassessed (REVIEW 9 -> 10)._ Evidence and owner approval to keep the feature enabled.
