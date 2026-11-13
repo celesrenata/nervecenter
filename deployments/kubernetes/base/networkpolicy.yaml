@@ -6,7 +6,7 @@
 #   traefik (kube-system) -> nervecenter-oauth:4180, mcp:8000
 #   nervecenter-oauth -> web:80
 #   web, mcp -> api:8000
-#   api, migration job -> postgres:5432
+#   api, migration job, one-off db-snapshot pods -> postgres:5432
 #   api -> nats:4222
 # Kubelet probes come from the node and are allowed by k3s's policy
 # controller. Owner tools run inside the api pod (kubectl exec), unaffected.
@@ -91,7 +91,7 @@ spec:
     - from:
         - podSelector:
             matchExpressions:
-              - {key: app, operator: In, values: [api, migration]}
+              - {key: app, operator: In, values: [api, migration, db-snapshot]}
       ports:
         - {protocol: TCP, port: 5432}
   egress:

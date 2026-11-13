@@ -57,7 +57,7 @@ Real mail (all 342 stored messages, aggregate only, nothing stored), Granite:
 ## Decisions taken
 
 - **The live observer switched to compact@2:** `NERVE_MAIL_SECURITY_OBSERVER_CONTRACT=COMPACT_V2`. Removing the key reverts to compact@1. New mail uses compact@2.
-- **Existing rows are not re-observed.** The 348 stored compact@1 observations stay, labelled by `prompt_version`. Re-observing would mean deleting them and would double-count expectedness, so that's left to the owner.
+- **Existing rows re-observed** (owner "go ahead"): after a DB snapshot, all rows were deleted and re-run with compact@2 without counting, then expectedness was rebuilt in received order. Phishing labels: 14/346 (4.0%). See `namespace-hardening-and-reobserve.md`.
 - **Granite stays the observer.** Qwen is faster and better at high-impact asks, but its phishing recall is lower (53% vs 73%). Its host has not had the no-prompt-logging proof that Granite had, so real mail stays off it: `--compare` refuses any role but Reader.
 
 ## Remaining gaps (honest)
