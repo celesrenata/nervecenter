@@ -39,9 +39,8 @@ async def main(apply: bool) -> None:
                 key = (a.account_scope, a.source_id)
                 if key not in latest or a.revision > latest[key].revision:
                     latest[key] = a
-            jobs = (
-                await s.execute(select(MailSecurityJobRow).where(MailSecurityJobRow.state == "DONE"))
-            ).scalars().all()
+            done = select(MailSecurityJobRow).where(MailSecurityJobRow.state == "DONE")
+            jobs = (await s.execute(done)).scalars().all()
         for job in jobs:
             a = latest.get((job.account_scope, job.source_key))
             if a is None or a.disposition not in FLAGGED:
