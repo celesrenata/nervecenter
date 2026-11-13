@@ -205,7 +205,7 @@ def _bind_semantic_observer(target: Any) -> None:
         HttpObserverTransport,
         HttpRegistryTransport,
     )
-    from backend.mail_security.route_guard import LocalOnlyRouteResolver
+    from backend.mail_security.route_guard import LocalOnlyRouteResolver, ResolverLimits
     from backend.persistence.repositories.mail_security_observation_repo import (
         MailObservationRepository,
     )
@@ -214,6 +214,8 @@ def _bind_semantic_observer(target: Any) -> None:
     resolver = LocalOnlyRouteResolver(
         HttpRegistryTransport(url, key),
         omniroute_base_url=url,
+        # Three registry GETs; /api/combos alone took ~0.8 s live.
+        limits=ResolverLimits(timeout_seconds=15.0),
         require_secure_combo=True,
     )
     set_observer_runtime(

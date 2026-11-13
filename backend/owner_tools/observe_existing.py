@@ -25,7 +25,7 @@ async def main(limit: int) -> None:
     from backend.mail_security.acquisition import scan_ref_for
     from backend.mail_security.observer_wiring import ObserverRuntime, observer_applies
     from backend.mail_security.parser import parse_mime_evidence
-    from backend.mail_security.route_guard import LocalOnlyRouteResolver
+    from backend.mail_security.route_guard import LocalOnlyRouteResolver, ResolverLimits
     from backend.mail_security.worker import ObjectStoreContentResolver, source_revision_of
     from backend.persistence.connection import create_engine, make_session_factory
     from backend.persistence.models.mail_security import (
@@ -49,7 +49,8 @@ async def main(limit: int) -> None:
         runtime = ObserverRuntime(
             combos=InferenceComboService(engine),
             resolver=LocalOnlyRouteResolver(HttpRegistryTransport(url, key),
-                                            omniroute_base_url=url),
+                                            omniroute_base_url=url,
+                                            limits=ResolverLimits(timeout_seconds=15.0)),
             transport=HttpObserverTransport(url, key),
             repository=repo,
         )

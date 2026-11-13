@@ -20,7 +20,9 @@ from typing import Any
 
 import httpx
 
-MAX_RESPONSE_BYTES = 256 * 1024
+#: Bounded, but large enough for the live registry (``/v1/models`` was 369 KB
+#: with 988 models on 2026-11-13).
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _REGISTRY_PATHS = frozenset({"/v1/models", "/api/combos", "/api/providers"})
 
 
