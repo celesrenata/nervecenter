@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
-QUEUE_POLICY_VERSION = "mail-review-queue@2"
+QUEUE_POLICY_VERSION = "mail-review-queue@3"
 
 QUEUED_DISPOSITIONS = frozenset({"REVIEW", "RESTRICTED", "INCOMPLETE"})
 _BASE = {"RESTRICTED": 3, "REVIEW": 2, "INCOMPLETE": 1}
@@ -46,6 +46,10 @@ _BASE = {"RESTRICTED": 3, "REVIEW": 2, "INCOMPLETE": 1}
 #: (visible); SUSPECT alone is LOW (digest, unless protected), because a
 #: legitimate new participant looks exactly like injection (spike 8.2).
 THREAD_WEIGHTS = {"BROKEN": 3, "SUSPECT": 1}
+
+#: SHADOW per-account content campaign (NS-ADR-069): another message in the
+#: same campaign was assessed REVIEW/RESTRICTED. +2 alone is MEDIUM (visible).
+CAMPAIGN_WEIGHT = 2
 _HIGH_IMPACT_ADVICE = frozenset({"VERIFY_PAYMENT_REQUEST", "VERIFY_CREDENTIAL_REQUEST"})
 _HIGH_SEVERITIES = frozenset({"HIGH", "CRITICAL"})
 _ACTIVE = frozenset({"OBSERVED", "SUSPECTED"})
@@ -87,6 +91,7 @@ class QueueReason(StrEnum):
     VISIBLE_CAP_OVERFLOW = "VISIBLE_CAP_OVERFLOW"
     THREAD_BROKEN = "THREAD_BROKEN"
     THREAD_SUSPECT = "THREAD_SUSPECT"
+    CAMPAIGN_OF_FLAGGED = "CAMPAIGN_OF_FLAGGED"
 
 
 @dataclass(frozen=True)
@@ -111,11 +116,17 @@ class QueueCandidate:
     reviewed: bool = False
     #: SHADOW conversation-continuity status (``SUSPECT`` / ``BROKEN``), if any.
     thread_continuity: str | None = None
+    #: Number of OTHER flagged messages in this message's content campaign.
+    campaign_flagged: int = 0
 
 
 def is_queued(c: QueueCandidate) -> bool:
-    """Queued by disposition, or by a SHADOW thread-continuity flag."""
-    return c.disposition in QUEUED_DISPOSITIONS or c.thread_continuity in THREAD_WEIGHTS
+    """Queued by disposition, or by a SHADOW thread / campaign signal."""
+    return (
+        c.disposition in QUEUED_DISPOSITIONS
+        or c.thread_continuity in THREAD_WEIGHTS
+        or c.campaign_flagged > 0
+    )
 
 
 @dataclass(frozen=True)
@@ -158,6 +169,9 @@ def score(c: QueueCandidate) -> tuple[int, list[QueueReason]]:
     if c.thread_continuity in THREAD_WEIGHTS:
         total += THREAD_WEIGHTS[c.thread_continuity]
         reasons.append(QueueReason(f"THREAD_{c.thread_continuity}"))
+    if c.campaign_flagged > 0:
+        total += CAMPAIGN_WEIGHT
+        reasons.append(QueueReason.CAMPAIGN_OF_FLAGGED)
     if _HIGH_IMPACT_ADVICE & set(c.verification_advice):
         total += 2
         reasons.append(QueueReason.PAYMENT_OR_CREDENTIAL_ASK)
@@ -188,8 +202,11 @@ def _protected(c: QueueCandidate) -> bool:
 
 
 def _primary_reason(c: QueueCandidate) -> str:
-    if c.disposition not in QUEUED_DISPOSITIONS and c.thread_continuity in THREAD_WEIGHTS:
-        return f"THREAD_{c.thread_continuity}"
+    if c.disposition not in QUEUED_DISPOSITIONS:
+        if c.thread_continuity in THREAD_WEIGHTS:
+            return f"THREAD_{c.thread_continuity}"
+        if c.campaign_flagged > 0:
+            return QueueReason.CAMPAIGN_OF_FLAGGED.value
     return c.reason_codes[0] if c.reason_codes else f"DISPOSITION_{c.disposition}"
 
 

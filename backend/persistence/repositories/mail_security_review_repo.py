@@ -21,12 +21,13 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Iterable, Mapping
-from datetime import UTC
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import or_, select
 
 from backend.mail_security.backfill import parse_content_ref
+from backend.mail_security.campaigns import FLAGGED_DISPOSITIONS, siblings_of_flagged
 from backend.mail_security.review_feedback import verification_advice
 from backend.mail_security.review_queue import (
     QUEUED_DISPOSITIONS,
@@ -35,6 +36,7 @@ from backend.mail_security.review_queue import (
     QueueCandidate,
 )
 from backend.persistence.models.mail_security import (
+    MailCampaignMemberRow,
     MailSecurityAssessmentRow,
     MailSecurityFeedbackRow,
     MailSecurityFindingRow,
@@ -106,12 +108,44 @@ async def _thread_flags(s: Any, account_scope: str) -> dict[str, str]:
     return out
 
 
+async def _campaign_flags(s: Any, account_scope: str) -> dict[str, int]:
+    """``source_key -> OTHER flagged members`` of its live content campaign
+    (NS-ADR-069), within this scope only."""
+    now = datetime.now(UTC)
+    rows = (
+        await s.execute(
+            select(MailCampaignMemberRow.source_key, MailCampaignMemberRow.campaign_id).where(
+                MailCampaignMemberRow.account_scope == account_scope,
+                MailCampaignMemberRow.expires_at >= now,
+            )
+        )
+    ).all()
+    if not rows:
+        return {}
+    sources = sorted({str(r[0]) for r in rows})
+    flagged = {
+        str(r[0])
+        for r in (
+            await s.execute(
+                select(MailSecurityAssessmentRow.source_id).where(
+                    MailSecurityAssessmentRow.account_scope == account_scope,
+                    MailSecurityAssessmentRow.source_id.in_(sources),
+                    MailSecurityAssessmentRow.disposition.in_(sorted(FLAGGED_DISPOSITIONS)),
+                )
+            )
+        ).all()
+    }
+    return siblings_of_flagged(((str(a), str(b)) for a, b in rows), flagged)
+
+
 async def load_queue_candidates(session_factory: Any, account_scope: str) -> list[QueueCandidate]:
     async with session_factory() as s:
         thread_flags = await _thread_flags(s, account_scope)
+        campaign_flags = await _campaign_flags(s, account_scope)
         queued = MailSecurityAssessmentRow.disposition.in_(sorted(QUEUED_DISPOSITIONS))
-        if thread_flags:
-            queued = or_(queued, MailSecurityAssessmentRow.source_id.in_(sorted(thread_flags)))
+        extra_sources = sorted(set(thread_flags) | set(campaign_flags))
+        if extra_sources:
+            queued = or_(queued, MailSecurityAssessmentRow.source_id.in_(extra_sources))
         assessments = (
             (
                 await s.execute(
@@ -282,6 +316,7 @@ async def load_queue_candidates(session_factory: Any, account_scope: str) -> lis
                 commitments=tuple(commitments.get(cid, [])) if cid else (),
                 reviewed=a.assessment_id in reviewed,
                 thread_continuity=thread_flags.get(a.source_id),
+                campaign_flagged=campaign_flags.get(a.source_id, 0),
             )
         )
     return out

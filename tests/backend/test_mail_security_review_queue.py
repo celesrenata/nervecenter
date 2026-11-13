@@ -38,6 +38,8 @@ from backend.mail_security.review_queue import (
 )
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
+    MailCampaignBandRow,
+    MailCampaignMemberRow,
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
     MailThreadLedgerRow,
@@ -259,6 +261,8 @@ def env(tmp_path):
         MailSecurityFeedbackRow.__table__,
         MailSecurityHeldPromotionRow.__table__,
         MailThreadLedgerRow.__table__,
+        MailCampaignMemberRow.__table__,
+        MailCampaignBandRow.__table__,
         PersonRow.__table__,
         CommunicationRow.__table__,
         CommitmentRow.__table__,

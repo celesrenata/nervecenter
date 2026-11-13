@@ -43,17 +43,21 @@ from backend.ingest.mail_worker import (
     MailIngestWorker,
     set_communications_store,
 )
+from backend.mail_security.campaigns import set_campaign_repository
 from backend.mail_security.ingestion_seam import (
     DEFAULT_ANALYSIS_PROFILE_VERSION,
     ENV_MAIL_SECURITY_ENABLED,
     set_mail_security_repository,
 )
+from backend.mail_security.thread_ledger import set_thread_ledger_repository
 from backend.mail_security.worker import (
     MailSecurityWorker,
     ObjectStoreContentResolver,
 )
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
+    MailCampaignBandRow,
+    MailCampaignMemberRow,
     MailEvidenceRow,
     MailIntelIndicatorRow,
     MailSecurityAssessmentRow,
@@ -74,7 +78,6 @@ from backend.persistence.models.personal import (
 )
 from backend.persistence.repositories import RepositoryRegistry
 from backend.persistence.repositories.connections_repo import IdentitySecretCodec
-from backend.mail_security.thread_ledger import set_thread_ledger_repository
 from backend.storage.memory import InMemoryObjectStore
 
 # ---------------------------------------------------------------------------
@@ -110,6 +113,8 @@ TABLES = [
     MailSecurityFindingRow.__table__,
     MailIntelIndicatorRow.__table__,
     MailThreadLedgerRow.__table__,
+    MailCampaignMemberRow.__table__,
+    MailCampaignBandRow.__table__,
 ]
 
 
@@ -283,6 +288,7 @@ async def teardown_harness(harness: SimpleNamespace) -> None:
     set_communications_store(None)
     set_mail_security_repository(None)
     set_thread_ledger_repository(None)
+    set_campaign_repository(None)
     reset_communications_service()
     await harness.engine.dispose()
 

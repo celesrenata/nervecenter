@@ -617,7 +617,54 @@ class MailThreadLedgerRow(Base):
     )
 
 
+class MailCampaignMemberRow(Base):
+    """One message's per-account content-campaign membership (NS-ADR-069).
+
+    Table ``mail_campaign_members``. ``signature`` is the account-keyed MinHash
+    (64 integers derived from content; never the content itself), kept until
+    ``expires_at`` (30 days). ``content_ref`` is the opaque body ref.
+    """
+
+    __tablename__ = "mail_campaign_members"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    schema_version: Mapped[str] = mapped_column(String(32), default="mail-campaigns@1")
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    content_ref: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    campaign_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    signature: Mapped[list[int]] = mapped_column(Jsonb, default=list, nullable=False)
+
+    __table_args__ = (
+        Index("ix_mail_campaign_member_src", "account_scope", "source_key", unique=True),
+        Index("ix_mail_campaign_member_campaign", "account_scope", "campaign_id"),
+        Index("ix_mail_campaign_member_expiry", "expires_at"),
+    )
+
+
+class MailCampaignBandRow(Base):
+    """One LSH band key of a campaign member (NS-ADR-069). HMAC only."""
+
+    __tablename__ = "mail_campaign_bands"
+
+    id: Mapped[UUIDv4]
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    band_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    member_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    __table_args__ = (
+        Index("ix_mail_campaign_band_key", "account_scope", "band_key"),
+        Index("ix_mail_campaign_band_member", "member_id"),
+        Index("ix_mail_campaign_band_expiry", "expires_at"),
+    )
+
+
 __all__ = [
+    "MailCampaignBandRow",
+    "MailCampaignMemberRow",
     "MailEvidenceRow",
     "MailIntelIndicatorRow",
     "MailIntelOverrideRow",

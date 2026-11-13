@@ -513,6 +513,7 @@ class MailSecurityWorker:
             return job  # stale worker: reclaimed by another; nothing written
         done = outcome.job
         self._lap(LatencyStage.PERSIST, lap)
+        await self._record_campaign(job, content_ref=content_ref, evidence=evidence)
         log.info(
             "mail_security.job_done",
             trace_id=safe_trace_id(job.id),
@@ -520,6 +521,44 @@ class MailSecurityWorker:
             processing_state=assessment.processing_state.value,
         )
         return done if done is not None else job
+
+    async def _record_campaign(
+        self, job: Any, *, content_ref: str | None, evidence: ParsedEvidence
+    ) -> None:
+        """SHADOW per-account content campaign membership (NS-ADR-069).
+
+        Runs after the verdict is committed and can never change it. Inert
+        without a bound repository or the key; any failure is logged as a
+        safe code only.
+        """
+        from backend.mail_security.campaigns import (
+            band_keys,
+            campaign_secret_from_env,
+            get_campaign_repository,
+            signature,
+            text_of,
+        )
+
+        repo = get_campaign_repository()
+        if repo is None:
+            return
+        secret = campaign_secret_from_env()
+        if secret is None:
+            return
+        try:
+            sig = signature(secret, job.account_scope, text_of(evidence))
+            if not sig:
+                return
+            await repo.record(
+                job.account_scope,
+                source_key=job.source_key,
+                content_ref=content_ref,
+                sig=sig,
+                bands=band_keys(secret, job.account_scope, sig),
+                now=self._clock(),
+            )
+        except Exception as exc:  # noqa: BLE001 - SHADOW signal must never fail a job
+            log.warning("mail_security.campaign_record_failed", error_type=type(exc).__name__)
 
     # -- content resolution (LOCAL-ONLY, scoped) ---------------------------
 

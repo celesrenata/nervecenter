@@ -29,8 +29,9 @@ const DISPOSITION_LABEL: Record<string, string> = {
   RESTRICTED: 'Restricted',
   REVIEW: 'Review',
   INCOMPLETE: 'Incomplete',
-  // Queued only by the SHADOW thread-continuity signal (NS-ADR-067).
-  LOW_PRIORITY: 'Conversation check',
+  // Queued only by a SHADOW signal (thread continuity NS-ADR-067, campaign
+  // NS-ADR-069); the reason labels say which.
+  LOW_PRIORITY: 'Worth a look',
 }
 
 /** Plain-language labels for the server's queue reason codes. */
@@ -45,6 +46,7 @@ const REASON_LABEL: Record<string, string> = {
   NOT_NOVEL: 'Not new today',
   THREAD_BROKEN: "Doesn't fit the conversation it claims to continue",
   THREAD_SUSPECT: 'New participant in an existing conversation',
+  CAMPAIGN_OF_FLAGGED: 'Looks like another message flagged for review',
 }
 
 function formatWhen(iso: string | null | undefined): string {

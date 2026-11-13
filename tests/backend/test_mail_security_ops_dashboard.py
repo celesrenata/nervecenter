@@ -27,6 +27,8 @@ from backend.mail_security.classifier.arcforge_client import (
 from backend.mail_security.models import Disposition, ModelRun, ModelRunStatus
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
+    MailCampaignBandRow,
+    MailCampaignMemberRow,
     MailSecurityConfirmationRow,
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
@@ -203,6 +205,8 @@ def env(tmp_path, monkeypatch):
         MailSecurityFeedbackRow.__table__,
         MailSecurityHeldPromotionRow.__table__,
         MailThreadLedgerRow.__table__,
+        MailCampaignMemberRow.__table__,
+        MailCampaignBandRow.__table__,
         MailSecurityConfirmationRow.__table__,
         PersonRow.__table__,
         CommunicationRow.__table__,

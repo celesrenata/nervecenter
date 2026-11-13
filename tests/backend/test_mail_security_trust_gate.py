@@ -52,6 +52,8 @@ from backend.mail_security.trust_gate import (
 )
 from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
+    MailCampaignBandRow,
+    MailCampaignMemberRow,
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
     MailThreadLedgerRow,
@@ -83,6 +85,8 @@ _TABLES = (
     *_SECURITY_TABLES,
     MailSecurityHeldPromotionRow.__table__,
     MailThreadLedgerRow.__table__,
+    MailCampaignMemberRow.__table__,
+    MailCampaignBandRow.__table__,
     MailSecurityFeedbackRow.__table__,
     PersonRow.__table__,
     CommitmentRow.__table__,
