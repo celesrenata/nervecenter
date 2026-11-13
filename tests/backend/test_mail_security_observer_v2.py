@@ -71,6 +71,11 @@ def _reply(**kw: Any) -> str:
     doc: dict[str, Any] = {
         "category": "RECEIPT",
         "sender_role": "BUSINESS",
+        "claims_to_be": "ORGANIZATION",
+        "claim_matches_sender": "YES",
+        "asks_secret": "NO",
+        "asks_money": "NO",
+        "asks_identity_data": "NO",
         "requests": ["OPEN_LINK LOW 1"],
         "link_risk": ["2 LOW"],
         "attachment_risk": [],
@@ -147,6 +152,62 @@ def test_v2_reply_fails_closed(kw: dict[str, Any], code: ObserverErrorCode) -> N
     with pytest.raises(GraniteObserverError) as exc:
         expand_compact(_reply(**kw), _packet(), reply_model=CompactObservationV2)
     assert exc.value.code is code
+
+
+def _expand(packet: EvidencePacket | None = None, **kw: Any):
+    return expand_compact(_reply(**kw), packet or _packet(), reply_model=CompactObservationV2)
+
+
+@pytest.mark.parametrize(
+    ("kw", "auth", "phishing"),
+    [
+        # Impersonation + secret ask, even with the lookalike's own DMARC pass.
+        ({"claim_matches_sender": "NO", "asks_secret": "YES"}, "DMARC_PASS", True),
+        # DMARC failure + money ask.
+        ({"asks_money": "YES"}, "DMARC_FAIL", True),
+        # Executive on free mail asking for money.
+        ({"claims_to_be": "PERSON", "claim_matches_sender": "NO", "asks_money": "YES"},
+         "UNKNOWN", True),
+        # Authenticated, matching sender asking to sign in or pay: not phishing.
+        ({"asks_secret": "YES"}, "DMARC_PASS", False),
+        ({"asks_money": "YES"}, "UNKNOWN", False),
+        # Impersonation without any high-impact ask: signal only.
+        ({"claim_matches_sender": "NO"}, "DMARC_PASS", False),
+        # No claimed sender: a "NO" match is not impersonation.
+        ({"claims_to_be": "NONE", "claim_matches_sender": "NO", "asks_secret": "YES"},
+         "UNKNOWN", False),
+        # UNSURE is not impersonation.
+        ({"claim_matches_sender": "UNSURE", "asks_secret": "YES"}, "UNKNOWN", False),
+        # A model-chosen PHISHING_SUSPECTED is kept.
+        ({"category": "PHISHING_SUSPECTED"}, "DMARC_PASS", True),
+    ],
+)
+def test_v2_decision_rule(kw: dict[str, Any], auth: str, phishing: bool) -> None:
+    obs = _expand(_packet(sender_auth=auth), **kw)
+    assert (obs.message_category.value == "PHISHING_SUSPECTED") is phishing
+
+
+def test_v2_facts_become_signals_requests_and_identity_consistency() -> None:
+    obs = _expand(claim_matches_sender="NO", asks_secret="YES", asks_identity_data="YES",
+                  requests=["SUBMIT_CREDENTIALS HIGH 1"])
+    codes = {r.indicator_code for r in obs.risk_indicators}
+    assert {"IMPERSONATION", "CREDENTIAL_REQUEST", "PERSONAL_DATA_REQUEST"} <= codes
+    types = [r.request_type.value for r in obs.requests]
+    assert types.count("SUBMIT_CREDENTIALS") == 1 and "SHARE_PERSONAL_DATA" in types
+    assert all(r.high_impact for r in obs.requests if r.request_type.value != "OPEN_LINK")
+    assert obs.claimed_identity.identity_consistency.value == "INCONSISTENT"
+    assert _expand().claimed_identity.identity_consistency.value == "CONSISTENT"
+    none = _expand(claims_to_be="NONE")
+    assert none.claimed_identity.identity_consistency.value == "INSUFFICIENT_EVIDENCE"
+
+
+@pytest.mark.parametrize(
+    "kw", [{"asks_secret": "MAYBE"}, {"claims_to_be": "BANK"}, {"claim_matches_sender": "no"}]
+)
+def test_v2_fact_values_are_closed(kw: dict[str, Any]) -> None:
+    with pytest.raises(GraniteObserverError) as exc:
+        _expand(**kw)
+    assert exc.value.code is ObserverErrorCode.OUTPUT_SCHEMA_INVALID
 
 
 def test_v2_reply_missing_key_is_schema_invalid() -> None:

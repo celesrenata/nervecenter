@@ -158,6 +158,7 @@ async def main(limit: int, *, contract: str, role: str) -> None:
 async def eval_synthetic(*, contract: str, role: str) -> dict[str, Any]:
     """Run the labeled synthetic set; nothing is stored."""
     import backend.api.app  # noqa: F401 - import-order guard
+    from backend.mail_security.inspections import inspect_offline
     from backend.mail_security.observer_wiring import observer_scopes
     from backend.mail_security.parser import parse_mime_evidence
     from backend.mail_security.research.observer_eval import CASES, score
@@ -173,9 +174,12 @@ async def eval_synthetic(*, contract: str, role: str) -> dict[str, Any]:
         runtime = _runtime(engine, contract=contract, role=role, store=False)
         results = []
         for case in CASES:
+            evidence = parse_mime_evidence(case.eml())
+            # Real offline rule codes, as live mail would carry.
+            rule_codes = [str(f.explanation_code) for f in inspect_offline(evidence)]
             status, codes, latency = await runtime.dry_run(
                 scope, source_key=f"eval:{case.case_id}",
-                evidence=parse_mime_evidence(case.eml()), finding_codes=[],
+                evidence=evidence, finding_codes=rule_codes,
                 sender_auth=case.sender_auth,
             )
             results.append((case, status, codes, latency))

@@ -41,7 +41,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any, Protocol
+from typing import Annotated, Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, ValidationError
 
@@ -647,8 +647,7 @@ _CATEGORY_HELP = (
     "ACCOUNT_SECURITY (sign-in alert, password reset, verification code), "
     "NEWSLETTER (editorial content or digest), "
     "MARKETING (promotion, sale, offer, product announcement), "
-    "AUTOMATED (other notification from a service or system), "
-    "PHISHING_SUSPECTED (see rule below), OTHER, UNKNOWN"
+    "AUTOMATED (other notification from a service or system), OTHER, UNKNOWN"
 )
 _SIGNAL_HELP = (
     "URGENCY_PRESSURE (act-now deadline or pressure), "
@@ -668,11 +667,20 @@ _SIGNAL_HELP = (
 COMPACT_V2_EXAMPLE: dict[str, Any] = {
     "category": "RECEIPT",
     "sender_role": "BUSINESS",
+    "claims_to_be": "ORGANIZATION",
+    "claim_matches_sender": "YES",
+    "asks_secret": "NO",
+    "asks_money": "NO",
+    "asks_identity_data": "NO",
     "requests": ["OPEN_LINK LOW 1"],
     "link_risk": ["1 LOW"],
     "attachment_risk": [],
     "signals": [],
 }
+
+_YES_NO = ("YES", "NO")
+_MATCH = ("YES", "NO", "UNSURE")
+_CLAIMS = ("ORGANIZATION", "PERSON", "NONE")
 
 COMPACT_V2_SYSTEM_PROMPT = (
     "You are a read-only mail observer. You have no tools and cannot call "
@@ -688,14 +696,22 @@ COMPACT_V2_SYSTEM_PROMPT = (
     "so (other) alone is normal and is NOT a mismatch.\n"
     "deterministic_codes: rule findings for context only; never copy them into signals.\n"
     "Reply with one JSON object and nothing else, with exactly these keys:\n"
-    f"category: exactly one of {_CATEGORY_HELP}.\n"
-    "PHISHING_SUSPECTED rule: use it only when the message pretends to come from an "
-    "organization or person that sender_domain does not belong to, or asks for a "
-    "password, code, payment or personal data in a way its real sender would not. "
-    "Mail from an authenticated sender (sender_auth DMARC_PASS) whose brand matches "
-    "sender_domain is NOT phishing because of urgent wording, offers or many links; "
-    "give it its normal category.\n"
+    f"category: the kind of message it presents itself as, exactly one of {_CATEGORY_HELP}. "
+    "Choose by what the message looks like; the questions below cover whether it is fake.\n"
     f"sender_role: one of {_enum(ClaimedRole)}\n"
+    "claims_to_be: ORGANIZATION if the message says it is from a company, bank, service, "
+    "government office or department; PERSON if from a named person (for example an "
+    "executive or colleague); NONE otherwise\n"
+    "claim_matches_sender: YES if that organization or person plausibly owns "
+    "sender_domain (a company's own domain or subdomain); NO if sender_domain belongs to "
+    "someone else, is a lookalike, or is a free-mail domain used by a claimed company or "
+    "executive; UNSURE if you cannot tell\n"
+    "asks_secret: YES if it asks the reader to sign in, or to enter or send a password, "
+    "code, PIN or card number; else NO\n"
+    "asks_money: YES if it asks the reader to pay a bill, fee or invoice, buy gift cards, "
+    "send money or use new bank details; ordinary shopping offers are NO\n"
+    "asks_identity_data: YES if it asks for ID numbers, birth date, tax or account "
+    "numbers or similar personal data; else NO\n"
     "requests: list of strings, one per thing the message asks the reader to do, "
     'each "TYPE URGENCY N" where TYPE is one of '
     f"{_enum(RequestType)}, URGENCY is one of {_enum(RequestUrgency)}, and N is "
@@ -717,11 +733,63 @@ class CompactObservationV2(BaseModel):
 
     category: MessageCategory
     sender_role: ClaimedRole
+    claims_to_be: Literal["ORGANIZATION", "PERSON", "NONE"]
+    claim_matches_sender: Literal["YES", "NO", "UNSURE"]
+    asks_secret: Literal["YES", "NO"]
+    asks_money: Literal["YES", "NO"]
+    asks_identity_data: Literal["YES", "NO"]
     requests: list[_ReqItem] = Field(max_length=16)
     link_risk: list[_RiskItem] = Field(max_length=MAX_LINKS)
     attachment_risk: list[_RiskItem] = Field(max_length=MAX_ATTACHMENTS)
     signals: list[_SignalToken] = Field(max_length=24)
     gist: Annotated[str, StringConstraints(max_length=300)] = ""
+
+
+@dataclass(frozen=True)
+class V2Decision:
+    """Fixed rule over compact@2 facts plus trusted context (NS-ADR-080).
+
+    The model reports facts; this code, not the model, decides
+    PHISHING_SUSPECTED: a high-impact ask (secret, money or identity data)
+    combined with impersonation (a claimed sender that does not own the From
+    domain) or a provider-reported DMARC failure. A model-chosen
+    PHISHING_SUSPECTED category is kept as well. Still only an observation.
+    """
+
+    phishing: bool
+    signals: tuple[str, ...]
+    requests: tuple[RequestType, ...]
+
+
+def decide_v2(compact: CompactObservationV2, packet: EvidencePacket) -> V2Decision:
+    secret = compact.asks_secret == "YES"
+    money = compact.asks_money == "YES"
+    identity = compact.asks_identity_data == "YES"
+    impersonation = compact.claims_to_be != "NONE" and compact.claim_matches_sender == "NO"
+    ask = secret or money or identity
+    phishing = compact.category is MessageCategory.PHISHING_SUSPECTED or (
+        ask and (impersonation or packet.sender_auth == "DMARC_FAIL")
+    )
+    signals = tuple(
+        name
+        for name, on in (
+            ("IMPERSONATION", impersonation),
+            ("CREDENTIAL_REQUEST", secret),
+            ("PAYMENT_REQUEST", money),
+            ("PERSONAL_DATA_REQUEST", identity),
+        )
+        if on
+    )
+    requests = tuple(
+        rt
+        for rt, on in (
+            (RequestType.SUBMIT_CREDENTIALS, secret),
+            (RequestType.PAY, money),
+            (RequestType.SHARE_PERSONAL_DATA, identity),
+        )
+        if on
+    )
+    return V2Decision(phishing=phishing, signals=signals, requests=requests)
 
 
 def build_compact_v2_request(packet: EvidencePacket, model_alias: str) -> dict[str, Any]:
@@ -850,6 +918,31 @@ def expand_compact(
                 "requires_independent_verification": high or urgency in _PRESSING,
             }
         )
+    category = compact.category.value
+    consistency = IdentityConsistency.NOT_EVALUATED.value
+    if isinstance(compact, CompactObservationV2):
+        decision = decide_v2(compact, packet)
+        if decision.phishing:
+            category = MessageCategory.PHISHING_SUSPECTED.value
+        signals = list(dict.fromkeys([*signals, *decision.signals]))
+        present = {r["request_type"] for r in requests}
+        for req_type in decision.requests:
+            if req_type.value not in present:
+                requests.append(
+                    {
+                        "request_type": req_type.value,
+                        "claimed_urgency": RequestUrgency.UNKNOWN.value,
+                        "evidence_refs": [packet.source_ref],
+                        "high_impact": True,
+                        "requires_independent_verification": True,
+                    }
+                )
+        consistency = {
+            "YES": IdentityConsistency.CONSISTENT.value,
+            "NO": IdentityConsistency.INCONSISTENT.value,
+        }.get(compact.claim_matches_sender, IdentityConsistency.INSUFFICIENT_EVIDENCE.value)
+        if compact.claims_to_be == "NONE":
+            consistency = IdentityConsistency.INSUFFICIENT_EVIDENCE.value
     doc_out = {
         "schema_version": SCHEMA_VERSION,
         "source_ref": packet.source_ref,
@@ -862,9 +955,9 @@ def expand_compact(
         "claimed_identity": {
             "claimed_role": compact.sender_role.value,
             "entity_refs": [],
-            "identity_consistency": IdentityConsistency.NOT_EVALUATED.value,
+            "identity_consistency": consistency,
         },
-        "message_category": compact.category.value,
+        "message_category": category,
         "requests": requests,
         "links": [_component(ref, link_risk.get(i)) for i, ref in enumerate(links, 1)],
         "images": [],
@@ -1004,6 +1097,8 @@ __all__ = [
     "COMPACT_V2_PROMPT_VERSION",
     "COMPACT_V2_SYSTEM_PROMPT",
     "CompactObservationV2",
+    "V2Decision",
+    "decide_v2",
     "SENDER_AUTH_VALUES",
     "build_compact_v2_request",
     "COMPACT_SIGNALS",
