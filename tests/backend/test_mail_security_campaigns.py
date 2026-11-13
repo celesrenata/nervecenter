@@ -160,3 +160,24 @@ async def test_without_key_nothing_is_recorded(harness, monkeypatch) -> None:
     await H.security_worker(harness).process_one()
     async with harness.registry.session_factory() as s:
         assert (await s.execute(select(MailCampaignMemberRow))).first() is None
+
+
+def test_shadow_only_items_never_displace_review_items() -> None:
+    """Live regression: 24 campaign siblings pushed 4 REVIEW items past the
+    visible cap into the digest. Within a tier, disposition-queued items rank
+    first; SHADOW-only items fill whatever visible room is left."""
+    from backend.mail_security.review_queue import Delivery, QueueCandidate, QueueSettings
+
+    def cand(i: int, disposition: str, campaign: int) -> QueueCandidate:
+        return QueueCandidate(
+            account_scope="conn:a", assessment_id=f"a{i:02d}", disposition=disposition,
+            created_at=NOW - timedelta(days=2, minutes=i), campaign_flagged=campaign,
+        )
+
+    # Shadow-only items are NEWER than the REVIEW items (the live ordering).
+    reviews = [cand(10 + i, "REVIEW", 0) for i in range(12)]
+    shadows = [cand(i, "LOW_PRIORITY", 1) for i in range(10)]
+    res = build_queue(reviews + shadows, now=NOW, settings=QueueSettings(visible_cap=10))
+    visible = [i for i in res.items if i.delivery is not Delivery.DIGEST]
+    assert len(visible) == 10
+    assert all(i.candidate.disposition == "REVIEW" for i in visible)

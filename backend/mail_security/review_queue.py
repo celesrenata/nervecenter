@@ -265,6 +265,10 @@ def build_queue(
     items.sort(
         key=lambda i: (
             _TIER_RANK[i.tier],
+            # SHADOW-only items (thread/campaign signal, disposition not
+            # queued) never displace a disposition-queued item from the
+            # visible cap within the same tier.
+            i.candidate.disposition not in QUEUED_DISPOSITIONS,
             -i.score,
             -i.candidate.created_at.timestamp(),
             i.candidate.assessment_id,
