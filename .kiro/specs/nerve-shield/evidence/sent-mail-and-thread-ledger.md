@@ -104,3 +104,11 @@ Feedback, findings, holds and ledger rows removed: 0 each. The api was restarted
 **Not done (left as is):**
 - Outgoing commitments and follow-ups were not re-derived for the 306 corrected messages. Detection runs at ingest, and these rows were not re-ingested.
 - The 20 dropped rows' encrypted body objects remain on the NAS.
+
+## Live check of the outgoing path (2026-11-13)
+
+The owner sent "test email" from celes@frameshift.net to celes@celestium.life.
+- **frameshift account (53b03939), ingested 02:40:48:** `outgoing`, attributed to celes@celestium.life. No security job. Ledger `OUT` row with participants `["celestium.life"]`.
+- **celestium account (fc4e3c57), ingested 02:41:07:** `incoming` from celes@frameshift.net. Job `GMAIL_RAW` with a raw ref, DONE, `ORIGINAL_RFC822`, LOW_PRIORITY. Ledger `IN` row, `NOT_A_REPLY`.
+
+This closes the "not yet observed live" item for outgoing mail. A live CONTINUOUS/SUSPECT/BROKEN result still needs a reply.
