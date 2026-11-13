@@ -321,6 +321,8 @@ class EvidencePacket:
     sender_domain: str = ""
     #: One of :data:`SENDER_AUTH_VALUES` (code-derived).
     sender_auth: str = "UNKNOWN"
+    #: The From domain is a free-mail provider (code-derived).
+    sender_freemail: bool = False
 
     def __post_init__(self) -> None:
         def need(ok: bool) -> None:
@@ -333,6 +335,7 @@ class EvidencePacket:
             and (self.sender_domain == "" or bool(_HOST_RE.fullmatch(self.sender_domain)))
         )
         need(self.sender_auth in SENDER_AUTH_VALUES)
+        need(isinstance(self.sender_freemail, bool))
         object.__setattr__(self, "subject", _clean_text(self.subject, MAX_SUBJECT_CHARS))
         object.__setattr__(self, "body_excerpt", _clean_text(self.body_excerpt, MAX_BODY_CHARS))
         need(len(self.links) <= MAX_LINKS and len(self.attachments) <= MAX_ATTACHMENTS)
@@ -726,6 +729,14 @@ COMPACT_V2_SYSTEM_PROMPT = (
 )
 
 
+#: compact@2 request item: any upper-case TYPE token (an unlisted one is
+#: recorded as OTHER, like UNLISTED_SIGNAL; the model's token is never kept).
+_REQUEST_V2_RE = re.compile(r"^([A-Z][A-Z0-9_]{0,39}) (?:([A-Z][A-Z_]{0,19}) )?(\d{1,2})$")
+_ReqItemV2 = Annotated[str, StringConstraints(max_length=64, pattern=_REQUEST_V2_RE.pattern)]
+_REQUEST_TYPES = frozenset(m.value for m in RequestType)
+_URGENCIES = frozenset(m.value for m in RequestUrgency)
+
+
 class CompactObservationV2(BaseModel):
     """compact@2 reply: compact@1 without ``gist`` (tolerated, then discarded)."""
 
@@ -738,7 +749,7 @@ class CompactObservationV2(BaseModel):
     asks_secret: Literal["YES", "NO"]
     asks_money: Literal["YES", "NO"]
     asks_identity_data: Literal["YES", "NO"]
-    requests: list[_ReqItem] = Field(max_length=16)
+    requests: list[_ReqItemV2] = Field(max_length=16)
     link_risk: list[_RiskItem] = Field(max_length=MAX_LINKS)
     attachment_risk: list[_RiskItem] = Field(max_length=MAX_ATTACHMENTS)
     signals: list[_SignalToken] = Field(max_length=24)
@@ -765,7 +776,9 @@ def decide_v2(compact: CompactObservationV2, packet: EvidencePacket) -> V2Decisi
     secret = compact.asks_secret == "YES"
     money = compact.asks_money == "YES"
     identity = compact.asks_identity_data == "YES"
-    impersonation = compact.claims_to_be != "NONE" and compact.claim_matches_sender == "NO"
+    impersonation = (
+        compact.claims_to_be != "NONE" and compact.claim_matches_sender == "NO"
+    ) or (compact.claims_to_be == "ORGANIZATION" and packet.sender_freemail)
     ask = secret or money or identity
     phishing = compact.category is MessageCategory.PHISHING_SUSPECTED or (
         ask and (impersonation or packet.sender_auth == "DMARC_FAIL")
@@ -801,8 +814,9 @@ def build_compact_v2_request(packet: EvidencePacket, model_alias: str) -> dict[s
         return " (sender)" if link.sender_aligned else " (other)"
 
     n_links, n_atts = len(packet.links), len(packet.attachments)
+    freemail = " (free-mail provider)" if packet.sender_freemail else ""
     lines = [
-        f"sender_domain: {packet.sender_domain or 'UNKNOWN'}",
+        f"sender_domain: {packet.sender_domain or 'UNKNOWN'}{freemail}",
         f"sender_auth: {packet.sender_auth}",
         f"deterministic_codes: {','.join(packet.deterministic_codes) or 'NONE'}",
         f"links: {n_links}" + (f" (numbers 1-{n_links})" if n_links else " (use N=0)"),
@@ -823,6 +837,9 @@ def build_compact_v2_request(packet: EvidencePacket, model_alias: str) -> dict[s
         "temperature": 0,
         "max_tokens": COMPACT_V2_MAX_OUTPUT_TOKENS,
         "stream": False,
+        # Reasoning models otherwise spend the budget thinking and return no
+        # text (live Qwen), or leak a think tag after the object (live Granite).
+        "chat_template_kwargs": {"enable_thinking": False},
     }
     assert not FORBIDDEN_REQUEST_KEYS & request.keys()  # noqa: S101 - build-time invariant
     return request
@@ -840,6 +857,28 @@ def _component(ref: str, risk: str | None) -> dict[str, Any]:
 #: The whole reply wrapped in exactly one markdown fence (live Granite does this).
 #: Only a full-reply wrapper is unwrapped; JSON inside prose is never extracted.
 _FENCE_RE = re.compile(r"\A\s*```(?:json)?[ \t]*\n(?P<body>[^`]*)\n[ \t]*```\s*\Z")
+
+
+_LEADING_FENCE_RE = re.compile(r"\A\s*```(?:json)?[ \t]*\n")
+
+
+def _leading_object(raw: str) -> Any:
+    """compact@2: the reply must START with one JSON object; text after it is
+    discarded unread (live models append think tags or explanations).
+
+    The object is decoded with the same duplicate-key and non-finite guards
+    and then validated by the closed schema; nothing in the discarded tail is
+    ever parsed, kept or logged. A reply that does not start with an object
+    (prose first, JSON later) is still rejected: no extraction from prose.
+    """
+    text = _LEADING_FENCE_RE.sub("", raw, count=1).lstrip()
+    if not text.startswith("{"):
+        raise ValueError("reply does not start with an object")
+    decoder = json.JSONDecoder(
+        object_pairs_hook=_reject_duplicates, parse_constant=_reject_constant
+    )
+    doc, _end = decoder.raw_decode(text)
+    return doc
 
 
 def expand_compact(
@@ -862,7 +901,12 @@ def expand_compact(
     if fenced is not None:
         raw = fenced.group("body")
     try:
-        doc = json.loads(raw, object_pairs_hook=_reject_duplicates, parse_constant=_reject_constant)
+        if reply_model is CompactObservationV2:
+            doc = _leading_object(raw)
+        else:
+            doc = json.loads(
+                raw, object_pairs_hook=_reject_duplicates, parse_constant=_reject_constant
+            )
     except (ValueError, RecursionError):
         raise GraniteObserverError(code.OUTPUT_NOT_JSON) from None
     if not isinstance(doc, dict):
@@ -899,11 +943,17 @@ def expand_compact(
     requests: list[dict[str, Any]] = []
     for item in compact.requests:
         match = _REQUEST_RE.fullmatch(item)
+        if match is None and reply_model is CompactObservationV2:
+            match = _REQUEST_V2_RE.fullmatch(item)
         if match is None:  # pragma: no cover - pattern already enforced
             raise GraniteObserverError(code.OUTPUT_SCHEMA_INVALID)
-        req_type = RequestType(match.group(1))
+        # compact@2: an unlisted type is OTHER and an unlisted urgency UNKNOWN.
+        type_token, urgency_token = match.group(1), match.group(2)
+        req_type = RequestType(type_token if type_token in _REQUEST_TYPES else "OTHER")
         # Omitted urgency is recorded as UNKNOWN (never guessed as LOW).
-        urgency = RequestUrgency(match.group(2) or RequestUrgency.UNKNOWN.value)
+        urgency = RequestUrgency(
+            urgency_token if urgency_token in _URGENCIES else RequestUrgency.UNKNOWN.value
+        )
         number = int(match.group(3))
         if number > len(links):
             raise GraniteObserverError(code.OUTPUT_UNKNOWN_EVIDENCE_REF)
@@ -921,6 +971,8 @@ def expand_compact(
     category = compact.category.value
     consistency = IdentityConsistency.NOT_EVALUATED.value
     if isinstance(compact, CompactObservationV2):
+        # Two unlisted types can both become OTHER: keep one of each.
+        requests = list({json.dumps(r, sort_keys=True): r for r in requests}.values())
         decision = decide_v2(compact, packet)
         if decision.phishing:
             category = MessageCategory.PHISHING_SUSPECTED.value

@@ -24,6 +24,9 @@ from email.message import EmailMessage
 from html import escape
 from typing import Any
 
+#: The set's stand-in for a free-mail provider (reserved name, never real).
+EVAL_FREEMAIL_DOMAINS = frozenset({"freemail.example"})
+
 #: Request types that need independent verification when asked by mail.
 HIGH_IMPACT = frozenset(
     {"PAY", "CHANGE_PAYMENT_DETAILS", "SUBMIT_CREDENTIALS", "SHARE_PERSONAL_DATA", "DOWNLOAD"}
@@ -463,4 +466,13 @@ def score(
     return rep
 
 
-__all__ = ["BENIGN", "CASES", "HIGH_IMPACT", "PHISHING", "EvalCase", "EvalReport", "score"]
+__all__ = [
+    "BENIGN",
+    "CASES",
+    "EVAL_FREEMAIL_DOMAINS",
+    "HIGH_IMPACT",
+    "PHISHING",
+    "EvalCase",
+    "EvalReport",
+    "score",
+]

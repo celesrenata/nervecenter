@@ -157,6 +157,7 @@ def build_packet(
     *,
     sender_auth: str = "UNKNOWN",
     filter_codes: bool = False,
+    extra_freemail_domains: frozenset[str] = frozenset(),
 ) -> EvidencePacket:
     """Minimal, bounded evidence for the observer (truncated, never raw MIME).
 
@@ -168,7 +169,10 @@ def build_packet(
 
     subject = " ".join(_subject_of(list(getattr(evidence, "headers", []) or [])).split())
     body = " ".join(text_of(evidence).split())
+    from backend.mail_security.auth_evidence import FREEMAIL_DOMAINS
+
     domain = sender_domain(evidence) or ""
+    freemail = bool(domain) and domain in (FREEMAIL_DOMAINS | extra_freemail_domains)
     links: list[EvidenceLink] = []
     seen_hosts: set[str] = set()
     for i, link in enumerate(getattr(evidence, "links", []) or []):
@@ -209,6 +213,7 @@ def build_packet(
         deterministic_codes=tuple(codes),
         sender_domain=domain,
         sender_auth=sender_auth,
+        sender_freemail=freemail,
     )
 
 
@@ -293,6 +298,7 @@ class ObserverRuntime:
         expectedness_secret: bytes | None = None,
         contract: str = "COMPACT",
         role: str = "Reader",
+        extra_freemail_domains: frozenset[str] = frozenset(),
     ) -> None:
         """Either a fixed ``resolver`` (no snapshot), or ``registry`` +
         ``resolver_factory(registry) -> resolver`` for a per-message snapshot.
@@ -308,6 +314,10 @@ class ObserverRuntime:
         if not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]{0,39}", role):
             raise ValueError("invalid role")
         self._role = role
+        #: Eval only: reserved test domains (``*.example``) to treat as free mail.
+        if any(not d.endswith(".example") for d in extra_freemail_domains):
+            raise ValueError("extra free-mail domains must be reserved .example names")
+        self._extra_freemail = frozenset(extra_freemail_domains)
         self._combos = combos
         self._resolver = resolver
         self._registry = registry
@@ -382,6 +392,7 @@ class ObserverRuntime:
             packet = build_packet(
                 source_key, evidence, finding_codes, sender_auth=sender_auth,
                 filter_codes=self._contract is OutputContract.COMPACT_V2,
+                extra_freemail_domains=self._extra_freemail,
             )
         except Exception:  # noqa: BLE001 - bounded packet rejected the input
             return "INPUT_INVALID", None, None, None

@@ -210,6 +210,86 @@ def test_v2_fact_values_are_closed(kw: dict[str, Any]) -> None:
     assert exc.value.code is ObserverErrorCode.OUTPUT_SCHEMA_INVALID
 
 
+@pytest.mark.parametrize(
+    "tail",
+    [
+        "\n</think>\n" + "{\"category\": \"OTHER\"}",
+        "\n\nExplanation (not part of reply): this looks legitimate.",
+        "\n<|tool_call_boundary|>\n</tool_call>",
+    ],
+)
+def test_v2_accepts_a_leading_object_and_discards_the_tail(tail: str) -> None:
+    obs = expand_compact(_reply() + tail, _packet(), reply_model=CompactObservationV2)
+    assert obs.message_category.value == "RECEIPT"
+    fenced = "```json\n" + _reply() + "\n```" + tail
+    assert expand_compact(fenced, _packet(), reply_model=CompactObservationV2)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["Sure! Here it is: " + _reply(), "", "[1, 2]", _reply()[:-1]],
+)
+def test_v2_still_rejects_prose_first_or_broken_json(raw: str) -> None:
+    with pytest.raises(GraniteObserverError) as exc:
+        expand_compact(raw, _packet(), reply_model=CompactObservationV2)
+    assert exc.value.code in (ObserverErrorCode.OUTPUT_NOT_JSON,
+                              ObserverErrorCode.OUTPUT_NOT_OBJECT)
+
+
+def test_v1_still_rejects_trailing_text() -> None:
+    from backend.mail_security.granite_observer import COMPACT_EXAMPLE
+
+    with pytest.raises(GraniteObserverError) as exc:
+        expand_compact(json.dumps(COMPACT_EXAMPLE) + "\n</think>", _packet())
+    assert exc.value.code is ObserverErrorCode.OUTPUT_NOT_JSON
+
+
+def test_v2_duplicate_keys_in_the_leading_object_are_rejected() -> None:
+    raw = _reply()[:-1] + ', "category": "OTHER"}'
+    with pytest.raises(GraniteObserverError) as exc:
+        expand_compact(raw, _packet(), reply_model=CompactObservationV2)
+    assert exc.value.code is ObserverErrorCode.OUTPUT_NOT_JSON
+
+
+def test_v2_unlisted_request_types_become_other_once() -> None:
+    obs = _expand(requests=["BUY_GIFT_CARDS HIGH 0", "LOGIN LOW 0", "UPDATE_PAYMENT_DETAILS 1",
+                            "OPEN_LINK SOMETIMES 1"])
+    pairs = sorted((r.request_type.value, r.claimed_urgency.value) for r in obs.requests)
+    assert pairs == [("OPEN_LINK", "UNKNOWN"), ("OTHER", "HIGH"), ("OTHER", "LOW"),
+                     ("OTHER", "UNKNOWN")]
+    assert "BUY_GIFT_CARDS" not in obs.model_dump_json()
+    dup = _expand(requests=["FOO LOW 0", "BAR LOW 0"])
+    assert [r.request_type.value for r in dup.requests] == ["OTHER"]
+
+
+def test_v2_request_disables_thinking_and_marks_free_mail() -> None:
+    req = build_compact_v2_request(_packet(sender_freemail=True), "secure/reader")
+    assert req["chat_template_kwargs"] == {"enable_thinking": False}
+    assert "sender_domain: example.com (free-mail provider)" in req["messages"][1]["content"]
+
+
+def test_organization_on_free_mail_is_impersonation() -> None:
+    p = _packet(sender_freemail=True, sender_auth="DMARC_PASS")
+    obs = _expand(p, asks_money="YES")  # claims ORGANIZATION, model says it matches
+    assert obs.message_category.value == "PHISHING_SUSPECTED"
+    assert "IMPERSONATION" in {r.indicator_code for r in obs.risk_indicators}
+    person = _expand(p, claims_to_be="PERSON", asks_money="YES")  # a friend on free mail
+    assert person.message_category.value == "RECEIPT"
+
+
+def test_build_packet_flags_free_mail_and_eval_domains_only_when_reserved() -> None:
+    mime = b"From: Sam <sam@gmail.com>\r\nSubject: hi\r\n\r\nhello\r\n"
+    assert build_packet("s", parse_mime_evidence(mime), []).sender_freemail is True
+    ev = parse_mime_evidence(b"From: A <a@freemail.example>\r\nSubject: x\r\n\r\ny\r\n")
+    assert build_packet("s", ev, []).sender_freemail is False
+    assert build_packet("s", ev, [], extra_freemail_domains=frozenset({"freemail.example"}))\
+        .sender_freemail is True
+    with pytest.raises(ValueError):
+        ObserverRuntime(combos=Combos([_row()]), transport=Chat(), repository=None,
+                        resolver=LocalOnlyRouteResolver(Registry(), omniroute_base_url=BASE),
+                        extra_freemail_domains=frozenset({"gmail.com"}))
+
+
 def test_v2_reply_missing_key_is_schema_invalid() -> None:
     doc = json.loads(_reply())
     del doc["signals"]

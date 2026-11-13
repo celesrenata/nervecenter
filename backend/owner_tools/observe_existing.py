@@ -29,7 +29,10 @@ from collections import Counter
 from typing import Any
 
 
-def _runtime(engine: Any, *, contract: str, role: str, store: bool) -> Any:
+def _runtime(
+    engine: Any, *, contract: str, role: str, store: bool,
+    extra_freemail_domains: frozenset[str] = frozenset(),
+) -> Any:
     import os
 
     from backend.connectors.omniroute_observer import HttpObserverTransport, HttpRegistryTransport
@@ -60,6 +63,7 @@ def _runtime(engine: Any, *, contract: str, role: str, store: bool) -> Any:
         expectedness_secret=ledger_key_from_env() if store else None,
         contract=contract,
         role=role,
+        extra_freemail_domains=extra_freemail_domains,
     )
 
 
@@ -161,7 +165,11 @@ async def eval_synthetic(*, contract: str, role: str) -> dict[str, Any]:
     from backend.mail_security.inspections import inspect_offline
     from backend.mail_security.observer_wiring import observer_scopes
     from backend.mail_security.parser import parse_mime_evidence
-    from backend.mail_security.research.observer_eval import CASES, score
+    from backend.mail_security.research.observer_eval import (
+        CASES,
+        EVAL_FREEMAIL_DOMAINS,
+        score,
+    )
     from backend.persistence.connection import create_engine
 
     scopes = observer_scopes()
@@ -171,7 +179,8 @@ async def eval_synthetic(*, contract: str, role: str) -> dict[str, Any]:
     scope = "*" if scopes is None else sorted(scopes)[0]
     engine = create_engine()
     try:
-        runtime = _runtime(engine, contract=contract, role=role, store=False)
+        runtime = _runtime(engine, contract=contract, role=role, store=False,
+                           extra_freemail_domains=EVAL_FREEMAIL_DOMAINS)
         results = []
         for case in CASES:
             evidence = parse_mime_evidence(case.eml())
