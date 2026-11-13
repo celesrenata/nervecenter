@@ -88,15 +88,30 @@ def sender_key(secret: bytes, account_scope: str, sender_domain: str) -> str:
     return hmac.new(base, sender_domain.strip().lower().encode(), hashlib.sha256).hexdigest()[:24]
 
 
-def score(request_type: str, counts: Mapping[str, float]) -> Score:
-    """Score one request type against the sender's counts BEFORE this message."""
+#: "This was expected" feedback (NS-ADR-078): pseudo-counts per live record.
+FEEDBACK_WEIGHT = 2
+FEEDBACK_TTL_DAYS = 180
+
+
+def score(
+    request_type: str,
+    counts: Mapping[str, float],
+    feedback: Mapping[str, float] | None = None,
+) -> Score:
+    """Score one request type against the sender's counts BEFORE this message.
+
+    ``feedback`` (live "expected" pseudo-counts per type) shifts the estimate
+    but never counts as history: it cannot lift a sparse sender out of
+    ABSTAIN, and it can never make anything "safe".
+    """
     hi = request_type in HIGH_IMPACT
     prior = POPULATION_PRIOR.get(request_type, min(POPULATION_PRIOR.values()))
     history = int(sum(counts.values()))
     if history < MIN_HISTORY:
         return Score(request_type, Status.ABSTAIN, prior, None, history, hi)
-    a = counts.get(request_type, 0.0) + PRIOR_STRENGTH * prior
-    n = history + PRIOR_STRENGTH
+    fb = dict(feedback or {})
+    a = counts.get(request_type, 0.0) + fb.get(request_type, 0.0) + PRIOR_STRENGTH * prior
+    n = history + sum(fb.values()) + PRIOR_STRENGTH
     p = a / n
     sd = math.sqrt(p * (1 - p) / (n + 1))
     interval = (max(0.0, p - 1.96 * sd), min(1.0, p + 1.96 * sd))

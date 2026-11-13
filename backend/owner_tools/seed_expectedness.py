@@ -109,6 +109,7 @@ async def main(forget: bool) -> None:
                 await repo.add(scope, key, types)
                 obs_doc = dict(o.observation or {})
                 obs_doc["expectedness"] = scores
+                obs_doc["expectedness_sender_key"] = key
                 async with sessions() as s:
                     await s.execute(
                         update(MailSemanticObservationRow)

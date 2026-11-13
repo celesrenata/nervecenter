@@ -38,6 +38,7 @@ from backend.mail_security.review_queue import (
 )
 from backend.persistence.models.mail_security import (
     MailCampaignMemberRow,
+    MailExpectednessFeedbackRow,
     MailSecurityAssessmentRow,
     MailSecurityFeedbackRow,
     MailSecurityFindingRow,
@@ -154,11 +155,36 @@ async def _unexpected_asks(s: Any, account_scope: str) -> set[str]:
             .limit(MAX_CANDIDATES)
         )
     ).all()
-    return {
-        str(src)
-        for src, obs in rows
-        if isinstance(obs, Mapping) and unexpected_high_impact(obs.get("expectedness") or [])
+    now = datetime.now(UTC)
+    marked = {
+        (str(src), str(t))
+        for src, t in (
+            await s.execute(
+                select(
+                    MailExpectednessFeedbackRow.source_key,
+                    MailExpectednessFeedbackRow.request_type,
+                ).where(
+                    MailExpectednessFeedbackRow.account_scope == account_scope,
+                    MailExpectednessFeedbackRow.revoked_at.is_(None),
+                    MailExpectednessFeedbackRow.expires_at > now,
+                )
+            )
+        ).all()
     }
+    out: set[str] = set()
+    for src, obs in rows:
+        if not isinstance(obs, Mapping):
+            continue
+        # NS-ADR-078: an ask the owner marked "expected" (live, not undone)
+        # no longer queues this message.
+        open_asks = [
+            s
+            for s in obs.get("expectedness") or []
+            if isinstance(s, Mapping) and (str(src), str(s.get("request_type"))) not in marked
+        ]
+        if unexpected_high_impact(open_asks):
+            out.add(str(src))
+    return out
 
 
 async def load_queue_candidates(session_factory: Any, account_scope: str) -> list[QueueCandidate]:

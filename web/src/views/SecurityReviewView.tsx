@@ -64,6 +64,67 @@ function commitmentSummary(item: ReviewQueueItem): string | null {
   return `Kept for review, not acted on: ${parts.join(', ')}`
 }
 
+/**
+ * NS-ADR-078: "This was expected" for an unusual high-impact ask from this
+ * sender. Teaches the sender's pattern for future mail (bounded, expires,
+ * undoable); it never marks anything safe.
+ */
+function ExpectedControl({ assessmentId }: { assessmentId: string }) {
+  const [marked, setMarked] = useState<string[]>([])
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState('')
+  const mark = async () => {
+    setBusy(true)
+    try {
+      const rows = await mailSecurityApi.markExpected(assessmentId, crypto.randomUUID())
+      setMarked(rows.map((r) => r.feedback_id))
+      setMessage('Marked as expected for this sender. It leaves the queue on refresh.')
+    } catch {
+      setMessage('Could not record that. Nothing was changed.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  const undo = async () => {
+    setBusy(true)
+    try {
+      await Promise.all(marked.map((id) => mailSecurityApi.undoExpected(id)))
+      setMarked([])
+      setMessage('Undone. This request counts as unusual again.')
+    } catch {
+      setMessage('Could not undo. Try again.')
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div className="mt-2 flex flex-wrap items-center gap-2" data-testid="expected-control">
+      {marked.length === 0 ? (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={mark}
+          className="rounded border border-line px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+        >
+          This was expected
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled={busy}
+          onClick={undo}
+          className="rounded border border-line px-2 py-0.5 text-[11px] font-medium text-primary hover:bg-hover focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 disabled:opacity-50"
+        >
+          Undo
+        </button>
+      )}
+      <span role="status" aria-live="polite" className="text-[11px] text-secondary">
+        {message}
+      </span>
+    </div>
+  )
+}
+
 function QueueRow({ item }: { item: ReviewQueueItem }) {
   const [open, setOpen] = useState(false)
   const panelId = useId()
@@ -108,6 +169,9 @@ function QueueRow({ item }: { item: ReviewQueueItem }) {
         <p className="mt-1 text-[11px] text-secondary" data-testid="review-item-commitments">
           {commitments}
         </p>
+      )}
+      {item.reasons.includes('UNEXPECTED_HIGH_IMPACT_ASK') && (
+        <ExpectedControl assessmentId={item.assessment_id} />
       )}
       <button
         type="button"

@@ -29,6 +29,7 @@ from backend.persistence.connection import make_session_factory
 from backend.persistence.models.mail_security import (
     MailCampaignBandRow,
     MailCampaignMemberRow,
+    MailExpectednessFeedbackRow,
     MailSecurityConfirmationRow,
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
@@ -209,6 +210,7 @@ def env(tmp_path, monkeypatch):
         MailCampaignMemberRow.__table__,
         MailCampaignBandRow.__table__,
         MailSemanticObservationRow.__table__,
+        MailExpectednessFeedbackRow.__table__,
         MailSecurityConfirmationRow.__table__,
         PersonRow.__table__,
         CommunicationRow.__table__,

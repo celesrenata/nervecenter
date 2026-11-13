@@ -718,9 +718,41 @@ class MailExpectednessCountRow(Base):
     )
 
 
+class MailExpectednessFeedbackRow(Base):
+    """One "this was expected" feedback on an expectedness score (NS-ADR-078).
+
+    Table ``mail_expectedness_feedback``. Append-only: undo sets
+    ``revoked_at`` (the row is kept for audit). A live row (not revoked, not
+    expired) adds ``weight`` pseudo-counts for ``request_type`` to the keyed
+    sender, never to its history count. ``reviewer_ref`` is an opaque hash.
+    """
+
+    __tablename__ = "mail_expectedness_feedback"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    feedback_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    assessment_id: Mapped[str] = mapped_column(String(160), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    sender_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    weight: Mapped[int] = mapped_column(Integer, nullable=False, default=2)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    reviewer_ref: Mapped[str] = mapped_column(String(80), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("ix_mail_expect_fb_id", "feedback_id", unique=True),
+        Index("ix_mail_expect_fb_sender", "account_scope", "sender_key"),
+        Index("ix_mail_expect_fb_source", "account_scope", "source_key"),
+    )
+
+
 __all__ = [
     "MailCampaignBandRow",
     "MailExpectednessCountRow",
+    "MailExpectednessFeedbackRow",
     "MailSemanticObservationRow",
     "MailCampaignMemberRow",
     "MailEvidenceRow",

@@ -190,6 +190,8 @@ TABLES_WITH_ID = frozenset(
         "mail_semantic_observations",
         # NerveShield personal expectedness counts, Alembic 024 (NS-ADR-075).
         "mail_expectedness_counts",
+        # NerveShield expectedness feedback, Alembic 025 (NS-ADR-078).
+        "mail_expectedness_feedback",
     }
 )
 

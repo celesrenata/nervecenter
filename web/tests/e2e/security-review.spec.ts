@@ -167,6 +167,57 @@ test.describe('NerveShield review queue (Task 7.3)', () => {
     await expect(page.getByTestId('review-item-as-vip')).toBeVisible()
   })
 
+  test('SR-4 "This was expected" marks and undoes, only on unusual asks', async ({ page }) => {
+    const UNUSUAL = item({
+      assessment_id: 'as-unusual',
+      disposition: 'LOW_PRIORITY',
+      tier: 'MEDIUM',
+      delivery: 'QUEUE',
+      reasons: ['UNEXPECTED_HIGH_IMPACT_ASK'],
+    })
+    await routeQueue(page, {
+      data: [UNUSUAL, VIP],
+      digest: { count: 0, by_reason: {} },
+      excluded_reviewed: 0,
+      quiet_until: null,
+      policy_version: 'mail-review-queue@4',
+    })
+    const calls: string[] = []
+    await page.route('**/api/mail-security/assessments/as-unusual/expected', (route: Route) => {
+      calls.push(`${route.request().method()} expected`)
+      const body = route.request().postDataJSON() as Record<string, unknown>
+      expect(Object.keys(body)).toEqual(['idempotency_key'])
+      return route.fulfill({
+        status: 201,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          data: [{ feedback_id: 'efb_1', assessment_id: 'as-unusual', request_type: 'PAY',
+                   weight: 2, created_at: null, expires_at: '2027-05-12T00:00:00Z',
+                   revoked: false, live: true, mine: true }],
+        }),
+      })
+    })
+    await page.route('**/api/mail-security/expectedness-feedback/efb_1', (route: Route) => {
+      calls.push(`${route.request().method()} efb_1`)
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ data: { feedback_id: 'efb_1', revoked: true, live: false } }),
+      })
+    })
+    await visit(page)
+    const row = page.getByTestId('review-item-as-unusual')
+    await expect(row).toContainText('An unusual request for this sender')
+    await expect(row).toContainText('Worth a look')
+    await expect(page.getByTestId('review-item-as-vip').getByTestId('expected-control')).toHaveCount(0)
+    await row.getByRole('button', { name: 'This was expected' }).click()
+    await expect(row.getByRole('status')).toContainText('Marked as expected for this sender')
+    await row.getByRole('button', { name: 'Undo' }).click()
+    await expect(row.getByRole('status')).toContainText('Undone')
+    await expect(row.getByRole('button', { name: 'This was expected' })).toBeVisible()
+    expect(calls).toEqual(['POST expected', 'DELETE efb_1'])
+    expect(REMOTE).toEqual([])
+  })
   test('SR-3 fail closed on a safe 404', async ({ page }) => {
     await routeQueue(page, { detail: { error_code: 'not_found' } }, 404)
     await visit(page)

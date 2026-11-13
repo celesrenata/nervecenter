@@ -61,6 +61,7 @@ from backend.persistence.models.mail_security import (
     MailCampaignMemberRow,
     MailEvidenceRow,
     MailExpectednessCountRow,
+    MailExpectednessFeedbackRow,
     MailIntelIndicatorRow,
     MailSecurityAssessmentRow,
     MailSecurityFindingRow,
@@ -120,6 +121,7 @@ TABLES = [
     MailCampaignBandRow.__table__,
     MailSemanticObservationRow.__table__,
     MailExpectednessCountRow.__table__,
+    MailExpectednessFeedbackRow.__table__,
 ]
 
 

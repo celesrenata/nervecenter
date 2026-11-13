@@ -258,6 +258,23 @@ export interface MailSecurityClient {
     verdict: ReviewerVerdict,
     idempotencyKey: string,
   ): Promise<FeedbackEntry>
+  /** NS-ADR-078: "this was expected" for an unusual high-impact ask. */
+  markExpected(assessmentId: string, idempotencyKey: string): Promise<ExpectedFeedback[]>
+  /** Undo one "expected" feedback (kept for audit, no longer counted). */
+  undoExpected(feedbackId: string): Promise<ExpectedFeedback>
+}
+
+/** One "this was expected" feedback (codes only). */
+export interface ExpectedFeedback {
+  feedback_id: string
+  assessment_id: string
+  request_type: string
+  weight: number
+  created_at: string | null
+  expires_at: string
+  revoked: boolean
+  live: boolean
+  mine: boolean
 }
 
 // ─── Real API implementation ─────────────────────────────────────────────────
@@ -350,6 +367,28 @@ export const realMailSecurityApi: MailSecurityClient = {
     if (!res.ok) throw await apiErrorFromResponse(res)
     return ((await res.json()) as { data: FeedbackEntry }).data
   },
+
+  markExpected: async (assessmentId, idempotencyKey) => {
+    const res = await apiFetch(
+      `/api/mail-security/assessments/${encodeURIComponent(assessmentId)}/expected`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ idempotency_key: idempotencyKey }),
+      },
+    )
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return ((await res.json()) as { data: ExpectedFeedback[] }).data
+  },
+
+  undoExpected: async (feedbackId) => {
+    const res = await apiFetch(
+      `/api/mail-security/expectedness-feedback/${encodeURIComponent(feedbackId)}`,
+      { method: 'DELETE' },
+    )
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return ((await res.json()) as { data: ExpectedFeedback }).data
+  },
 }
 
 // ─── Mock mode: honest empty (no backend → nothing assessed) ──────────────────
@@ -365,6 +404,12 @@ export const mockMailSecurityApi: MailSecurityClient = {
   getReviewQueue: async () => null,
   listFeedback: async () => [],
   submitFeedback: async () => {
+    throw new Error('No backend: feedback was not recorded')
+  },
+  markExpected: async () => {
+    throw new Error('No backend: feedback was not recorded')
+  },
+  undoExpected: async () => {
     throw new Error('No backend: feedback was not recorded')
   },
 }

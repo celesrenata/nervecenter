@@ -295,7 +295,7 @@ class ObserverRuntime:
         codes = observation_codes(result.observation)
         expectedness = await self._expectedness(account_scope, evidence, codes)
         if expectedness is not None:
-            codes["expectedness"] = expectedness
+            codes["expectedness"], codes["expectedness_sender_key"] = expectedness
         await self._repo.record(
             account_scope, source_key=source_key, revision=revision, status="COMPLETED",
             prompt_version=result.prompt_version, route_digest=result.route_digest,
@@ -306,7 +306,7 @@ class ObserverRuntime:
 
     async def _expectedness(
         self, account_scope: str, evidence: Any, codes: dict[str, Any]
-    ) -> list[dict[str, Any]] | None:
+    ) -> tuple[list[dict[str, Any]], str] | None:
         """NS-ADR-075: score this message's asks against the sender's history
         BEFORE counting them, then count them. ``None`` when not opted in or
         the sender has no usable domain. Never raises into the observer."""
@@ -320,11 +320,15 @@ class ObserverRuntime:
         types = sorted({r["request_type"] for r in codes.get("requests") or []})
         if not domain or not types:
             return None
+        from datetime import UTC, datetime
+
         key = sender_key(self._expect_secret, account_scope, domain)
         counts = await self._expect_repo.counts(account_scope, key)
-        scores = [score(t, counts).as_codes() for t in types]
+        live = getattr(self._expect_repo, "live_feedback_weights", None)
+        feedback = await live(account_scope, key, now=datetime.now(UTC)) if live else {}
+        scores = [score(t, counts, feedback).as_codes() for t in types]
         await self._expect_repo.add(account_scope, key, types)
-        return scores
+        return scores, key
 
 
 _observer_runtime: Any = None
