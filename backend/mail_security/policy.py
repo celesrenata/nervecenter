@@ -83,7 +83,7 @@ from backend.mail_security.models import (
 #: Stable version of this decision policy. Any change to the fusion rules or
 #: their thresholds MUST bump this constant so a persisted verdict records which
 #: rule set produced it (R-007.4, R-011.1/.5).
-POLICY_VERSION = "mail-security-policy@3"
+POLICY_VERSION = "mail-security-policy@4"
 
 # -- deployment mode ---------------------------------------------------------
 
@@ -177,6 +177,9 @@ class PolicyEvidence:
     inspection_complete: bool = True
     incomplete_reason_codes: list[Code] = field(default_factory=list)
     bulk_mail: bool = False
+    #: NS-ADR-072: the Reply-To is on a free-mail provider (gmail.com, ...).
+    #: Computed by the worker from the parsed headers; never persisted.
+    reply_to_freemail: bool = False
     model_benign_estimate: float | None = None
     claims_emergency: bool = False
     claims_prior_approval: bool = False
@@ -392,6 +395,19 @@ def _derive_disposition(
     if evidence.model_benign_estimate is not None:
         reasons.append(_R_UNCALIBRATED_MODEL_NUMBER)
 
+    # policy@4 (NS-ADR-072): a Reply-To on another organization's domain is
+    # routine (ticketing, ESPs) once the receiving provider itself reports
+    # DMARC=pass for the From domain. Such a mismatch is still recorded as a
+    # finding but no longer counts as impersonation for the disposition. A
+    # free-mail Reply-To (the business-email-compromise shape) and every
+    # unauthenticated / untrusted-header case keep counting. Lookalike From
+    # domains are caught by their own (unaffected) rules.
+    if _dmarc_provider_pass(evidence.authentication) and not evidence.reply_to_freemail:
+        calibrated = [f for f in findings if f.explanation_code in _REPLY_TO_MISMATCH_CODES]
+        if calibrated:
+            reasons.append(_R_REPLY_TO_MISMATCH_DMARC_ALIGNED)
+            findings = [f for f in findings if f.explanation_code not in _REPLY_TO_MISMATCH_CODES]
+
     # Classify the findings into the signals the rules need.
     high_impact_ask = any(
         f.category in _HIGH_IMPACT_ASK_CATEGORIES and f.severity in _HIGH_SEVERITIES
@@ -522,6 +538,19 @@ def _deception_reasons(findings: list[SecurityFinding]) -> list[Code]:
         ):
             reasons.append(_R_ATTACHMENT_FINDING)
     return reasons
+
+
+_REPLY_TO_MISMATCH_CODES = frozenset({"REPLY_TO_MISMATCH", "REPLY_TO_DOMAIN_MISMATCH"})
+_R_REPLY_TO_MISMATCH_DMARC_ALIGNED = "REPLY_TO_MISMATCH_DMARC_ALIGNED"
+
+
+def _dmarc_provider_pass(authentication: Authentication) -> bool:
+    """DMARC=pass reported by an attested receiver (or independently verified)."""
+    d = authentication.dmarc
+    return d.result is AuthResult.PASS and d.provenance in (
+        AuthProvenance.PROVIDER_REPORTED,
+        AuthProvenance.INDEPENDENT,
+    )
 
 
 def _auth_is_unknown(authentication: Authentication) -> bool:

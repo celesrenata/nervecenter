@@ -473,7 +473,7 @@ def _decide(findings: list[SecurityFinding], *, complete: bool = True):
 
 def test_policy_version_bumped_for_attachment_semantics() -> None:
     # @2 added live intel matches; @3 (Item 3) adds attachment/malware rules.
-    assert POLICY_VERSION == "mail-security-policy@3"
+    assert POLICY_VERSION == "mail-security-policy@4"
 
 
 @pytest.mark.parametrize(

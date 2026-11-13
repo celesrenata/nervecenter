@@ -130,6 +130,10 @@ _FIRST_PARTY_REGISTRABLE_DOMAINS: dict[str, frozenset[str]] = {
     # cdn-apple.com is Apple's content-delivery domain (observed on real mail:
     # applecard.cdn-apple.com); icloud.com / mzstatic.com are Apple's own.
     "apple": frozenset({"icloud.com", "cdn-apple.com", "mzstatic.com"}),
+    # NS-ADR-072, observed on real mail: media-amazon.com and
+    # ssl-images-amazon.com are Amazon's own image CDNs; amazon.work is
+    # Amazon's A to Z employee portal (atoz.amazon.work).
+    "amazon": frozenset({"media-amazon.com", "ssl-images-amazon.com", "amazon.work"}),
 }
 
 #: OWNER-REVIEWABLE DATA (NS-ADR-026). Brand -> top-level domain the brand's

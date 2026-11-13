@@ -456,6 +456,31 @@ def boundary_from_env(env: Mapping[str, str] | None = None) -> TrustedReceiverBo
     return TrustedReceiverBoundary(ids, topmost_only=True)
 
 
+#: Consumer free-mail providers (NS-ADR-072): a Reply-To here keeps counting as
+#: impersonation even when the From domain is DMARC-aligned. Exact registrable
+#: domains; owner-reviewable data.
+FREEMAIL_DOMAINS: frozenset[str] = frozenset(
+    {
+        "gmail.com", "googlemail.com", "outlook.com", "hotmail.com", "live.com",
+        "msn.com", "yahoo.com", "ymail.com", "aol.com", "icloud.com", "me.com",
+        "mac.com", "proton.me", "protonmail.com", "gmx.com", "gmx.net",
+        "mail.com", "zoho.com", "yandex.com", "yandex.ru", "qq.com", "163.com",
+    }
+)
+
+
+def _registrable_of(domain: str | None) -> str | None:
+    # Lazy: ``inspections`` imports this module.
+    from backend.mail_security.inspections import _registrable
+
+    return _registrable(domain) if domain else None
+
+
+def is_freemail_address(address: str | None) -> bool:
+    """True when ``address`` is on a consumer free-mail provider."""
+    return _registrable_of(_domain_of(address)) in FREEMAIL_DOMAINS
+
+
 def inspect_sender_provenance(addresses: SenderAddresses) -> list[SecurityFinding]:
     """Emit offline sender-provenance findings (R-004.3, T-03).
 
@@ -477,7 +502,9 @@ def inspect_sender_provenance(addresses: SenderAddresses) -> list[SecurityFindin
 
     if from_domain and addresses.reply_to is not None:
         reply_domain = _domain_of(addresses.reply_to)
-        if reply_domain and reply_domain != from_domain:
+        # NS-ADR-072: compare registrable domains; ``news.brand.example`` vs
+        # ``brand.example`` is the same organization, not a mismatch.
+        if reply_domain and _registrable_of(reply_domain) != _registrable_of(from_domain):
             findings.append(
                 _finding(
                     finding_key="sender-reply-to-mismatch",
@@ -491,7 +518,7 @@ def inspect_sender_provenance(addresses: SenderAddresses) -> list[SecurityFindin
 
     if from_domain and addresses.return_path is not None:
         return_domain = _domain_of(addresses.return_path)
-        if return_domain and return_domain != from_domain:
+        if return_domain and _registrable_of(return_domain) != _registrable_of(from_domain):
             findings.append(
                 _finding(
                     finding_key="sender-return-path-mismatch",

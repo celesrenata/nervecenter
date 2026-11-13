@@ -108,6 +108,7 @@ from backend.mail_security.auth_evidence import (
     SenderAddresses,
     TrustedReceiverBoundary,
     build_auth_evidence,
+    is_freemail_address,
 )
 from backend.mail_security.identifiers import assessment_id as derive_assessment_id
 from backend.mail_security.ingestion_seam import mail_security_enabled
@@ -653,6 +654,7 @@ class MailSecurityWorker:
             inspection_complete=inspection_complete,
             incomplete_reason_codes=reason_codes,
             bulk_mail=bool(flags.get("bulk") or flags.get("no_reply")),
+            reply_to_freemail=is_freemail_address(addresses.reply_to),
         )
         result = decide_policy(policy_evidence, clock=self._clock)
 
