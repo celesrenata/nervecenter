@@ -112,3 +112,9 @@ The owner sent "test email" from celes@frameshift.net to celes@celestium.life.
 - **celestium account (fc4e3c57), ingested 02:41:07:** `incoming` from celes@frameshift.net. Job `GMAIL_RAW` with a raw ref, DONE, `ORIGINAL_RFC822`, LOW_PRIORITY. Ledger `IN` row, `NOT_A_REPLY`.
 
 This closes the "not yet observed live" item for outgoing mail. A live CONTINUOUS/SUSPECT/BROKEN result still needs a reply.
+
+**Reply (02:42).** The owner replied from celes@celestium.life.
+- **celestium account:** `outgoing` to celes@frameshift.net, with a ledger `OUT` row listing participants `["frameshift.net"]`.
+- **frameshift account:** `incoming` from celes@celestium.life, with a ledger `IN` row of **`CONTINUOUS`** and no signals. The cited parent was frameshift's own sent message, and the sender domain was one of that message's recipients.
+
+This is the first live continuity result, and it exercised the full loop: sent mail recorded as participants → reply judged against them.
