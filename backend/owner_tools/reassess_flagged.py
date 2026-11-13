@@ -19,9 +19,9 @@ FLAGGED = ("REVIEW", "RESTRICTED")
 
 
 async def main(apply: bool) -> None:
-    import backend.api.app  # noqa: F401 - import-order guard
     from sqlalchemy import select, update
 
+    import backend.api.app  # noqa: F401 - import-order guard
     from backend.mail_security.worker import SOURCE_REVISION_META_KEY
     from backend.persistence.connection import create_engine, make_session_factory
     from backend.persistence.models.mail_security import (
