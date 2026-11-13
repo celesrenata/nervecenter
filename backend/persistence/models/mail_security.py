@@ -662,8 +662,41 @@ class MailCampaignBandRow(Base):
     )
 
 
+class MailSemanticObservationRow(Base):
+    """One SHADOW semantic-observer run for a message revision (NS-ADR-073).
+
+    Table ``mail_semantic_observations``. ``observation`` holds enum codes
+    only (category, claimed role, identity consistency, request types and
+    urgencies, risk indicator codes). The model's free-text ``gist`` is never
+    stored. ``status`` is ``COMPLETED`` or a typed observer/route error code.
+    """
+
+    __tablename__ = "mail_semantic_observations"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = _created_at()
+    schema_version: Mapped[str] = mapped_column(String(32), default="mail-observation@1")
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    source_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    revision: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(48), nullable=False)
+    prompt_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    route_digest: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    observation: Mapped[dict[str, Any]] = mapped_column(Jsonb, default=dict, nullable=False)
+
+    __table_args__ = (
+        Index(
+            "ix_mail_semantic_obs_src", "account_scope", "source_key", "revision", unique=True
+        ),
+        Index("ix_mail_semantic_obs_status", "account_scope", "status"),
+    )
+
+
 __all__ = [
     "MailCampaignBandRow",
+    "MailSemanticObservationRow",
     "MailCampaignMemberRow",
     "MailEvidenceRow",
     "MailIntelIndicatorRow",

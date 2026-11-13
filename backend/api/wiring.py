@@ -182,6 +182,53 @@ def build_db_engine() -> AsyncEngine | None:
     return engine
 
 
+def _bind_semantic_observer(target: Any) -> None:
+    """NS-ADR-073: bind the SHADOW semantic observer when an account is opted
+    in (``NERVE_MAIL_SECURITY_OBSERVER_SCOPES``) and OmniRoute is configured.
+    Otherwise nothing is bound and no mail is ever sent to a model."""
+    import os
+
+    from backend.mail_security.observer_wiring import (
+        ObserverRuntime,
+        observer_scopes,
+        set_observer_runtime,
+    )
+
+    scopes = observer_scopes()
+    url = (os.environ.get("NERVE_OMNIROUTE_URL") or "").strip()
+    key = (os.environ.get("NERVE_OMNIROUTE_API_KEY") or "").strip()
+    engine = getattr(target.state, "db_engine", None)
+    if (scopes is not None and not scopes) or not url or not key or engine is None:
+        set_observer_runtime(None)
+        return
+    from backend.connectors.omniroute_observer import (
+        HttpObserverTransport,
+        HttpRegistryTransport,
+    )
+    from backend.mail_security.route_guard import LocalOnlyRouteResolver
+    from backend.persistence.repositories.mail_security_observation_repo import (
+        MailObservationRepository,
+    )
+    from backend.services.inference_providers import InferenceComboService
+
+    resolver = LocalOnlyRouteResolver(
+        HttpRegistryTransport(url, key),
+        omniroute_base_url=url,
+        require_secure_combo=True,
+    )
+    set_observer_runtime(
+        ObserverRuntime(
+            combos=InferenceComboService(engine),
+            resolver=resolver,
+            transport=HttpObserverTransport(url, key),
+            repository=MailObservationRepository(
+                target.state.repository_registry.session_factory
+            ),
+        )
+    )
+    log.info("api.wiring.semantic_observer_bound", scopes="*" if scopes is None else len(scopes))
+
+
 def _load_secret_codec():
     """Load the durable :class:`SecretCodec` for the repository registry.
 
@@ -434,6 +481,7 @@ async def wire_dependencies(target: FastAPI) -> None:
                     set_campaign_repository(
                         MailCampaignRepository(target.state.repository_registry.session_factory)
                     )
+                    _bind_semantic_observer(target)
                     # Phase 2 wiring: explicitly start the flag-gated runner
                     # that sweeps and drains the scheduled jobs. Never reached
                     # with the flag OFF (no task, no construction).
@@ -797,8 +845,10 @@ async def teardown_dependencies(target: FastAPI) -> None:
 
         set_thread_ledger_repository(None)
         from backend.mail_security.campaigns import set_campaign_repository
+        from backend.mail_security.observer_wiring import set_observer_runtime
 
         set_campaign_repository(None)
+        set_observer_runtime(None)
     except Exception as exc:  # noqa: BLE001 - shutdown must not raise
         log.warning("api.wiring.mail_security_repo_unbind_failed", error=str(exc))
 

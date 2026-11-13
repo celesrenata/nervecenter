@@ -49,6 +49,7 @@ from backend.mail_security.ingestion_seam import (
     ENV_MAIL_SECURITY_ENABLED,
     set_mail_security_repository,
 )
+from backend.mail_security.observer_wiring import set_observer_runtime
 from backend.mail_security.thread_ledger import set_thread_ledger_repository
 from backend.mail_security.worker import (
     MailSecurityWorker,
@@ -63,6 +64,7 @@ from backend.persistence.models.mail_security import (
     MailSecurityAssessmentRow,
     MailSecurityFindingRow,
     MailSecurityJobRow,
+    MailSemanticObservationRow,
     MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
@@ -115,6 +117,7 @@ TABLES = [
     MailThreadLedgerRow.__table__,
     MailCampaignMemberRow.__table__,
     MailCampaignBandRow.__table__,
+    MailSemanticObservationRow.__table__,
 ]
 
 
@@ -289,6 +292,7 @@ async def teardown_harness(harness: SimpleNamespace) -> None:
     set_mail_security_repository(None)
     set_thread_ledger_repository(None)
     set_campaign_repository(None)
+    set_observer_runtime(None)
     reset_communications_service()
     await harness.engine.dispose()
 

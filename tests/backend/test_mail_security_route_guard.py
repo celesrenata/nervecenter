@@ -631,12 +631,19 @@ def test_module_has_no_network_or_subprocess_imports_and_is_not_wired() -> None:
         r"^\s*(import|from)\s+(socket|ssl|http|requests|httpx|aiohttp|subprocess|urllib\.request)\b",
     ):
         assert not re.search(pattern, source, re.MULTILINE)
+    # NS-ADR-073: the SHADOW observer is wired by exactly these modules; the
+    # route guard stays mandatory on every observer call.
+    approved = {
+        root / "api" / "wiring.py",
+        root / "mail_security" / "observer_wiring.py",
+        root / "owner_tools" / "observe_existing.py",
+    }
     for path in root.rglob("*.py"):
         if path.name in (
             "route_guard.py",
             "granite_observer.py",
             "qwen_challenger.py",
             "observer_route.py",
-        ):  # Phase 4 libraries, themselves unwired
+        ) or path in approved:
             continue
         assert "route_guard" not in path.read_text(), f"{path} wires route_guard"

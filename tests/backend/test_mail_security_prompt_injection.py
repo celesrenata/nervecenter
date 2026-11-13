@@ -1090,7 +1090,18 @@ def test_no_pipeline_module_imports_the_phase4_model_modules() -> None:
         if absolute.search(text) or relative.search(text) or dynamic.search(text):
             offenders.append(str(path.relative_to(backend)))
     assert scanned > 50, "scan found suspiciously few modules"
-    assert offenders == []
+    # NS-ADR-073: the owner approved the SHADOW observer. Exactly these modules
+    # may import the observer + route guard; nothing may import the challenger
+    # or escalation modules.
+    approved = {
+        "api/wiring.py",
+        "mail_security/observer_wiring.py",
+        "owner_tools/observe_existing.py",
+    }
+    assert sorted(set(offenders) - approved) == []
+    unwired = re.compile(r"\b(?:qwen_challenger|backend\.mail_security\.escalation)\b")
+    for rel in approved:
+        assert not unwired.search((backend / rel).read_text(encoding="utf-8")), rel
     init = (backend / "mail_security" / "__init__.py").read_text(encoding="utf-8")
     assert not any(name in init for name in _NEW_MODULES)
 

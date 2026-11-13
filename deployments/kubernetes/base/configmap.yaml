@@ -58,6 +58,14 @@ data:
   # same server stay UNTRUSTED. Results become PROVIDER_REPORTED, never
   # INDEPENDENT. Remove this key to attest nothing again.
   NERVE_MAIL_SECURITY_TRUSTED_AUTHSERV_IDS: "mx.google.com"
+  # NerveShield SHADOW semantic observer (NS-ADR-073, G8 item 3, owner "do
+  # em"). Real mail excerpts (subject, <=4000 chars of text, link hosts,
+  # attachment types, finding codes) go to the local Granite reader ONLY via
+  # NerveCenter's Reader combo, route-guarded on every call (secure combo,
+  # local leaves only). Proven before enabling: no OmniRoute memory write, no
+  # body artifacts, no prompt logging on the Granite host. Stored output is
+  # enum codes only. Remove this key to stop sending mail to any model.
+  NERVE_MAIL_SECURITY_OBSERVER_SCOPES: "conn:53b03939-bdf6-4313-a7e3-b91144c598d2,conn:fc4e3c57-2f5f-49b6-87e7-9f3e87fd813e"
   # NerveShield attachment scanning (NS-ADR-065): the clamd sidecar's UNIX
   # socket. Remove this key to report attachments as NOT_RUN again.
   NERVE_CLAMD_SOCKET: "/run/clamav/clamd.sock"

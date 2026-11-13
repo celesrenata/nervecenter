@@ -531,7 +531,11 @@ def test_migration_up_then_down(tmp_path):
 
 def test_migration_single_head_chained_on_016(tmp_path):
     script = ScriptDirectory.from_config(_cfg(f"sqlite:///{tmp_path / 'noop.db'}"))
-    assert list(script.get_heads()) == ["022_mail_campaigns"]
+    assert list(script.get_heads()) == ["023_mail_semantic_obs"]
+    assert (
+        script.get_revision("023_mail_semantic_obs").down_revision
+        == "022_mail_campaigns"
+    )
     assert (
         script.get_revision("022_mail_campaigns").down_revision
         == "021_mail_thread_ledger"

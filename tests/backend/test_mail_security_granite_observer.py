@@ -451,8 +451,11 @@ def test_module_has_no_network_imports_and_is_not_wired() -> None:
         r"^\s*(import|from)\s+(socket|ssl|http|requests|httpx|aiohttp|subprocess|urllib\.request)\b"
     )
     assert not re.search(banned, source, re.MULTILINE)
+    # NS-ADR-073: the owner approved the SHADOW observer. Exactly one runtime
+    # module may wire it; the 4.4 challenger library reuses its helpers.
+    approved = {root / "mail_security" / "observer_wiring.py"}
     for path in root.rglob("*.py"):
-        if path.name in ("granite_observer.py", "qwen_challenger.py"):  # 4.4 library, unwired
+        if path.name in ("granite_observer.py", "qwen_challenger.py") or path in approved:
             continue
         assert "granite_observer" not in path.read_text(), f"{path} wires granite_observer"
 

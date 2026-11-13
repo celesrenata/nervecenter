@@ -520,6 +520,7 @@ class MailSecurityWorker:
         done = outcome.job
         self._lap(LatencyStage.PERSIST, lap)
         await self._record_campaign(job, content_ref=content_ref, evidence=evidence)
+        await self._observe_semantics(job, evidence=evidence, assessment=assessment)
         log.info(
             "mail_security.job_done",
             trace_id=safe_trace_id(job.id),
@@ -565,6 +566,31 @@ class MailSecurityWorker:
             )
         except Exception as exc:  # noqa: BLE001 - SHADOW signal must never fail a job
             log.warning("mail_security.campaign_record_failed", error_type=type(exc).__name__)
+
+    async def _observe_semantics(
+        self, job: Any, *, evidence: ParsedEvidence, assessment: SecurityAssessment
+    ) -> None:
+        """SHADOW semantic observer (NS-ADR-073), after the verdict commits.
+
+        Inert unless an observer runtime is bound (mail security ON) and the
+        account is opted in. It can never change the committed verdict; every
+        failure is recorded as a typed status or logged as a safe code.
+        """
+        from backend.mail_security.observer_wiring import get_observer_runtime
+
+        runtime = get_observer_runtime()
+        if runtime is None:
+            return
+        try:
+            await runtime.observe(
+                job.account_scope,
+                source_key=job.source_key,
+                revision=self._source_revision,
+                evidence=evidence,
+                finding_codes=[str(f.explanation_code) for f in assessment.findings],
+            )
+        except Exception as exc:  # noqa: BLE001 - SHADOW signal must never fail a job
+            log.warning("mail_security.observer_failed", error_type=type(exc).__name__)
 
     # -- content resolution (LOCAL-ONLY, scoped) ---------------------------
 

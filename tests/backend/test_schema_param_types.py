@@ -186,6 +186,8 @@ TABLES_WITH_ID = frozenset(
         # NerveShield SHADOW content campaigns, Alembic 022 (NS-ADR-069).
         "mail_campaign_members",
         "mail_campaign_bands",
+        # NerveShield SHADOW semantic observations, Alembic 023 (NS-ADR-073).
+        "mail_semantic_observations",
     }
 )
 
