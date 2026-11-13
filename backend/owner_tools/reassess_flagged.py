@@ -46,7 +46,33 @@ async def _bare_domain_sources(jobs: list) -> set[tuple[str, str]]:
     return out
 
 
-async def main(apply: bool, bare_domain_links: bool = False) -> None:
+async def _document_sources(jobs: list) -> set[tuple[str, str]]:
+    """NS-ADR-086: messages carrying a PDF/OOXML/ZIP payload (newly inspected
+    by the static deep-inspection sidecar; may raise a verdict)."""
+    from backend.mail_security.acquisition import scan_ref_for
+    from backend.mail_security.parser import parse_mime_evidence
+    from backend.mail_security.static_inspection import wants_deep_inspection
+    from backend.mail_security.worker import ObjectStoreContentResolver
+    from backend.storage.config import create_object_store_from_env
+
+    resolver = ObjectStoreContentResolver(object_store=create_object_store_from_env())
+    out: set[tuple[str, str]] = set()
+    for job in jobs:
+        content = await resolver.resolve(
+            account_scope=job.account_scope, content_ref=scan_ref_for(job.meta)
+        )
+        if not content:
+            continue
+        ev = parse_mime_evidence(content, retain_attachment_payloads=True)
+        if any(wants_deep_inspection(a.payload) for a in ev.attachments):
+            out.add((job.account_scope, job.source_key))
+        for a in ev.attachments:
+            a.payload = None
+    return out
+
+
+async def main(apply: bool, bare_domain_links: bool = False, with_documents: bool = False,
+               ) -> None:
     from sqlalchemy import select, update
 
     import backend.api.app  # noqa: F401 - import-order guard
@@ -71,6 +97,9 @@ async def main(apply: bool, bare_domain_links: bool = False) -> None:
             jobs = (await s.execute(done)).scalars().all()
         bare = await _bare_domain_sources(jobs) if bare_domain_links else set()
         n["bare_domain_link_sources"] = len(bare)
+        docs = await _document_sources(jobs) if with_documents else set()
+        n["document_sources"] = len(docs)
+        bare |= docs
         for job in jobs:
             a = latest.get((job.account_scope, job.source_key))
             if a is None:
@@ -104,5 +133,10 @@ if __name__ == "__main__":
         action="store_true",
         help="also re-queue messages with a newly detected bare-domain link mismatch",
     )
+    parser.add_argument(
+        "--with-documents",
+        action="store_true",
+        help="also re-queue messages with PDF/OOXML/ZIP attachments (static inspection)",
+    )
     args = parser.parse_args()
-    asyncio.run(main(args.apply, args.bare_domain_links))
+    asyncio.run(main(args.apply, args.bare_domain_links, args.with_documents))

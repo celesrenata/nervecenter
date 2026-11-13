@@ -74,6 +74,14 @@ async def main(forget: bool) -> None:
                     )
                 ).all()
             }
+        # One message counts once: keep only its newest COMPLETED revision (a
+        # re-assessed message is re-observed as revision N+1).
+        newest: dict[tuple[str, str], MailSemanticObservationRow] = {}
+        for o in obs:
+            key = (o.account_scope, o.source_key)
+            if key not in newest or o.revision > newest[key].revision:
+                newest[key] = o
+        obs = list(newest.values())
         scopes = sorted(
             {o.account_scope for o in obs if scope_listed(o.account_scope, ENV_EXPECTEDNESS_SCOPES)}
         )
