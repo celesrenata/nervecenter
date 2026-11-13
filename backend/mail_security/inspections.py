@@ -361,6 +361,29 @@ def inspect_offline_sender_provenance(
 # =============================================================================
 
 
+def sender_aligned_link_refs(evidence: ParsedEvidence, from_domain: str | None) -> frozenset[str]:
+    """Evidence refs of display-mismatch links whose shown text OR target is
+    the From domain itself (registrable comparison; NS-ADR-077).
+
+    Only meaningful once the caller knows the From domain is DMARC-authenticated
+    by the receiver: then such a link either shows the sender's own domain (an
+    ESP click-tracking redirect) or lands on the sender's own domain.
+    """
+    if not from_domain:
+        return frozenset()
+    sender = _registrable(from_domain.lower())
+    out: set[str] = set()
+    for link in evidence.links:
+        target_host = _url_host(link.target)
+        display_host = _display_host(link.display_text)
+        if not (target_host and display_host):
+            continue
+        shown, target = _registrable(display_host), _registrable(target_host)
+        if shown != target and sender in (shown, target):
+            out.add(link.evidence_ref)
+    return frozenset(out)
+
+
 def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
     """Inspect each extracted link lexically (no resolution)."""
     findings: list[SecurityFinding] = []
@@ -371,7 +394,7 @@ def _inspect_links(evidence: ParsedEvidence) -> list[SecurityFinding]:
 
         # Visible-text vs actual-href mismatch: when the display text itself
         # looks like a URL/host that disagrees with the real target host.
-        display_host = _url_host(link.display_text)
+        display_host = _display_host(link.display_text)
         if (
             display_host
             and target_host
@@ -819,6 +842,45 @@ def _url_host(value: str) -> str | None:
     rest = rest.split(":", 1)[0]
     host = rest.strip().strip(".")
     return host.lower() or None
+
+
+#: A whole display text that is exactly one bare domain (optionally with a
+#: path): ``paypal.com``, ``paypal.com/login``. Labels of letters, digits and
+#: hyphens; an alphabetic top-level label of 2–24 letters.
+_BARE_DOMAIN_RE = re.compile(
+    r"^(?=.{4,253}(?:/|$))(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?:/\S*)?$"
+)
+
+
+def _display_host(value: str) -> str | None:
+    """Host shown by a link's visible text (NS-ADR-077).
+
+    Like :func:`_url_host`, plus a bare domain (``paypal.com``) when the WHOLE
+    text is exactly one domain-shaped token. Bare-domain link text is the
+    classic deceptive link and was previously not recognized. Only used for
+    display text; target parsing is unchanged.
+    """
+    host = _url_host(value)
+    if host:
+        return host
+    text = _percent_decode((value or "").strip()).lower()
+    if not _BARE_DOMAIN_RE.fullmatch(text):
+        return None
+    host = text.split("/", 1)[0].strip(".")
+    # A filename (``report.pdf``) is not a domain. Real TLDs that are also
+    # file extensions (``.zip``, ``.mov``) stay domains: they are abused.
+    if host.rsplit(".", 1)[-1] in _FILE_EXTENSIONS_NOT_TLDS:
+        return None
+    return host or None
+
+
+_FILE_EXTENSIONS_NOT_TLDS = frozenset(
+    {
+        "pdf", "doc", "docx", "xls", "xlsx", "ppt", "pptx", "txt", "csv", "rtf",
+        "jpg", "jpeg", "png", "gif", "bmp", "svg", "webp", "heic", "html", "htm",
+        "eml", "ics", "vcf", "json", "xml", "mp3", "wav", "odt", "ods", "pages",
+    }
+)  # fmt: skip
 
 
 def _percent_decode(value: str, *, rounds: int = 2) -> str:

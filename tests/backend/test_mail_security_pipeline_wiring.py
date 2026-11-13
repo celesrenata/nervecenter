@@ -629,7 +629,7 @@ class TestIntelWiring:
             assert code in refs
         assert _INTEL_HOST not in repr(f)
         assert "THREAT_INTEL_MATCH" in policy["reason_codes"]
-        assert policy["policy_version"] == "mail-security-policy@4"
+        assert policy["policy_version"] == "mail-security-policy@5"
         # evidence only: SHADOW grants no capability, no action (R-006.2)
         assert policy["action_capabilities"] == []
         assert policy["mode"] == "SHADOW"

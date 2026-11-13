@@ -7,6 +7,7 @@ organization for DMARC-aligned senders (ticketing / ESPs), and (c) Amazon's
 own CDN / portal domains read as typosquats. Each fix is narrow; the BEC
 shapes keep their REVIEW.
 """
+
 from __future__ import annotations
 
 from datetime import UTC, datetime
@@ -31,14 +32,20 @@ def _codes(findings) -> set[str]:
 
 
 def test_subdomain_reply_to_and_return_path_are_same_organization() -> None:
-    same = inspect_sender_provenance(SenderAddresses(
-        from_address="News <news@mail.brand.example>",
-        reply_to="help@brand.example", return_path="<bounce@em.brand.example>",
-    ))
+    same = inspect_sender_provenance(
+        SenderAddresses(
+            from_address="News <news@mail.brand.example>",
+            reply_to="help@brand.example",
+            return_path="<bounce@em.brand.example>",
+        )
+    )
     assert not _codes(same) & {"REPLY_TO_MISMATCH", "RETURN_PATH_MISMATCH"}
-    other = inspect_sender_provenance(SenderAddresses(
-        from_address="news@brand.example", reply_to="x@other.example",
-    ))
+    other = inspect_sender_provenance(
+        SenderAddresses(
+            from_address="news@brand.example",
+            reply_to="x@other.example",
+        )
+    )
     assert "REPLY_TO_MISMATCH" in _codes(other)
 
 
@@ -91,3 +98,73 @@ def test_bec_shapes_keep_review() -> None:
     # A forged lower mx.google.com "pass" under a real failing one does not help.
     res = _decide(ar=fail, reply_to="support@helpdesk.example")
     assert "REPLY_TO_MISMATCH_DMARC_ALIGNED" not in res.reason_codes
+
+
+# -- NS-ADR-077: display-host mismatch aligned with the authenticated sender --------------
+def _link_mime(display: str, target: str) -> bytes:
+    return (
+        "From: Shop <news@shop.example>\r\nSubject: Sale\r\n"
+        "Content-Type: text/html; charset=utf-8\r\n\r\n"
+        f'<p>See <a href="{target}">{display}</a> today.</p>\r\n'
+    ).encode()
+
+
+def _decide_links(display: str, target: str, *, ar: str | None = PASS):
+    from backend.mail_security.inspections import inspect_message, sender_aligned_link_refs
+    from backend.mail_security.parser import parse_mime_evidence
+
+    ev = parse_mime_evidence(_link_mime(display, target))
+    addresses = SenderAddresses(from_address="Shop <news@shop.example>")
+    auth = build_auth_evidence(
+        [("Authentication-Results", ar)] if ar else [], addresses=addresses, boundary=GMAIL
+    )
+    findings = [*auth.findings, *inspect_message(ev, addresses=addresses)]
+    assert "DISPLAY_HOST_DIFFERS_FROM_TARGET" in _codes(findings)
+    return decide_policy(
+        PolicyEvidence(
+            authentication=auth.authentication,
+            findings=findings,
+            inspection_complete=True,
+            sender_aligned_link_refs=sender_aligned_link_refs(ev, "shop.example"),
+        ),
+        clock=lambda: NOW,
+    ).policy
+
+
+def test_click_tracker_showing_the_authenticated_sender_is_not_deceptive() -> None:
+    res = _decide_links("www.shop.example", "https://click.esp-tracker.example/r/1")
+    assert res.disposition is Disposition.LOW_PRIORITY
+    assert "DISPLAY_HOST_DMARC_ALIGNED" in res.reason_codes
+
+
+def test_link_landing_on_the_authenticated_sender_is_not_deceptive() -> None:
+    res = _decide_links("facebook.com", "https://shop.example/social")
+    assert res.disposition is Disposition.LOW_PRIORITY
+
+
+def test_deceptive_shapes_keep_review() -> None:
+    # Two other domains: the classic deceptive link.
+    assert (
+        _decide_links("paypal.com", "https://evil.example/login").disposition is Disposition.REVIEW
+    )
+    # Sender-aligned shape but no attested DMARC pass.
+    assert (
+        _decide_links("www.shop.example", "https://evil.example/x", ar=None).disposition
+        is Disposition.REVIEW
+    )
+    # A forged lower "pass" under a real failing result does not help.
+    fail = "mx.google.com; dkim=fail; spf=fail; dmarc=fail"
+    assert (
+        _decide_links("www.shop.example", "https://evil.example/x", ar=fail).disposition
+        is Disposition.REVIEW
+    )
+
+
+def test_bare_domain_link_text_is_recognized_but_filenames_and_words_are_not() -> None:
+    from backend.mail_security.inspections import _display_host
+
+    assert _display_host("paypal.com") == "paypal.com"
+    assert _display_host("PayPal.com/login") == "paypal.com"
+    assert _display_host("invoice.zip") == "invoice.zip"  # .zip is a real, abused TLD
+    for text in ("report.pdf", "photo.jpeg", "e.g.", "U.S.", "Click here", "v1.2.3", "a.b"):
+        assert _display_host(text) is None, text

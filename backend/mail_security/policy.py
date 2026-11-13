@@ -83,7 +83,7 @@ from backend.mail_security.models import (
 #: Stable version of this decision policy. Any change to the fusion rules or
 #: their thresholds MUST bump this constant so a persisted verdict records which
 #: rule set produced it (R-007.4, R-011.1/.5).
-POLICY_VERSION = "mail-security-policy@4"
+POLICY_VERSION = "mail-security-policy@5"
 
 # -- deployment mode ---------------------------------------------------------
 
@@ -180,6 +180,9 @@ class PolicyEvidence:
     #: NS-ADR-072: the Reply-To is on a free-mail provider (gmail.com, ...).
     #: Computed by the worker from the parsed headers; never persisted.
     reply_to_freemail: bool = False
+    #: NS-ADR-077: evidence refs of display-mismatch links whose shown text or
+    #: target is the From domain itself. Computed by the worker; never persisted.
+    sender_aligned_link_refs: frozenset[str] = frozenset()
     model_benign_estimate: float | None = None
     claims_emergency: bool = False
     claims_prior_approval: bool = False
@@ -407,6 +410,24 @@ def _derive_disposition(
         if calibrated:
             reasons.append(_R_REPLY_TO_MISMATCH_DMARC_ALIGNED)
             findings = [f for f in findings if f.explanation_code not in _REPLY_TO_MISMATCH_CODES]
+    # policy@5 (NS-ADR-077): with the From domain DMARC-authenticated by the
+    # receiver, a link whose shown text OR target IS that domain is an ESP
+    # click-tracking redirect or lands on the authenticated sender itself. It
+    # stays a recorded finding but no longer drives the disposition. A
+    # mismatch between two OTHER domains keeps counting.
+    if _dmarc_provider_pass(evidence.authentication) and evidence.sender_aligned_link_refs:
+        aligned = evidence.sender_aligned_link_refs
+
+        def _sender_aligned(f: SecurityFinding) -> bool:
+            return (
+                f.explanation_code == _DISPLAY_MISMATCH_CODE
+                and bool(f.evidence_refs)
+                and set(f.evidence_refs) <= aligned
+            )
+
+        if any(_sender_aligned(f) for f in findings):
+            reasons.append(_R_DISPLAY_HOST_DMARC_ALIGNED)
+            findings = [f for f in findings if not _sender_aligned(f)]
 
     # Classify the findings into the signals the rules need.
     high_impact_ask = any(
@@ -542,6 +563,8 @@ def _deception_reasons(findings: list[SecurityFinding]) -> list[Code]:
 
 _REPLY_TO_MISMATCH_CODES = frozenset({"REPLY_TO_MISMATCH", "REPLY_TO_DOMAIN_MISMATCH"})
 _R_REPLY_TO_MISMATCH_DMARC_ALIGNED = "REPLY_TO_MISMATCH_DMARC_ALIGNED"
+_DISPLAY_MISMATCH_CODE = "DISPLAY_HOST_DIFFERS_FROM_TARGET"
+_R_DISPLAY_HOST_DMARC_ALIGNED = "DISPLAY_HOST_DMARC_ALIGNED"
 
 
 def _dmarc_provider_pass(authentication: Authentication) -> bool:

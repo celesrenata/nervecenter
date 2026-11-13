@@ -18,7 +18,35 @@ from collections import Counter
 FLAGGED = ("REVIEW", "RESTRICTED")
 
 
-async def main(apply: bool) -> None:
+async def _bare_domain_sources(jobs: list) -> set[tuple[str, str]]:
+    """NS-ADR-077: messages with a link whose visible text is a BARE domain
+    that differs from its target (newly detected; may raise a verdict)."""
+    from backend.mail_security.acquisition import scan_ref_for
+    from backend.mail_security.inspections import _display_host, _registrable, _url_host
+    from backend.mail_security.parser import parse_mime_evidence
+    from backend.mail_security.worker import ObjectStoreContentResolver
+    from backend.storage.config import create_object_store_from_env
+
+    resolver = ObjectStoreContentResolver(object_store=create_object_store_from_env())
+    out: set[tuple[str, str]] = set()
+    for job in jobs:
+        content = await resolver.resolve(
+            account_scope=job.account_scope, content_ref=scan_ref_for(job.meta)
+        )
+        if not content:
+            continue
+        for link in parse_mime_evidence(content).links:
+            shown, target = _display_host(link.display_text), _url_host(link.target)
+            if (
+                shown and target and not _url_host(link.display_text)
+                and _registrable(shown) != _registrable(target)
+            ):
+                out.add((job.account_scope, job.source_key))
+                break
+    return out
+
+
+async def main(apply: bool, bare_domain_links: bool = False) -> None:
     from sqlalchemy import select, update
 
     import backend.api.app  # noqa: F401 - import-order guard
@@ -41,9 +69,13 @@ async def main(apply: bool) -> None:
                     latest[key] = a
             done = select(MailSecurityJobRow).where(MailSecurityJobRow.state == "DONE")
             jobs = (await s.execute(done)).scalars().all()
+        bare = await _bare_domain_sources(jobs) if bare_domain_links else set()
+        n["bare_domain_link_sources"] = len(bare)
         for job in jobs:
             a = latest.get((job.account_scope, job.source_key))
-            if a is None or a.disposition not in FLAGGED:
+            if a is None:
+                continue
+            if a.disposition not in FLAGGED and (job.account_scope, job.source_key) not in bare:
                 continue
             n["eligible"] += 1
             if not apply:
@@ -67,4 +99,10 @@ async def main(apply: bool) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--apply", action="store_true")
-    asyncio.run(main(parser.parse_args().apply))
+    parser.add_argument(
+        "--bare-domain-links",
+        action="store_true",
+        help="also re-queue messages with a newly detected bare-domain link mismatch",
+    )
+    args = parser.parse_args()
+    asyncio.run(main(args.apply, args.bare_domain_links))

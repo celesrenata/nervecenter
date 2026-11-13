@@ -112,7 +112,7 @@ from backend.mail_security.auth_evidence import (
 )
 from backend.mail_security.identifiers import assessment_id as derive_assessment_id
 from backend.mail_security.ingestion_seam import mail_security_enabled
-from backend.mail_security.inspections import inspect_message
+from backend.mail_security.inspections import inspect_message, sender_aligned_link_refs
 from backend.mail_security.intel_wiring import collect_intel_findings
 from backend.mail_security.models import (
     AcquisitionMode,
@@ -681,6 +681,9 @@ class MailSecurityWorker:
             incomplete_reason_codes=reason_codes,
             bulk_mail=bool(flags.get("bulk") or flags.get("no_reply")),
             reply_to_freemail=is_freemail_address(addresses.reply_to),
+            sender_aligned_link_refs=sender_aligned_link_refs(
+                evidence, _address_domain(addresses.from_address)
+            ),
         )
         result = decide_policy(policy_evidence, clock=self._clock)
 
@@ -995,6 +998,14 @@ class MailSecurityWorker:
 # =============================================================================
 # small pure helpers
 # =============================================================================
+
+
+def _address_domain(header_value: str | None) -> str | None:
+    """Domain of a parsed From header value (offline), or ``None``."""
+    import email.utils
+
+    addr = email.utils.parseaddr(header_value or "")[1]
+    return addr.rpartition("@")[2].strip().lower() or None if "@" in addr else None
 
 
 def _sender_addresses(evidence: ParsedEvidence) -> SenderAddresses:
