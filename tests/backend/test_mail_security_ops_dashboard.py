@@ -32,6 +32,7 @@ from backend.persistence.models.mail_security import (
     MailSecurityConfirmationRow,
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
+    MailSemanticObservationRow,
     MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
@@ -207,6 +208,7 @@ def env(tmp_path, monkeypatch):
         MailThreadLedgerRow.__table__,
         MailCampaignMemberRow.__table__,
         MailCampaignBandRow.__table__,
+        MailSemanticObservationRow.__table__,
         MailSecurityConfirmationRow.__table__,
         PersonRow.__table__,
         CommunicationRow.__table__,

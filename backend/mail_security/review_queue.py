@@ -35,7 +35,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
 
-QUEUE_POLICY_VERSION = "mail-review-queue@3"
+QUEUE_POLICY_VERSION = "mail-review-queue@4"
 
 QUEUED_DISPOSITIONS = frozenset({"REVIEW", "RESTRICTED", "INCOMPLETE"})
 _BASE = {"RESTRICTED": 3, "REVIEW": 2, "INCOMPLETE": 1}
@@ -50,6 +50,11 @@ THREAD_WEIGHTS = {"BROKEN": 3, "SUSPECT": 1}
 #: SHADOW per-account content campaign (NS-ADR-069): another message in the
 #: same campaign was assessed REVIEW/RESTRICTED. +2 alone is MEDIUM (visible).
 CAMPAIGN_WEIGHT = 2
+
+#: SHADOW personal expectedness (NS-ADR-075): this sender has asked for this
+#: high-impact thing (pay, credentials, ...) unusually rarely. +2 alone is
+#: MEDIUM (visible). Advisory only; never changes the disposition.
+UNEXPECTED_ASK_WEIGHT = 2
 _HIGH_IMPACT_ADVICE = frozenset({"VERIFY_PAYMENT_REQUEST", "VERIFY_CREDENTIAL_REQUEST"})
 _HIGH_SEVERITIES = frozenset({"HIGH", "CRITICAL"})
 _ACTIVE = frozenset({"OBSERVED", "SUSPECTED"})
@@ -92,6 +97,7 @@ class QueueReason(StrEnum):
     THREAD_BROKEN = "THREAD_BROKEN"
     THREAD_SUSPECT = "THREAD_SUSPECT"
     CAMPAIGN_OF_FLAGGED = "CAMPAIGN_OF_FLAGGED"
+    UNEXPECTED_HIGH_IMPACT_ASK = "UNEXPECTED_HIGH_IMPACT_ASK"
 
 
 @dataclass(frozen=True)
@@ -118,6 +124,8 @@ class QueueCandidate:
     thread_continuity: str | None = None
     #: Number of OTHER flagged messages in this message's content campaign.
     campaign_flagged: int = 0
+    #: An UNEXPECTED high-impact ask for this sender (NS-ADR-075).
+    unexpected_ask: bool = False
 
 
 def is_queued(c: QueueCandidate) -> bool:
@@ -126,6 +134,7 @@ def is_queued(c: QueueCandidate) -> bool:
         c.disposition in QUEUED_DISPOSITIONS
         or c.thread_continuity in THREAD_WEIGHTS
         or c.campaign_flagged > 0
+        or c.unexpected_ask
     )
 
 
@@ -172,6 +181,9 @@ def score(c: QueueCandidate) -> tuple[int, list[QueueReason]]:
     if c.campaign_flagged > 0:
         total += CAMPAIGN_WEIGHT
         reasons.append(QueueReason.CAMPAIGN_OF_FLAGGED)
+    if c.unexpected_ask:
+        total += UNEXPECTED_ASK_WEIGHT
+        reasons.append(QueueReason.UNEXPECTED_HIGH_IMPACT_ASK)
     if _HIGH_IMPACT_ADVICE & set(c.verification_advice):
         total += 2
         reasons.append(QueueReason.PAYMENT_OR_CREDENTIAL_ASK)
@@ -207,6 +219,8 @@ def _primary_reason(c: QueueCandidate) -> str:
             return f"THREAD_{c.thread_continuity}"
         if c.campaign_flagged > 0:
             return QueueReason.CAMPAIGN_OF_FLAGGED.value
+        if c.unexpected_ask:
+            return QueueReason.UNEXPECTED_HIGH_IMPACT_ASK.value
     return c.reason_codes[0] if c.reason_codes else f"DISPOSITION_{c.disposition}"
 
 

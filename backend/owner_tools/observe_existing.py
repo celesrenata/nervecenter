@@ -26,12 +26,16 @@ async def main(limit: int) -> None:
     from backend.mail_security.observer_wiring import ObserverRuntime, observer_applies
     from backend.mail_security.parser import parse_mime_evidence
     from backend.mail_security.route_guard import LocalOnlyRouteResolver, ResolverLimits
+    from backend.mail_security.thread_ledger import ledger_key_from_env
     from backend.mail_security.worker import ObjectStoreContentResolver, source_revision_of
     from backend.persistence.connection import create_engine, make_session_factory
     from backend.persistence.models.mail_security import (
         MailSecurityAssessmentRow,
         MailSecurityFindingRow,
         MailSecurityJobRow,
+    )
+    from backend.persistence.repositories.mail_security_expectedness_repo import (
+        MailExpectednessRepository,
     )
     from backend.persistence.repositories.mail_security_observation_repo import (
         MailObservationRepository,
@@ -54,6 +58,8 @@ async def main(limit: int) -> None:
             ),
             transport=HttpObserverTransport(url, key),
             repository=repo,
+            expectedness_repository=MailExpectednessRepository(sessions),
+            expectedness_secret=ledger_key_from_env(),
         )
         resolver = ObjectStoreContentResolver(object_store=create_object_store_from_env())
         async with sessions() as s:

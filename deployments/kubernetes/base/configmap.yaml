@@ -66,6 +66,12 @@ data:
   # body artifacts, no prompt logging on the Granite host. Stored output is
   # enum codes only. Remove this key to stop sending mail to any model.
   NERVE_MAIL_SECURITY_OBSERVER_SCOPES: "conn:53b03939-bdf6-4313-a7e3-b91144c598d2,conn:fc4e3c57-2f5f-49b6-87e7-9f3e87fd813e"
+  # NerveShield personal expectedness (NS-ADR-075, owner "sure"). Per-account
+  # HMAC sender keys -> request-type counts only; scores each ask against the
+  # sender's history (fixed population prior, abstains under 5 messages).
+  # Only an UNEXPECTED high-impact ask adds an advisory review reason.
+  # Remove this key to stop; seed_expectedness --forget erases learned counts.
+  NERVE_MAIL_SECURITY_EXPECTEDNESS_SCOPES: "conn:53b03939-bdf6-4313-a7e3-b91144c598d2,conn:fc4e3c57-2f5f-49b6-87e7-9f3e87fd813e"
   # NerveShield attachment scanning (NS-ADR-065): the clamd sidecar's UNIX
   # socket. Remove this key to report attachments as NOT_RUN again.
   NERVE_CLAMD_SOCKET: "/run/clamav/clamd.sock"

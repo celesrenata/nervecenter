@@ -28,6 +28,7 @@ from sqlalchemy import or_, select
 
 from backend.mail_security.backfill import parse_content_ref
 from backend.mail_security.campaigns import FLAGGED_DISPOSITIONS, siblings_of_flagged
+from backend.mail_security.expectedness import unexpected_high_impact
 from backend.mail_security.review_feedback import verification_advice
 from backend.mail_security.review_queue import (
     QUEUED_DISPOSITIONS,
@@ -42,6 +43,7 @@ from backend.persistence.models.mail_security import (
     MailSecurityFindingRow,
     MailSecurityHeldPromotionRow,
     MailSecurityJobRow,
+    MailSemanticObservationRow,
     MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
@@ -138,12 +140,34 @@ async def _campaign_flags(s: Any, account_scope: str) -> dict[str, int]:
     return siblings_of_flagged(((str(a), str(b)) for a, b in rows), flagged)
 
 
+async def _unexpected_asks(s: Any, account_scope: str) -> set[str]:
+    """Sources whose SHADOW observation holds an UNEXPECTED high-impact ask
+    (NS-ADR-075), newest observations first, bounded."""
+    rows = (
+        await s.execute(
+            select(MailSemanticObservationRow.source_key, MailSemanticObservationRow.observation)
+            .where(
+                MailSemanticObservationRow.account_scope == account_scope,
+                MailSemanticObservationRow.status == "COMPLETED",
+            )
+            .order_by(MailSemanticObservationRow.created_at.desc())
+            .limit(MAX_CANDIDATES)
+        )
+    ).all()
+    return {
+        str(src)
+        for src, obs in rows
+        if isinstance(obs, Mapping) and unexpected_high_impact(obs.get("expectedness") or [])
+    }
+
+
 async def load_queue_candidates(session_factory: Any, account_scope: str) -> list[QueueCandidate]:
     async with session_factory() as s:
         thread_flags = await _thread_flags(s, account_scope)
         campaign_flags = await _campaign_flags(s, account_scope)
+        unexpected = await _unexpected_asks(s, account_scope)
         queued = MailSecurityAssessmentRow.disposition.in_(sorted(QUEUED_DISPOSITIONS))
-        extra_sources = sorted(set(thread_flags) | set(campaign_flags))
+        extra_sources = sorted(set(thread_flags) | set(campaign_flags) | unexpected)
         if extra_sources:
             queued = or_(queued, MailSecurityAssessmentRow.source_id.in_(extra_sources))
         assessments = (
@@ -317,6 +341,7 @@ async def load_queue_candidates(session_factory: Any, account_scope: str) -> lis
                 reviewed=a.assessment_id in reviewed,
                 thread_continuity=thread_flags.get(a.source_id),
                 campaign_flagged=campaign_flags.get(a.source_id, 0),
+                unexpected_ask=a.source_id in unexpected,
             )
         )
     return out

@@ -51,6 +51,10 @@ from fastapi import FastAPI
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import AsyncAdaptedQueuePool
 
+from backend.calendar.sync import (
+    install_calendar_sync,
+    stop_calendar_sync,
+)
 from backend.events.nats_client import (
     ENV_NATS_URL,
     NatsClient,
@@ -58,6 +62,10 @@ from backend.events.nats_client import (
 from backend.events.nats_client import config_from_env as nats_config_from_env
 from backend.evidence.service import EvidenceService
 from backend.goals.service import GoalService
+from backend.ingest.supervisor import (
+    install_ingest_supervisor,
+    stop_ingest_supervisor,
+)
 from backend.knowledge.entity import EntityService
 from backend.knowledge.relationship import RelationshipService
 from backend.persistence.connection import (
@@ -68,14 +76,6 @@ from backend.persistence.connection import (
     make_session_factory,
 )
 from backend.persistence.repositories import RepositoryRegistry
-from backend.ingest.supervisor import (
-    install_ingest_supervisor,
-    stop_ingest_supervisor,
-)
-from backend.calendar.sync import (
-    install_calendar_sync,
-    stop_calendar_sync,
-)
 from backend.services.systems import SystemsService
 from backend.tasks.service import TaskService
 
@@ -206,6 +206,10 @@ def _bind_semantic_observer(target: Any) -> None:
         HttpRegistryTransport,
     )
     from backend.mail_security.route_guard import LocalOnlyRouteResolver, ResolverLimits
+    from backend.mail_security.thread_ledger import ledger_key_from_env
+    from backend.persistence.repositories.mail_security_expectedness_repo import (
+        MailExpectednessRepository,
+    )
     from backend.persistence.repositories.mail_security_observation_repo import (
         MailObservationRepository,
     )
@@ -230,6 +234,11 @@ def _bind_semantic_observer(target: Any) -> None:
             repository=MailObservationRepository(
                 target.state.repository_registry.session_factory
             ),
+            # NS-ADR-075: personal expectedness (own opt-in; inert without the key).
+            expectedness_repository=MailExpectednessRepository(
+                target.state.repository_registry.session_factory
+            ),
+            expectedness_secret=ledger_key_from_env(),
         )
     )
     log.info("api.wiring.semantic_observer_bound", scopes="*" if scopes is None else len(scopes))

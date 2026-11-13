@@ -47,6 +47,7 @@ const REASON_LABEL: Record<string, string> = {
   THREAD_BROKEN: "Doesn't fit the conversation it claims to continue",
   THREAD_SUSPECT: 'New participant in an existing conversation',
   CAMPAIGN_OF_FLAGGED: 'Looks like another message flagged for review',
+  UNEXPECTED_HIGH_IMPACT_ASK: "An unusual request for this sender (money, login or personal data)",
 }
 
 function formatWhen(iso: string | null | undefined): string {

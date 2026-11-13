@@ -56,6 +56,7 @@ from backend.persistence.models.mail_security import (
     MailCampaignMemberRow,
     MailSecurityFeedbackRow,
     MailSecurityHeldPromotionRow,
+    MailSemanticObservationRow,
     MailThreadLedgerRow,
 )
 from backend.persistence.models.personal import (
@@ -87,6 +88,7 @@ _TABLES = (
     MailThreadLedgerRow.__table__,
     MailCampaignMemberRow.__table__,
     MailCampaignBandRow.__table__,
+    MailSemanticObservationRow.__table__,
     MailSecurityFeedbackRow.__table__,
     PersonRow.__table__,
     CommitmentRow.__table__,

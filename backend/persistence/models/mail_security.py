@@ -694,8 +694,33 @@ class MailSemanticObservationRow(Base):
     )
 
 
+class MailExpectednessCountRow(Base):
+    """Per-account, per-keyed-sender request-type count (NS-ADR-075).
+
+    Table ``mail_expectedness_counts``. ``sender_key`` is an account-salted
+    HMAC of the registrable sender domain; nothing else about the sender,
+    and nothing about any message, is stored.
+    """
+
+    __tablename__ = "mail_expectedness_counts"
+
+    id: Mapped[UUIDv4]
+    updated_at: Mapped[datetime] = _updated_at()
+    account_scope: Mapped[str] = mapped_column(String(128), nullable=False)
+    sender_key: Mapped[str] = mapped_column(String(32), nullable=False)
+    request_type: Mapped[str] = mapped_column(String(40), nullable=False)
+    count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    __table_args__ = (
+        Index(
+            "ix_mail_expect_key", "account_scope", "sender_key", "request_type", unique=True
+        ),
+    )
+
+
 __all__ = [
     "MailCampaignBandRow",
+    "MailExpectednessCountRow",
     "MailSemanticObservationRow",
     "MailCampaignMemberRow",
     "MailEvidenceRow",

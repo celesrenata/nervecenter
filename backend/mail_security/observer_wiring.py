@@ -46,9 +46,34 @@ _CODE_RE = re.compile(r"^[A-Z][A-Z0-9_.-]{0,79}$")
 _REF_SAFE = re.compile(r"[^A-Za-z0-9:_-]")
 
 
-def observer_scopes(env: Mapping[str, str] | None = None) -> frozenset[str] | None:
+#: Separate opt-in for personal expectedness (NS-ADR-075); same syntax.
+ENV_EXPECTEDNESS_SCOPES = "NERVE_MAIL_SECURITY_EXPECTEDNESS_SCOPES"
+
+
+def sender_domain(evidence: Any) -> str | None:
+    """Registrable domain of the parsed From header, or ``None``."""
+    import email.utils
+
+    from backend.mail_security.inspections import _registrable
+
+    for name, value in getattr(evidence, "headers", []) or []:
+        if name.strip().lower() == "from":
+            addr = email.utils.parseaddr(value)[1]
+            domain = addr.rpartition("@")[2].strip().lower() if "@" in addr else ""
+            return _registrable(domain) if domain and _HOST_RE.fullmatch(domain) else None
+    return None
+
+
+def scope_listed(scope: str, env_name: str, env: Mapping[str, str] | None = None) -> bool:
+    scopes = observer_scopes(env, env_name=env_name)
+    return scopes is None or scope in scopes
+
+
+def observer_scopes(
+    env: Mapping[str, str] | None = None, *, env_name: str = ENV_OBSERVER_SCOPES
+) -> frozenset[str] | None:
     """``None`` = all accounts (``*``); a set of scopes; empty = none."""
-    raw = ((env if env is not None else os.environ).get(ENV_OBSERVER_SCOPES) or "").strip()
+    raw = ((env if env is not None else os.environ).get(env_name) or "").strip()
     if raw == "*":
         return None
     items = [s.strip() for s in raw.split(",") if s.strip()]
@@ -190,6 +215,8 @@ class ObserverRuntime:
         resolver: Any = None,
         registry: Any = None,
         resolver_factory: Any = None,
+        expectedness_repository: Any = None,
+        expectedness_secret: bytes | None = None,
     ) -> None:
         """Either a fixed ``resolver`` (no snapshot), or ``registry`` +
         ``resolver_factory(registry) -> resolver`` for a per-message snapshot."""
@@ -201,6 +228,8 @@ class ObserverRuntime:
         self._resolver_factory = resolver_factory
         self._transport = transport
         self._repo = repository
+        self._expect_repo = expectedness_repository
+        self._expect_secret = expectedness_secret
         #: Paths cached by the most recent message's snapshot at purge time
         #: (always empty afterwards; exposed so tests can prove the purge).
         self.last_snapshot: MessageScopedRegistry | None = None
@@ -263,13 +292,39 @@ class ObserverRuntime:
                 attempts=exc.attempts, latency_ms=exc.latency_ms,
             )
             return exc.code.value
+        codes = observation_codes(result.observation)
+        expectedness = await self._expectedness(account_scope, evidence, codes)
+        if expectedness is not None:
+            codes["expectedness"] = expectedness
         await self._repo.record(
             account_scope, source_key=source_key, revision=revision, status="COMPLETED",
             prompt_version=result.prompt_version, route_digest=result.route_digest,
             attempts=result.attempts, latency_ms=result.latency_ms,
-            observation=observation_codes(result.observation),
+            observation=codes,
         )
         return "COMPLETED"
+
+    async def _expectedness(
+        self, account_scope: str, evidence: Any, codes: dict[str, Any]
+    ) -> list[dict[str, Any]] | None:
+        """NS-ADR-075: score this message's asks against the sender's history
+        BEFORE counting them, then count them. ``None`` when not opted in or
+        the sender has no usable domain. Never raises into the observer."""
+        if self._expect_repo is None or self._expect_secret is None:
+            return None
+        if not scope_listed(account_scope, ENV_EXPECTEDNESS_SCOPES):
+            return None
+        from backend.mail_security.expectedness import score, sender_key
+
+        domain = sender_domain(evidence)
+        types = sorted({r["request_type"] for r in codes.get("requests") or []})
+        if not domain or not types:
+            return None
+        key = sender_key(self._expect_secret, account_scope, domain)
+        counts = await self._expect_repo.counts(account_scope, key)
+        scores = [score(t, counts).as_codes() for t in types]
+        await self._expect_repo.add(account_scope, key, types)
+        return scores
 
 
 _observer_runtime: Any = None
@@ -285,8 +340,12 @@ def get_observer_runtime() -> Any:
 
 
 __all__ = [
+    "ENV_EXPECTEDNESS_SCOPES",
     "ENV_OBSERVER_SCOPES",
+    "MessageScopedRegistry",
     "ObserverRuntime",
+    "scope_listed",
+    "sender_domain",
     "build_packet",
     "get_observer_runtime",
     "observation_codes",
