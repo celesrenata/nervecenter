@@ -32,6 +32,7 @@ from typing import Any
 def _runtime(
     engine: Any, *, contract: str, role: str, store: bool,
     extra_freemail_domains: frozenset[str] = frozenset(),
+    expectedness: bool = True,
 ) -> Any:
     import os
 
@@ -59,8 +60,10 @@ def _runtime(
         ),
         transport=HttpObserverTransport(url, key),
         repository=MailObservationRepository(sessions) if store else None,
-        expectedness_repository=MailExpectednessRepository(sessions) if store else None,
-        expectedness_secret=ledger_key_from_env() if store else None,
+        expectedness_repository=(
+            MailExpectednessRepository(sessions) if store and expectedness else None
+        ),
+        expectedness_secret=ledger_key_from_env() if store and expectedness else None,
         contract=contract,
         role=role,
         extra_freemail_domains=extra_freemail_domains,
@@ -101,7 +104,7 @@ async def _latest_assessment(s: Any, job: Any) -> tuple[Any, list[str]] | None:
     return asmt, codes
 
 
-async def main(limit: int, *, contract: str, role: str) -> None:
+async def main(limit: int, *, contract: str, role: str, expectedness: bool = True) -> None:
     from sqlalchemy import select
 
     import backend.api.app  # noqa: F401 - import-order guard
@@ -117,7 +120,8 @@ async def main(limit: int, *, contract: str, role: str) -> None:
     n: Counter = Counter()
     try:
         sessions = make_session_factory(engine)
-        runtime = _runtime(engine, contract=contract, role=role, store=True)
+        runtime = _runtime(engine, contract=contract, role=role, store=True,
+                           expectedness=expectedness)
         repo = runtime._repo  # noqa: SLF001 - same repository the runtime records into
         resolver = ObjectStoreContentResolver(object_store=create_object_store_from_env())
         async with sessions() as s:
@@ -287,6 +291,9 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=20)
     parser.add_argument("--contract", choices=("COMPACT", "COMPACT_V2"), default=None)
     parser.add_argument("--role", choices=("Reader", "Coder"), default="Reader")
+    # For a full re-observation: skip counting here, then rebuild expectedness
+    # in received order with ``seed_expectedness --forget`` (no double count).
+    parser.add_argument("--no-expectedness", action="store_true")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--eval-synthetic", action="store_true")
     mode.add_argument("--compare", action="store_true")
@@ -310,5 +317,5 @@ if __name__ == "__main__":
             raise SystemExit("stored observations use the Reader role only")
         asyncio.run(
             main(max(1, args.limit), contract=args.contract or observer_contract_from_env(),
-                 role="Reader")
+                 role="Reader", expectedness=not args.no_expectedness)
         )

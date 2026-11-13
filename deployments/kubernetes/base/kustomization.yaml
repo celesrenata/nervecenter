@@ -22,6 +22,8 @@ resources:
   # NerveShield attachment scanning (NS-ADR-065): clamd sidecar config,
   # freshclam updater pod + its signature volume and NetworkPolicy.
   - clamav.yaml
+  # Namespace hardening: default-deny ingress + exact flows (NS-ADR-083).
+  - networkpolicy.yaml
   - postgres-statefulset.yaml
   - postgres-service.yaml
   - nats-deployment.yaml
