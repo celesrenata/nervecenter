@@ -211,17 +211,21 @@ def _bind_semantic_observer(target: Any) -> None:
     )
     from backend.services.inference_providers import InferenceComboService
 
-    resolver = LocalOnlyRouteResolver(
-        HttpRegistryTransport(url, key),
-        omniroute_base_url=url,
-        # Three registry GETs; /api/combos alone took ~0.8 s live.
-        limits=ResolverLimits(timeout_seconds=15.0),
-        require_secure_combo=True,
-    )
+    def resolver_factory(registry: Any) -> LocalOnlyRouteResolver:
+        # Built per message over a MessageScopedRegistry snapshot that the
+        # runtime purges when the message is done (NS-ADR-074).
+        return LocalOnlyRouteResolver(
+            registry,
+            omniroute_base_url=url,
+            # Three registry GETs; /api/combos alone took ~0.8 s live.
+            limits=ResolverLimits(timeout_seconds=15.0),
+            require_secure_combo=True,
+        )
     set_observer_runtime(
         ObserverRuntime(
             combos=InferenceComboService(engine),
-            resolver=resolver,
+            registry=HttpRegistryTransport(url, key),
+            resolver_factory=resolver_factory,
             transport=HttpObserverTransport(url, key),
             repository=MailObservationRepository(
                 target.state.repository_registry.session_factory

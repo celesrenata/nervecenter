@@ -133,6 +133,45 @@ def observation_codes(observation: Any) -> dict[str, Any]:
     }
 
 
+class MessageScopedRegistry:
+    """Temporary registry snapshot for ONE message's observation (NS-ADR-074).
+
+    Owner: "a temporary cache is fine, as long as it is purged when no longer
+    needed". The route is checked twice per message (alias selection, then the
+    observer's own guard); this lets both checks read the same snapshot (three
+    GETs instead of six, and one consistent view) and retries a failed read
+    once. It is created per message and :meth:`purge`-d in ``finally`` by the
+    runtime, so nothing survives between messages: an OmniRoute edit still
+    takes effect on the very next message.
+    """
+
+    def __init__(self, inner: Any, *, retries: int = 1) -> None:
+        self._inner = inner
+        self._retries = max(0, int(retries))
+        self._docs: dict[str, Any] = {}
+
+    async def get_json(self, path: str) -> Any:
+        if path in self._docs:
+            return self._docs[path]
+        last: Exception | None = None
+        for _ in range(self._retries + 1):
+            try:
+                doc = await self._inner.get_json(path)
+            except Exception as exc:  # noqa: BLE001 - the resolver maps this to a typed deny
+                last = exc
+                continue
+            self._docs[path] = doc
+            return doc
+        raise ValueError("registry unavailable") from last
+
+    def purge(self) -> None:
+        self._docs.clear()
+
+    @property
+    def cached_paths(self) -> frozenset[str]:
+        return frozenset(self._docs)
+
+
 class ObserverRuntime:
     """Route-select, observe and record one message (SHADOW, best-effort).
 
@@ -142,16 +181,47 @@ class ObserverRuntime:
     error is recorded as a typed status and nothing else happens.
     """
 
-    def __init__(self, *, combos: Any, resolver: Any, transport: Any, repository: Any) -> None:
+    def __init__(
+        self,
+        *,
+        combos: Any,
+        transport: Any,
+        repository: Any,
+        resolver: Any = None,
+        registry: Any = None,
+        resolver_factory: Any = None,
+    ) -> None:
+        """Either a fixed ``resolver`` (no snapshot), or ``registry`` +
+        ``resolver_factory(registry) -> resolver`` for a per-message snapshot."""
+        if resolver is None and (registry is None or resolver_factory is None):
+            raise ValueError("need a resolver, or a registry and a resolver_factory")
         self._combos = combos
         self._resolver = resolver
+        self._registry = registry
+        self._resolver_factory = resolver_factory
         self._transport = transport
         self._repo = repository
+        #: Paths cached by the most recent message's snapshot at purge time
+        #: (always empty afterwards; exposed so tests can prove the purge).
+        self.last_snapshot: MessageScopedRegistry | None = None
 
-    async def observe(
+    async def observe(self, account_scope: str, **kw: Any) -> str:
+        if self._resolver is not None:
+            return await self._observe(account_scope, resolver=self._resolver, **kw)
+        snapshot = MessageScopedRegistry(self._registry)
+        self.last_snapshot = snapshot
+        try:
+            return await self._observe(
+                account_scope, resolver=self._resolver_factory(snapshot), **kw
+            )
+        finally:
+            snapshot.purge()
+
+    async def _observe(
         self,
         account_scope: str,
         *,
+        resolver: Any,
         source_key: str,
         revision: int,
         evidence: Any,
@@ -174,7 +244,7 @@ class ObserverRuntime:
             await self._repo.record(account_scope, source_key=source_key, revision=revision,
                                     status="INPUT_INVALID")
             return "INPUT_INVALID"
-        selection = await resolve_observer_route(self._combos, self._resolver)
+        selection = await resolve_observer_route(self._combos, resolver)
         if not selection.allowed:
             reason = selection.route.reason.value if selection.route else selection.reason.value
             status = f"ROUTE_DENIED_{reason}"[:48]
@@ -182,7 +252,7 @@ class ObserverRuntime:
                                     status=status)
             return status
         observer = GraniteObserver(
-            self._resolver, self._transport, ObserverConfig(model_alias=selection.alias)
+            resolver, self._transport, ObserverConfig(model_alias=selection.alias)
         )
         try:
             result = await observer.observe(packet)

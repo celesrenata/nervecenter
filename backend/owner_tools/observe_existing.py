@@ -48,9 +48,10 @@ async def main(limit: int) -> None:
         repo = MailObservationRepository(sessions)
         runtime = ObserverRuntime(
             combos=InferenceComboService(engine),
-            resolver=LocalOnlyRouteResolver(HttpRegistryTransport(url, key),
-                                            omniroute_base_url=url,
-                                            limits=ResolverLimits(timeout_seconds=15.0)),
+            registry=HttpRegistryTransport(url, key),
+            resolver_factory=lambda reg: LocalOnlyRouteResolver(
+                reg, omniroute_base_url=url, limits=ResolverLimits(timeout_seconds=15.0)
+            ),
             transport=HttpObserverTransport(url, key),
             repository=repo,
         )

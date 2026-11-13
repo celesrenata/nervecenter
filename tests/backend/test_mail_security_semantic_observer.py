@@ -254,3 +254,76 @@ async def test_observer_transport_text_and_tool_calls(monkeypatch) -> None:
     assert "sk-test" not in str(exc.value)
     assert seen[0].url.path == "/v1/chat/completions"
     assert seen[0].headers["x-omniroute-no-memory"] == "true"
+
+
+# -- per-message registry snapshot (NS-ADR-074) ---------------------------------------------
+class CountingRegistry(Registry):
+    """The fixture registry, counting GETs and failing the first N reads."""
+
+    def __init__(self, fail_first: int = 0) -> None:
+        super().__init__()
+        self.fail_first = fail_first
+
+    async def get_json(self, path: str) -> Any:
+        if self.fail_first > 0:
+            self.fail_first -= 1
+            self.calls.append(f"FAIL {path}")
+            raise ValueError("registry blip")
+        return await super().get_json(path)
+
+
+def _snapshot_runtime(chat: Chat, repo: Any, registry: Any, rows=None) -> ObserverRuntime:
+    return ObserverRuntime(
+        combos=Combos(rows or [_row()]),
+        registry=registry,
+        resolver_factory=lambda reg: LocalOnlyRouteResolver(reg, omniroute_base_url=BASE),
+        transport=chat,
+        repository=repo,
+    )
+
+
+async def test_snapshot_shared_within_a_message_and_purged_after(monkeypatch) -> None:
+    monkeypatch.setenv(ENV_OBSERVER_SCOPES, "*")
+    reg, chat, repo = CountingRegistry(), Chat(), MemRepo()
+    rt = _snapshot_runtime(chat, repo, reg)
+    ev = parse_mime_evidence(_mime())
+    assert await rt.observe(SCOPE, source_key="a", revision=1, evidence=ev,
+                            finding_codes=[]) == "COMPLETED"
+    # Two route checks, one snapshot: each registry path fetched exactly once.
+    assert sorted(reg.calls) == ["/api/combos", "/api/providers", "/v1/models"]
+    assert rt.last_snapshot is not None and rt.last_snapshot.cached_paths == frozenset()
+    # The next message re-reads the registry (nothing survives between messages).
+    await rt.observe(SCOPE, source_key="b", revision=1, evidence=ev, finding_codes=[])
+    assert len(reg.calls) == 6
+
+
+async def test_snapshot_retries_one_blip_and_still_fails_closed(monkeypatch) -> None:
+    monkeypatch.setenv(ENV_OBSERVER_SCOPES, "*")
+    ev = parse_mime_evidence(_mime())
+    ok = _snapshot_runtime(Chat(), MemRepo(), CountingRegistry(fail_first=1))
+    assert await ok.observe(SCOPE, source_key="a", revision=1, evidence=ev,
+                            finding_codes=[]) == "COMPLETED"
+    chat = Chat()
+    down = _snapshot_runtime(chat, MemRepo(), CountingRegistry(fail_first=99))
+    status = await down.observe(SCOPE, source_key="b", revision=1, evidence=ev, finding_codes=[])
+    assert status.startswith("ROUTE_DENIED") and chat.requests == []
+    assert down.last_snapshot.cached_paths == frozenset()
+
+
+async def test_snapshot_purged_even_when_observation_raises(monkeypatch) -> None:
+    monkeypatch.setenv(ENV_OBSERVER_SCOPES, "*")
+
+    class Boom(MemRepo):
+        async def record(self, scope, **kw) -> bool:
+            raise RuntimeError("db down")
+
+    rt = _snapshot_runtime(Chat(), Boom(), CountingRegistry())
+    with pytest.raises(RuntimeError):
+        await rt.observe(SCOPE, source_key="a", revision=1,
+                         evidence=parse_mime_evidence(_mime()), finding_codes=[])
+    assert rt.last_snapshot.cached_paths == frozenset()
+
+
+def test_runtime_requires_a_resolver_or_a_snapshot_factory() -> None:
+    with pytest.raises(ValueError):
+        ObserverRuntime(combos=Combos([]), transport=Chat(), repository=MemRepo())
