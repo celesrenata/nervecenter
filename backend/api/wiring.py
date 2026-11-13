@@ -190,6 +190,7 @@ def _bind_semantic_observer(target: Any) -> None:
 
     from backend.mail_security.observer_wiring import (
         ObserverRuntime,
+        observer_contract_from_env,
         observer_scopes,
         set_observer_runtime,
     )
@@ -239,6 +240,8 @@ def _bind_semantic_observer(target: Any) -> None:
                 target.state.repository_registry.session_factory
             ),
             expectedness_secret=ledger_key_from_env(),
+            # NS-ADR-080: compact@1 until the owner-reviewed switch to compact@2.
+            contract=observer_contract_from_env(),
         )
     )
     log.info("api.wiring.semantic_observer_bound", scopes="*" if scopes is None else len(scopes))

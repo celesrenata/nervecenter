@@ -576,7 +576,7 @@ class MailSecurityWorker:
         account is opted in. It can never change the committed verdict; every
         failure is recorded as a typed status or logged as a safe code.
         """
-        from backend.mail_security.observer_wiring import get_observer_runtime
+        from backend.mail_security.observer_wiring import get_observer_runtime, sender_auth_of
 
         runtime = get_observer_runtime()
         if runtime is None:
@@ -588,6 +588,7 @@ class MailSecurityWorker:
                 revision=self._source_revision,
                 evidence=evidence,
                 finding_codes=[str(f.explanation_code) for f in assessment.findings],
+                sender_auth=sender_auth_of(assessment.authentication),
             )
         except Exception as exc:  # noqa: BLE001 - SHADOW signal must never fail a job
             log.warning("mail_security.observer_failed", error_type=type(exc).__name__)

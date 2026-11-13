@@ -49,6 +49,16 @@ _REF_SAFE = re.compile(r"[^A-Za-z0-9:_-]")
 #: Separate opt-in for personal expectedness (NS-ADR-075); same syntax.
 ENV_EXPECTEDNESS_SCOPES = "NERVE_MAIL_SECURITY_EXPECTEDNESS_SCOPES"
 
+#: Live observer contract (NS-ADR-080): ``COMPACT`` (compact@1, the default)
+#: or ``COMPACT_V2``. Anything else falls back to the default.
+ENV_OBSERVER_CONTRACT = "NERVE_MAIL_SECURITY_OBSERVER_CONTRACT"
+_LIVE_CONTRACTS = frozenset({"COMPACT", "COMPACT_V2"})
+
+
+def observer_contract_from_env(env: Mapping[str, str] | None = None) -> str:
+    raw = ((env if env is not None else os.environ).get(ENV_OBSERVER_CONTRACT) or "").strip()
+    return raw if raw in _LIVE_CONTRACTS else "COMPACT"
+
 
 def sender_domain(evidence: Any) -> str | None:
     """Registrable domain of the parsed From header, or ``None``."""
@@ -98,13 +108,67 @@ def _subject_of(headers: list[tuple[str, str]]) -> str:
     return ""
 
 
-def build_packet(source_key: str, evidence: Any, finding_codes: list[str]) -> EvidencePacket:
-    """Minimal, bounded evidence for the observer (truncated, never raw MIME)."""
+#: Rule codes that are hygiene, not threat, on ordinary bulk mail. compact@1
+#: saw them on most marketing and they primed PHISHING_SUSPECTED (NS-ADR-080),
+#: so compact@2 packets omit them. The deterministic policy still weighs them.
+OBSERVER_CONTEXT_EXCLUDED_CODES = frozenset(
+    {
+        "REMOTE_IMAGE_RESOURCE",
+        "REMOTE_TRACKING_PIXEL",
+        "TINY_TRACKING_IMAGE_MARKUP",
+        "HIDDEN_OR_OFFSCREEN_TEXT",
+        "EXTERNAL_LINK_RESOURCE",
+        "ENGINE_CLEAN_VERDICT_NOT_SAFETY",
+        "SCAN_NOT_RUN",
+        "DECODED_BYTES_EXCEEDED",
+    }
+)
+#: Expected for email-service senders when DMARC passes (DKIM-aligned).
+_EXCLUDED_WHEN_DMARC_PASS = frozenset({"RETURN_PATH_MISMATCH", "RETURN_PATH_DOMAIN_MISMATCH"})
+_COUNTED_PROVENANCE = frozenset({"PROVIDER_REPORTED", "INDEPENDENT"})
+
+
+def sender_auth_of(authentication: Any) -> str:
+    """Code-derived DMARC summary for the observer: one of ``SENDER_AUTH_VALUES``.
+
+    Accepts the assessment's ``authentication`` as a model or its JSON dict.
+    Only a provider-reported or independent result counts; anything else is
+    ``UNKNOWN``. Context for the model only, never a trust decision.
+    """
+    dmarc = authentication.get("dmarc") if isinstance(authentication, Mapping) else getattr(
+        authentication, "dmarc", None
+    )
+    if dmarc is None:
+        return "UNKNOWN"
+
+    def field(name: str) -> str:
+        value = dmarc.get(name) if isinstance(dmarc, Mapping) else getattr(dmarc, name, None)
+        return str(getattr(value, "value", value) or "")
+
+    if field("provenance") not in _COUNTED_PROVENANCE:
+        return "UNKNOWN"
+    return {"PASS": "DMARC_PASS", "FAIL": "DMARC_FAIL"}.get(field("result"), "UNKNOWN")
+
+
+def build_packet(
+    source_key: str,
+    evidence: Any,
+    finding_codes: list[str],
+    *,
+    sender_auth: str = "UNKNOWN",
+    filter_codes: bool = False,
+) -> EvidencePacket:
+    """Minimal, bounded evidence for the observer (truncated, never raw MIME).
+
+    ``filter_codes`` (compact@2) drops hygiene codes; the sender domain, the
+    DMARC summary and per-link alignment are code-derived context.
+    """
     from backend.mail_security.campaigns import text_of
-    from backend.mail_security.inspections import _url_host
+    from backend.mail_security.inspections import _registrable, _url_host
 
     subject = " ".join(_subject_of(list(getattr(evidence, "headers", []) or [])).split())
     body = " ".join(text_of(evidence).split())
+    domain = sender_domain(evidence) or ""
     links: list[EvidenceLink] = []
     seen_hosts: set[str] = set()
     for i, link in enumerate(getattr(evidence, "links", []) or []):
@@ -112,7 +176,8 @@ def build_packet(source_key: str, evidence: Any, finding_codes: list[str]) -> Ev
         if not host or host in seen_hosts or not _HOST_RE.fullmatch(host):
             continue
         seen_hosts.add(host)
-        links.append(EvidenceLink(ref=f"link_{i}", host=host))
+        aligned = (_registrable(host.lower()) == domain) if domain else None
+        links.append(EvidenceLink(ref=f"link_{i}", host=host, sender_aligned=aligned))
         if len(links) >= MAX_LINKS:
             break
     attachments: list[EvidenceAttachment] = []
@@ -127,7 +192,14 @@ def build_packet(source_key: str, evidence: Any, finding_codes: list[str]) -> Ev
         )
         if len(attachments) >= MAX_ATTACHMENTS:
             break
-    codes = list(dict.fromkeys(c for c in finding_codes if _CODE_RE.fullmatch(c)))[:MAX_CODES]
+    excluded: frozenset[str] = frozenset()
+    if filter_codes:
+        excluded = OBSERVER_CONTEXT_EXCLUDED_CODES | (
+            _EXCLUDED_WHEN_DMARC_PASS if sender_auth == "DMARC_PASS" else frozenset()
+        )
+    codes = list(
+        dict.fromkeys(c for c in finding_codes if _CODE_RE.fullmatch(c) and c not in excluded)
+    )[:MAX_CODES]
     return EvidencePacket(
         source_ref=_opaque(source_key),
         subject=subject[:MAX_SUBJECT_CHARS],
@@ -135,6 +207,8 @@ def build_packet(source_key: str, evidence: Any, finding_codes: list[str]) -> Ev
         links=tuple(links),
         attachments=tuple(attachments),
         deterministic_codes=tuple(codes),
+        sender_domain=domain,
+        sender_auth=sender_auth,
     )
 
 
@@ -217,11 +291,23 @@ class ObserverRuntime:
         resolver_factory: Any = None,
         expectedness_repository: Any = None,
         expectedness_secret: bytes | None = None,
+        contract: str = "COMPACT",
+        role: str = "Reader",
     ) -> None:
         """Either a fixed ``resolver`` (no snapshot), or ``registry`` +
-        ``resolver_factory(registry) -> resolver`` for a per-message snapshot."""
+        ``resolver_factory(registry) -> resolver`` for a per-message snapshot.
+
+        ``contract`` names an ``OutputContract`` (compact@1 by default;
+        compact@2 is NS-ADR-080); ``role`` is the NerveCenter combo role whose alias is
+        route-guarded (``Reader`` live; another role only for evaluation)."""
+        from backend.mail_security.granite_observer import OutputContract
+
         if resolver is None and (registry is None or resolver_factory is None):
             raise ValueError("need a resolver, or a registry and a resolver_factory")
+        self._contract = OutputContract(contract)
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9 _-]{0,39}", role):
+            raise ValueError("invalid role")
+        self._role = role
         self._combos = combos
         self._resolver = resolver
         self._registry = registry
@@ -235,16 +321,83 @@ class ObserverRuntime:
         self.last_snapshot: MessageScopedRegistry | None = None
 
     async def observe(self, account_scope: str, **kw: Any) -> str:
+        return await self._with_resolver(self._observe, account_scope, **kw)
+
+    async def dry_run(
+        self,
+        account_scope: str,
+        *,
+        source_key: str,
+        evidence: Any,
+        finding_codes: list[str],
+        sender_auth: str = "UNKNOWN",
+    ) -> tuple[str, dict[str, Any] | None, int | None]:
+        """Observe without storing anything (evaluation only).
+
+        Same opt-in, route guard, contract and validation as :meth:`observe`;
+        returns ``(status, codes or None, latency_ms)``. No row, no
+        expectedness count, no gist.
+        """
+        status, codes, latency, _extra = await self._with_resolver(
+            self._run, account_scope, source_key=source_key, evidence=evidence,
+            finding_codes=finding_codes, sender_auth=sender_auth,
+        )
+        return status, codes, latency
+
+    async def _with_resolver(self, fn: Any, account_scope: str, **kw: Any) -> Any:
         if self._resolver is not None:
-            return await self._observe(account_scope, resolver=self._resolver, **kw)
+            return await fn(account_scope, resolver=self._resolver, **kw)
         snapshot = MessageScopedRegistry(self._registry)
         self.last_snapshot = snapshot
         try:
-            return await self._observe(
-                account_scope, resolver=self._resolver_factory(snapshot), **kw
-            )
+            return await fn(account_scope, resolver=self._resolver_factory(snapshot), **kw)
         finally:
             snapshot.purge()
+
+    async def _run(
+        self,
+        account_scope: str,
+        *,
+        resolver: Any,
+        source_key: str,
+        evidence: Any,
+        finding_codes: list[str],
+        sender_auth: str,
+    ) -> tuple[str, dict[str, Any] | None, int | None, Any]:
+        """Route-select and observe; returns ``(status, codes, latency, extra)``.
+
+        ``extra`` is the result (COMPLETED) or the typed error, for recording.
+        """
+        from backend.mail_security.granite_observer import (
+            GraniteObserver,
+            GraniteObserverError,
+            ObserverConfig,
+            OutputContract,
+        )
+        from backend.mail_security.observer_route import resolve_observer_route
+
+        if not observer_applies(account_scope):
+            return "NOT_OPTED_IN", None, None, None
+        try:
+            packet = build_packet(
+                source_key, evidence, finding_codes, sender_auth=sender_auth,
+                filter_codes=self._contract is OutputContract.COMPACT_V2,
+            )
+        except Exception:  # noqa: BLE001 - bounded packet rejected the input
+            return "INPUT_INVALID", None, None, None
+        selection = await resolve_observer_route(self._combos, resolver, role=self._role)
+        if not selection.allowed:
+            reason = selection.route.reason.value if selection.route else selection.reason.value
+            return f"ROUTE_DENIED_{reason}"[:48], None, None, None
+        observer = GraniteObserver(
+            resolver, self._transport,
+            ObserverConfig(model_alias=selection.alias, contract=self._contract),
+        )
+        try:
+            result = await observer.observe(packet)
+        except GraniteObserverError as exc:
+            return exc.code.value, None, exc.latency_ms, exc
+        return "COMPLETED", observation_codes(result.observation), result.latency_ms, result
 
     async def _observe(
         self,
@@ -255,44 +408,29 @@ class ObserverRuntime:
         revision: int,
         evidence: Any,
         finding_codes: list[str],
+        sender_auth: str = "UNKNOWN",
     ) -> str:
-        from backend.mail_security.granite_observer import (
-            GraniteObserver,
-            GraniteObserverError,
-            ObserverConfig,
-        )
-        from backend.mail_security.observer_route import resolve_observer_route
-
         if not observer_applies(account_scope):
             return "NOT_OPTED_IN"
         if await self._repo.exists(account_scope, source_key, revision):
             return "ALREADY_OBSERVED"
-        try:
-            packet = build_packet(source_key, evidence, finding_codes)
-        except Exception:  # noqa: BLE001 - bounded packet rejected the input
-            await self._repo.record(account_scope, source_key=source_key, revision=revision,
-                                    status="INPUT_INVALID")
-            return "INPUT_INVALID"
-        selection = await resolve_observer_route(self._combos, resolver)
-        if not selection.allowed:
-            reason = selection.route.reason.value if selection.route else selection.reason.value
-            status = f"ROUTE_DENIED_{reason}"[:48]
-            await self._repo.record(account_scope, source_key=source_key, revision=revision,
-                                    status=status)
-            return status
-        observer = GraniteObserver(
-            resolver, self._transport, ObserverConfig(model_alias=selection.alias)
+        status, codes, _latency, extra = await self._run(
+            account_scope, resolver=resolver, source_key=source_key,
+            evidence=evidence, finding_codes=finding_codes, sender_auth=sender_auth,
         )
-        try:
-            result = await observer.observe(packet)
-        except GraniteObserverError as exc:
-            await self._repo.record(
-                account_scope, source_key=source_key, revision=revision,
-                status=exc.code.value, route_digest=exc.route_digest or None,
-                attempts=exc.attempts, latency_ms=exc.latency_ms,
-            )
-            return exc.code.value
-        codes = observation_codes(result.observation)
+        if status != "COMPLETED":
+            if extra is None:
+                await self._repo.record(account_scope, source_key=source_key,
+                                        revision=revision, status=status)
+            else:
+                await self._repo.record(
+                    account_scope, source_key=source_key, revision=revision,
+                    status=status, route_digest=extra.route_digest or None,
+                    attempts=extra.attempts, latency_ms=extra.latency_ms,
+                )
+            return status
+        result = extra
+        assert codes is not None  # noqa: S101 - COMPLETED always carries codes
         expectedness = await self._expectedness(account_scope, evidence, codes)
         if expectedness is not None:
             codes["expectedness"], codes["expectedness_sender_key"] = expectedness
@@ -346,6 +484,10 @@ def get_observer_runtime() -> Any:
 __all__ = [
     "ENV_EXPECTEDNESS_SCOPES",
     "ENV_OBSERVER_SCOPES",
+    "OBSERVER_CONTEXT_EXCLUDED_CODES",
+    "ENV_OBSERVER_CONTRACT",
+    "observer_contract_from_env",
+    "sender_auth_of",
     "MessageScopedRegistry",
     "ObserverRuntime",
     "scope_listed",
