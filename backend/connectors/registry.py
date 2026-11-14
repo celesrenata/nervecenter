@@ -433,6 +433,20 @@ def _display_from_handle(handle: str) -> str:
 # -- the control plane ---------------------------------------------------------
 
 
+
+#: Relay wire values -> the communications plane's canonical directions
+#: (``CommunicationDirection``: incoming/outgoing). Mail always wrote those;
+#: relay rows used to store the raw ``inbound``/``outbound``, so anything that
+#: filters on ``incoming`` silently skipped every relay message.
+_RELAY_DIRECTIONS = {
+    "inbound": "incoming", "incoming": "incoming", "in": "incoming",
+    "outbound": "outgoing", "outgoing": "outgoing", "out": "outgoing",
+}
+
+
+def _durable_direction(value: Any) -> str:
+    return _RELAY_DIRECTIONS.get(str(value or "inbound").strip().lower(), "incoming")
+
 class ConnectionControlPlane:
     """Durable connection-management control plane.
 
@@ -1191,7 +1205,7 @@ class ConnectionControlPlane:
         message_id = str(message.get("message_id", "")).strip()
         seen.append(f"{device_id}:{message_id}")
         channel = str(message.get("channel", "imessage"))
-        direction = str(message.get("direction", "inbound"))
+        direction = _durable_direction(message.get("direction"))
         body = str(message.get("body", ""))
         peer = str(message.get("peer_identifier", "")).strip()
         peer_name = message.get("peer_name")

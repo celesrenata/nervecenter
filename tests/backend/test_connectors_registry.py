@@ -974,7 +974,8 @@ class TestRelay:
         assert len(comms) == 1
         comm = comms[0]
         assert comm.channel == "imessage"
-        assert comm.direction == "inbound"
+        # canonical communications vocabulary, same as mail (not raw "inbound")
+        assert comm.direction == "incoming"
         assert comm.content_ref  # stable, non-empty
         assert comm.content_ref.startswith("relay://")
         assert "body" not in comm.__dict__  # bodies never land in durable rows
@@ -1056,6 +1057,22 @@ class TestRelay:
         )
         (comm,) = await registry.communications.list_communications(limit=10)
         assert comm.content_ref.startswith("relay://")
+
+    @pytest.mark.parametrize(
+        ("wire", "stored"),
+        [("inbound", "incoming"), ("outbound", "outgoing"), ("INBOUND", "incoming"),
+         ("OUTBOUND", "outgoing"), ("incoming", "incoming"), ("outgoing", "outgoing"),
+         (None, "incoming"), ("sideways", "incoming")],
+    )
+    async def test_relay_direction_is_stored_canonically(self, env, wire, stored):
+        plane, registry, *_ = env
+        pair, _ = await _pair_and_register(plane)
+        msg = {"message_id": "m1", "peer_identifier": "+15550001111", "body": "x"}
+        if wire is not None:
+            msg["direction"] = wire
+        await plane.relay_ingest_batch(device_id=pair["device_id"], messages=[msg])
+        (comm,) = await registry.communications.list_communications(limit=10)
+        assert comm.direction == stored
 
     async def test_ingest_same_peer_resolves_to_one_person(self, env):
         plane, registry, *_ = env

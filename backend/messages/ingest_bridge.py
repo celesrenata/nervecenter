@@ -44,6 +44,14 @@ def _to_iso(value: Any) -> str:
     return str(value)
 
 
+
+def _live_direction(value: Any) -> str:
+    """Map any wire spelling onto the live plane's ``MessageDirection``
+    (``INBOUND``/``OUTBOUND``). The relay sends lowercase ``inbound``/``outbound``
+    and the enum is upper case, so every mirror used to fail."""
+    v = str(value or "inbound").strip().lower()
+    return "OUTBOUND" if v in ("outbound", "outgoing", "out") else "INBOUND"
+
 class MessagesIngestBridge:
     """Re-feed persisted relay messages into the in-memory messages service."""
 
@@ -75,7 +83,7 @@ class MessagesIngestBridge:
         payload = {
             "message_id": str(message.get("message_id", "")),
             "channel": str(message.get("channel", "imessage")),
-            "direction": str(message.get("direction", "inbound")),
+            "direction": _live_direction(message.get("direction")),
             "peer_identifier": str(message.get("peer_identifier", "")),
             "peer_name": message.get("peer_name"),
             "body": str(message.get("body", "")),
