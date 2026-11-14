@@ -36,3 +36,9 @@ The task list's open boxes are partly stale (prep/travel buffer and Low Energy M
 ## Update 2026-11-14 (later): stored mail backfilled (owner "yes")
 
 `propose_bills_existing --apply`: 7 proposals created (same counts as the dry run). Billers: Chase ($360, due Dec 5), SiriusXM ($11.99 x3, one linked as a duplicate, one without a due date), Xfinity ($10 x2, due Oct 16, one linked as a duplicate; likely already paid), and one $30 with no payee found ("Unknown biller", no due date). `GET /api/bills/candidates` returns 7. Apple Card and UW did not produce proposals: they are the 2 NOT_EXTRACTABLE emails.
+
+## Update 2026-11-14 (later): the two unreadable bills (owner "theyre bills")
+
+- **Cause:** the extractor searched the raw text for its own `$` pattern; one biller's text part is HTML and the other writes the amount in a form it misses, so it gave up although the gate had the amount. Now the extractor gets the gate's cleaned text, and when it still fails the gate's amount is used with the extractor's payee/due-date readers. Both Apple Card emails ($75) are now proposed; 9 proposals in total.
+- **Found on the way:** a past-due notice's "was due Nov 8" became Nov 8, 2027 (the date reader assumes future dates). Past-due notices now keep the past date (marked `adjusted: past_due_previous_year`); any due date more than 120 days out is flagged for review. The two Apple Card proposals created before the fix were deleted (untouched, minutes old) and re-proposed with the corrected date.
+- Tests: 25 proposer tests (3 new live-case regressions); backend suite 8884 passed.
