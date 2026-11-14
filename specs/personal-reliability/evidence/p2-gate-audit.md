@@ -24,3 +24,11 @@ The task list's open boxes are partly stale (prep/travel buffer and Low Energy M
 ## QA deliverables still open
 
 `tests/backend/test_p2_e2e.py`, `docs/evidence/p2-live-gates.md`, honest `implementation-status.yaml`. These follow whichever option is chosen.
+
+## Update 2026-11-14: mail -> bill candidates built (owner "yes", NS-ADR-095)
+
+- **Correction:** this audit's first draft said the bills Today provider was never registered. That was wrong (my search used the wrong name); `register_bills_today_provider()` runs at startup in `backend/api/wiring.py`, so accepted bills do reach Today.
+- **Extractor was untested and over-eager:** 127 candidates from 393 emails (96 marketing). A bill-signal gate (`backend/bills/signal.py`) fixes it; it was tuned against real mail using sender domains, rule names and letter/digit skeletons only (no content read).
+- **Live, production code path, dry run over 394 stored emails:** PROPOSED 7, SECURITY_NOT_LOW_PRIORITY 12, NOT_EXTRACTABLE 2, NOT_A_BILL 373; nothing written.
+- **Known limits:** AWS invoices carry the amount only in the attached PDF (skipped); 2 emails pass the gate but the extractor finds no amount in its own format (NOT_EXTRACTABLE).
+- **Tests:** 26 gate tests, 19 proposer/API/worker tests, 4 Playwright tests; backend suite and 109 Playwright tests pass.
