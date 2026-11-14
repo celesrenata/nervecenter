@@ -31,11 +31,11 @@ NOW = datetime(2026, 11, 14, 12, 0, tzinfo=UTC)
 TABLES = [BillRow.__table__, BillCandidateRow.__table__, AttentionItemRow.__table__]
 
 BILL_MAIL = (
-    "From: City Power <billing@citypower.example>\r\nTo: me@example.test\r\n"
-    "Subject: Your City Power bill is ready\r\nMIME-Version: 1.0\r\n"
-    "Content-Type: text/plain; charset=utf-8\r\n\r\n"
-    "Amount due: $84.20. Payment due by November 20, 2026.\r\n"
-).encode()
+    b"From: City Power <billing@citypower.example>\r\nTo: me@example.test\r\n"
+    b"Subject: Your City Power bill is ready\r\nMIME-Version: 1.0\r\n"
+    b"Content-Type: text/plain; charset=utf-8\r\n\r\n"
+    b"Amount due: $84.20. Payment due by November 20, 2026.\r\n"
+)
 
 
 async def _open(path: pathlib.Path, *, create: bool):
