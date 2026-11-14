@@ -283,7 +283,9 @@ async def test_no_payee_found_is_flagged_for_review(proposer, registry) -> None:
     raw = _mail("Notice", "Amount due $30.00", sender="<billing@noname.example>")
     assert await _propose(proposer, raw) == "PROPOSED"
     (row,) = await registry.bills.list_candidates()
-    assert row.extracted_fields["payee"]["value"] in ("Unknown biller", "billing@noname.example")
+    # live case (a university biller with no display name): domain, flagged
+    assert row.extracted_fields["payee"]["value"] == "noname.example"
+    assert row.extracted_fields["payee"]["source"] == "sender_domain"
     assert "payee" in row.needs_review
 
 

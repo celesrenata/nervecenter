@@ -98,6 +98,7 @@ class MailBillProposer:
                                   "anchor": signal.phrase}
         needs_review = list(candidate.needs_review)
         fields, needs_review = self._fix_due_date(fields, needs_review, signal)
+        fields, needs_review = self._payee_from_domain(fields, needs_review, evidence)
         evidence_trail = [*candidate.evidence,
                           {"field": "amount_cents", "source_kind": SOURCE_KIND,
                            "source_id": content_ref, "snippet": signal.phrase,
@@ -116,6 +117,26 @@ class MailBillProposer:
             await self._repo.set_candidate_duplicate_of(row.id, duplicate_of)
         log.info("bills.mail_candidate_proposed", needs_review=len(needs_review))
         return "PROPOSED"
+
+    @staticmethod
+    def _payee_from_domain(
+        fields: dict[str, Any], needs_review: list[str], evidence: Any
+    ) -> tuple[dict[str, Any], list[str]]:
+        """Senders with no display name (seen live: a university billing
+        address) gave "Unknown biller". The sender's registrable domain is a
+        better hint; it stays low-confidence and flagged for the owner."""
+        payee = (fields.get("payee") or {}).get("value")
+        if payee and payee != "Unknown biller":
+            return fields, needs_review
+        from backend.mail_security.inspections import _registrable
+
+        addr = email.utils.parseaddr(_header(evidence, "from") or "")[1]
+        domain = addr.rpartition("@")[2].strip().lower() if "@" in addr else ""
+        if not domain:
+            return fields, needs_review
+        fields = {**fields, "payee": {"value": _registrable(domain), "confidence": 0.45,
+                                      "source": "sender_domain"}}
+        return fields, sorted({*needs_review, "payee"})
 
     #: A bill due further out than this is almost certainly a misread date.
     MAX_PLAUSIBLE_DUE_DAYS = 120
