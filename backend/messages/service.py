@@ -111,7 +111,7 @@ class MessagesService:
         return updated
 
     # -- ingestion -----------------------------------------------------------
-    def ingest(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def ingest(self, payload: dict[str, Any], *, generate_attention: bool = True) -> dict[str, Any]:
         """Ingest one normalized message (as posted by the Personal Relay).
 
         Returns ``{"message": Message, "conversation": Conversation,
@@ -175,7 +175,9 @@ class MessagesService:
         # ONE live item: if the thread already has an unresolved item we
         # *refresh* it in place instead of stacking duplicates.
         new_attention = None
-        if direction is MessageDirection.INBOUND:
+        # ``generate_attention=False``: restoring history at startup must not
+        # re-raise attention for messages the user already saw.
+        if direction is MessageDirection.INBOUND and generate_attention:
             should_escalate = (
                 conversation.unread == 1
                 or bool(_REPLY_REQUEST_PATTERN.search(message.body or ""))

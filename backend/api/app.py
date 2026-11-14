@@ -230,6 +230,21 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.control_plane_install_failed", error=str(exc))
                 app.state.connection_control_plane = None
+            # Restore recent relay messages into the in-memory Messages plane,
+            # which is empty after every restart (bodies are durable, NS-ADR-091).
+            try:
+                from backend.ingest.supervisor import _object_store_from_env
+                from backend.messages.rehydrate import rehydrate_messages
+
+                counts = await rehydrate_messages(
+                    getattr(app.state, "repository_registry", None),
+                    _object_store_from_env(),
+                    getattr(app.state, "messages_service", None),
+                )
+                if any(counts.values()):  # silent when there is nothing to restore
+                    log.info("api.messages_rehydrated", **counts)
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.messages_rehydrate_failed", error=str(exc))
             yield
 
     target.router.lifespan_context = _lifespan
