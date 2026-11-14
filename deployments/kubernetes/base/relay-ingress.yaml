@@ -1,0 +1,57 @@
+# Public route for the Mac Messages relay (NS-ADR-092, owner: "permanent route: sure").
+#
+# The main Ingress sends everything to oauth2-proxy (SSO). A launchd agent on the
+# owner's Mac cannot do an interactive SSO login, so ONE path bypasses SSO:
+#
+#     POST /api/relay/messages      (pathType Exact: nothing else matches)
+#
+# Why that is safe enough:
+#  * The endpoint authenticates every call itself with the paired device's
+#    opaque bearer token (`_require_relay_token`): unknown device, wrong token or
+#    missing header all return one generic 401. It stores nothing before that check.
+#  * It is the ONLY unauthenticated path. `/api/relay/pair`, `/register`,
+#    `/health`, `/import-request`, the legacy `/api/messages/ingest` (which has NO
+#    auth) and everything else stay behind SSO (verified after deploy).
+#  * The body is capped and requests are rate limited at the edge (below).
+#
+# Rollback: `kubectl -n nervecenter delete ingress nervcenter-relay middleware relay-limits`.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: relay-limits
+  labels:
+    app: nervcenter
+spec:
+  buffering:
+    maxRequestBodyBytes: 4194304     # 4 MiB; a 200-message batch is far smaller
+  rateLimit:
+    average: 30                      # requests per second per client IP
+    burst: 100
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nervcenter-relay
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: ingress-relay
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: nervecenter-relay-limits@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - nervecenter.celestium.life
+      secretName: nervecenter-celestium-tls
+  rules:
+    - host: nervecenter.celestium.life
+      http:
+        paths:
+          - path: /api/relay/messages
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000

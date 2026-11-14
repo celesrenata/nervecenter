@@ -3,7 +3,8 @@
 # INGRESS: default deny for every pod in `nervecenter`, then exactly the
 # flows the app uses (verified from the Ingress, oauth2-proxy args, the web
 # nginx.conf and NERVE_NATS_URL):
-#   traefik (kube-system) -> nervecenter-oauth:4180, mcp:8000
+#   traefik (kube-system) -> nervecenter-oauth:4180, mcp:8000, and api:8000
+#     (api only for the relay's exact-path ingress, relay-ingress.yaml)
 #   nervecenter-oauth -> web:80
 #   web, mcp -> api:8000
 #   api, migration job, one-off db-snapshot pods -> postgres:5432
@@ -137,3 +138,21 @@ spec:
     - ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traefik-to-api-relay
+  labels: {nervecenter.policy: hardening}
+spec:
+  podSelector:
+    matchLabels: {app: api}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: traefik}
+      ports:
+        - {protocol: TCP, port: 8000}

@@ -24,6 +24,8 @@ resources:
   - clamav.yaml
   # Namespace hardening: default-deny ingress + exact flows (NS-ADR-083).
   - networkpolicy.yaml
+  # Exact-path, SSO-free route for the Messages relay (NS-ADR-092).
+  - relay-ingress.yaml
   - postgres-statefulset.yaml
   - postgres-service.yaml
   - nats-deployment.yaml
