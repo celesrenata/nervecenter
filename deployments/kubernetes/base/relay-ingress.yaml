@@ -14,16 +14,26 @@
 #    auth) and everything else stay behind SSO (verified after deploy).
 #  * The body is capped and requests are rate limited at the edge (below).
 #
-# Rollback: `kubectl -n nervecenter delete ingress nervcenter-relay middleware relay-limits`.
+# Rollback: `kubectl -n nervecenter delete ingress nervcenter-relay middleware relay-body-limit relay-rate-limit`.
+# Traefik allows exactly one middleware type per object, so the two limits are
+# two objects chained in the Ingress annotation.
 apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
-  name: relay-limits
+  name: relay-body-limit
   labels:
     app: nervcenter
 spec:
   buffering:
     maxRequestBodyBytes: 4194304     # 4 MiB; a 200-message batch is far smaller
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: relay-rate-limit
+  labels:
+    app: nervcenter
+spec:
   rateLimit:
     average: 30                      # requests per second per client IP
     burst: 100
@@ -37,7 +47,7 @@ metadata:
     app: nervcenter
     app.kubernetes.io/name: ingress-relay
   annotations:
-    traefik.ingress.kubernetes.io/router.middlewares: nervecenter-relay-limits@kubernetescrd
+    traefik.ingress.kubernetes.io/router.middlewares: nervecenter-relay-body-limit@kubernetescrd,nervecenter-relay-rate-limit@kubernetescrd
 spec:
   ingressClassName: traefik
   tls:
