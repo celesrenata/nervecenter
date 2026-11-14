@@ -104,3 +104,7 @@ P1-201..203 were exercised with owner approval: see `evidence/relay-trial.md`. P
 ## Update 2026-11-14 (relay in permanent operation)
 
 P1-201..203 now PASS LIVE: the relay runs as a LaunchAgent, a real new message (`test`) travelled Mac -> public SSO-free route -> durable row + encrypted body and the connection is `healthy` (see `evidence/relay-trial.md`). Still open: P1-205 (physical iPhone/Watch), P1-305 (deadline email), P1-306 (not run: no staging), a reboot test of the agent, and checking the Messages/Today screens as the logged-in owner.
+
+## Update 2026-11-14 (owner confirmed)
+
+The owner confirmed a relay message (`test`) on the Messages screen. P1-201..203 are complete end to end: Mac -> public route -> durable encrypted record -> Messages screen. Still open: P1-205 (iPhone/Watch), P1-305 (deadline email), P1-306 (no staging), an agent reboot test.

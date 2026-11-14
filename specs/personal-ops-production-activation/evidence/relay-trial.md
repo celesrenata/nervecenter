@@ -75,4 +75,4 @@ Also fixed: relay rows were stored as `inbound`/`outbound` while mail and every 
 
 Verified live after deploy: startup logged `restored=2 no_body=69 failed=0` (the 69 are the trial rows from before bodies were durable). `/api/messages` returns 1 conversation, 2 messages, 1 unread, last body `test`; attention items still 79.
 
-Not verified: the screen itself as the logged-in owner. The 69 trial messages cannot appear because their text was never stored.
+**Owner confirmed on the Messages screen (2026-11-14): `test` is visible.** The 69 trial messages cannot appear because their text was never stored.
