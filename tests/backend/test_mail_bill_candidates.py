@@ -285,3 +285,31 @@ async def test_no_payee_found_is_flagged_for_review(proposer, registry) -> None:
     (row,) = await registry.bills.list_candidates()
     assert row.extracted_fields["payee"]["value"] in ("Unknown biller", "billing@noname.example")
     assert "payee" in row.needs_review
+
+
+async def test_past_due_notice_keeps_its_past_date(proposer, registry) -> None:
+    """Live case: "past due" + "Nov 8" was read as Nov 8 of NEXT year."""
+    raw = _mail("Your payment is past due",
+                "Past due amount $75.00. Your payment was due Nov 8.",
+                sender="Apple Card Support <no_reply@card.example>")
+    assert await _propose(proposer, raw) == "PROPOSED"
+    (row,) = await registry.bills.list_candidates()
+    due = datetime.fromisoformat(row.extracted_fields["due_date"]["value"])
+    assert due.year == 2026 and due.month == 11 and due.day == 8
+    assert due <= NOW
+    assert "due_date" not in row.needs_review
+
+
+async def test_implausibly_distant_due_date_is_flagged(proposer, registry) -> None:
+    raw = _mail("Your bill", "Amount due: $40.00. Payment due by October 1, 2027.")
+    assert await _propose(proposer, raw) == "PROPOSED"
+    (row,) = await registry.bills.list_candidates()
+    assert "due_date" in row.needs_review
+
+
+async def test_an_ordinary_upcoming_due_date_is_untouched(proposer, registry) -> None:
+    assert await _propose(proposer, BILL) == "PROPOSED"
+    (row,) = await registry.bills.list_candidates()
+    due = datetime.fromisoformat(row.extracted_fields["due_date"]["value"])
+    assert (due.month, due.day) == (11, 20) and "adjusted" not in row.extracted_fields["due_date"]
+    assert "due_date" not in row.needs_review

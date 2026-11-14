@@ -96,6 +96,8 @@ class MailBillProposer:
         fields = dict(candidate.extracted_fields)
         fields["amount_cents"] = {"value": signal.amount_cents, "confidence": 0.97,
                                   "anchor": signal.phrase}
+        needs_review = list(candidate.needs_review)
+        fields, needs_review = self._fix_due_date(fields, needs_review, signal)
         evidence_trail = [*candidate.evidence,
                           {"field": "amount_cents", "source_kind": SOURCE_KIND,
                            "source_id": content_ref, "snippet": signal.phrase,
@@ -108,12 +110,45 @@ class MailBillProposer:
             source_id=content_ref,
             extracted_fields=fields,
             evidence=evidence_trail,
-            needs_review=list(candidate.needs_review),
+            needs_review=needs_review,
         )
         if duplicate_of is not None:
             await self._repo.set_candidate_duplicate_of(row.id, duplicate_of)
-        log.info("bills.mail_candidate_proposed", needs_review=len(candidate.needs_review))
+        log.info("bills.mail_candidate_proposed", needs_review=len(needs_review))
         return "PROPOSED"
+
+    #: A bill due further out than this is almost certainly a misread date.
+    MAX_PLAUSIBLE_DUE_DAYS = 120
+
+    def _fix_due_date(
+        self, fields: dict[str, Any], needs_review: list[str], signal: BillSignal
+    ) -> tuple[dict[str, Any], list[str]]:
+        """The date reader assumes dates are in the future, so "was due Nov 8"
+        on a past-due notice became Nov 8 NEXT year (seen live). A past-due
+        notice's date is moved back a year; any date still implausibly far out
+        is flagged for the owner instead of trusted."""
+        entry = fields.get("due_date")
+        if not entry:
+            return fields, needs_review
+        try:
+            due = datetime.fromisoformat(str(entry["value"]))
+        except (TypeError, ValueError):
+            return fields, sorted({*needs_review, "due_date"})
+        now = self._clock()
+        if due.tzinfo is None:
+            due = due.replace(tzinfo=UTC)
+        if signal.phrase.startswith("past due") and due > now:
+            try:
+                earlier = due.replace(year=due.year - 1)
+            except ValueError:  # Feb 29
+                earlier = due.replace(year=due.year - 1, day=28)
+            if earlier <= now:
+                due = earlier
+                fields = {**fields, "due_date": {**entry, "value": due.isoformat(),
+                                                 "adjusted": "past_due_previous_year"}}
+        if (due - now).days > self.MAX_PLAUSIBLE_DUE_DAYS:
+            needs_review = sorted({*needs_review, "due_date"})
+        return fields, needs_review
 
     def _from_signal(
         self, content_ref: str, text: str, subject: str | None, name: str | None,
