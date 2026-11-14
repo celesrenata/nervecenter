@@ -47,6 +47,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from datetime import UTC, datetime
+
 import structlog
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -132,6 +134,11 @@ def ingest_enabled(env: dict[str, str] | None = None) -> bool:
 
     source = dict(env) if env is not None else dict(os.environ)
     return source.get(ENV_INGEST_ENABLED, "").strip() not in ("", "0")
+
+
+def _utcnow() -> datetime:
+    """Wall-clock stamp for ``last_attempt_at`` / ``last_success_at`` (P1-108)."""
+    return datetime.now(UTC)
 
 
 @runtime_checkable
@@ -741,6 +748,7 @@ class MailIngestWorker:
                 detail = redact_transport_error(str(exc))
                 await self._connections.update_connection(
                     self.connection_id,
+                    last_attempt_at=_utcnow(),
                     auth_status="auth_expired",
                     operational_status="error",
                     last_error_code="auth_expired",
@@ -757,6 +765,7 @@ class MailIngestWorker:
             detail = redact_transport_error(str(exc))
             await self._connections.update_connection(
                 self.connection_id,
+                last_attempt_at=_utcnow(),
                 operational_status="error",
                 last_error_code="connect_failed",
                 last_error_message=detail,
@@ -778,6 +787,7 @@ class MailIngestWorker:
             detail = redact_transport_error(str(exc))
             await self._connections.update_connection(
                 self.connection_id,
+                last_attempt_at=_utcnow(),
                 operational_status="error",
                 last_error_code=exc.error_code,
                 last_error_message=detail,
@@ -793,6 +803,7 @@ class MailIngestWorker:
             detail = redact_transport_error(f"{type(exc).__name__}: {exc}")
             await self._connections.update_connection(
                 self.connection_id,
+                last_attempt_at=_utcnow(),
                 operational_status="error",
                 last_error_code="ingest_failed",
                 last_error_message=detail,
@@ -826,6 +837,7 @@ class MailIngestWorker:
             detail = redact_transport_error(str(durable_failure))
             await self._connections.update_connection(
                 self.connection_id,
+                last_attempt_at=_utcnow(),
                 operational_status="error",
                 last_error_code="commit_failed",
                 last_error_message=detail,
@@ -847,6 +859,8 @@ class MailIngestWorker:
         await self._record_import_progress(conn, ingested)
         await self._connections.update_connection(
             self.connection_id,
+            last_attempt_at=_utcnow(),
+            last_success_at=_utcnow(),
             auth_status="authenticated",
             operational_status="healthy",
             last_error_code=None,

@@ -464,6 +464,59 @@ class TestWorkerPoll:
         assert conn.operational_status == "error"
         assert conn.last_error_code == "auth_expired"
 
+    # -- P1-108: durable health stamps from the continuous worker ---------
+
+    async def test_successful_poll_records_attempt_and_success_time(self, harness) -> None:
+        before = await harness.registry.connections.get_connection(harness.conn.id)
+        assert before.last_success_at is None and before.last_attempt_at is None
+        transport = StubMailTransport(items=[_make_item("<1@corp>")], next_cursor={"uid": 5})
+        worker = _worker(harness.registry, harness.store, harness.conn, transport=transport, seam=FakeSeam())
+        await worker.poll_once()
+        conn = await harness.registry.connections.get_connection(harness.conn.id)
+        assert conn.last_success_at is not None and conn.last_attempt_at is not None
+        assert conn.last_success_at >= conn.last_attempt_at.replace(microsecond=0)
+
+    async def test_empty_poll_still_counts_as_a_success(self, harness) -> None:
+        """A quiet mailbox answered: that is a success, and keeps Today fresh."""
+        transport = StubMailTransport(items=[], next_cursor={"uid": 5})
+        worker = _worker(harness.registry, harness.store, harness.conn, transport=transport, seam=FakeSeam())
+        await worker.poll_once()
+        assert worker.status()["last"]["items"] == 0
+        conn = await harness.registry.connections.get_connection(harness.conn.id)
+        assert conn.last_success_at is not None
+
+    @pytest.mark.parametrize(
+        ("exc", "code"),
+        [
+            (TransportAuthError("LOGIN -> AUTHENTICATIONFAILED"), "auth_expired"),
+            (TransportConnectError("no route to host"), "connect_failed"),
+        ],
+    )
+    async def test_failed_poll_records_attempt_but_never_success(
+        self, harness, exc: Exception, code: str
+    ) -> None:
+        worker = _worker(harness.registry, harness.store, harness.conn,
+                         transport=StubMailTransport(raise_exc=exc), seam=FakeSeam())
+        await worker.poll_once()
+        conn = await harness.registry.connections.get_connection(harness.conn.id)
+        assert conn.last_error_code == code
+        assert conn.last_attempt_at is not None
+        assert conn.last_success_at is None
+
+    async def test_failure_after_success_keeps_the_last_success_time(self, harness) -> None:
+        ok = _worker(harness.registry, harness.store, harness.conn,
+                     transport=StubMailTransport(items=[], next_cursor={"uid": 1}), seam=FakeSeam())
+        await ok.poll_once()
+        first = (await harness.registry.connections.get_connection(harness.conn.id)).last_success_at
+        assert first is not None
+        bad = _worker(harness.registry, harness.store, harness.conn,
+                      transport=StubMailTransport(raise_exc=TransportConnectError("down")),
+                      seam=FakeSeam())
+        await bad.poll_once()
+        conn = await harness.registry.connections.get_connection(harness.conn.id)
+        assert conn.last_success_at == first  # not erased, not advanced
+        assert conn.last_attempt_at is not None and conn.operational_status == "error"
+
     async def test_connect_error_maps_to_connect_failed(self, harness) -> None:
         transport = StubMailTransport(raise_exc=TransportConnectError("no route to host"))
         worker = _worker(harness.registry, harness.store, harness.conn, transport=transport, seam=FakeSeam())
