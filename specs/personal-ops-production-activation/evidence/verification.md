@@ -100,3 +100,7 @@ Needs the owner: **P1-004** approval, **P1-201 to P1-205** (M5 Max relay, Messag
 ## Update 2026-11-14 (relay trial)
 
 P1-201..203 were exercised with owner approval: see `evidence/relay-trial.md`. Pairing, real-schema read, import (30 days: 68 messages), dedup and `healthy` status all PASS LIVE after fixing five relay defects. Durable message bodies and an SSO-free route for permanent operation are open. A separate `import_jobs` leak (53,905 rows) was found and fixed. P1-205 (physical iPhone/Watch) and P1-305 (deadline email) remain.
+
+## Update 2026-11-14 (relay in permanent operation)
+
+P1-201..203 now PASS LIVE: the relay runs as a LaunchAgent, a real new message (`test`) travelled Mac -> public SSO-free route -> durable row + encrypted body and the connection is `healthy` (see `evidence/relay-trial.md`). Still open: P1-205 (physical iPhone/Watch), P1-305 (deadline email), P1-306 (not run: no staging), a reboot test of the agent, and checking the Messages/Today screens as the logged-in owner.

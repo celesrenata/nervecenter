@@ -48,3 +48,18 @@ Database snapshot before importing: `/volume1/Backups/nervecenter/nervecenter-db
 3. **Full history import** (about 15,800 readable messages): held until bodies are durable.
 4. **UI check:** the API's message and attention endpoints are scoped to a logged-in user, so what appears on Today and in Messages could not be verified from here.
 5. **`import_jobs` purge:** 53,919 old rows; a purge keeping the latest per connection would reclaim about 164 MB.
+
+## Permanent operation, verified live (2026-11-14, later)
+
+Owner: durable bodies "yes", permanent route "sure", full history "no, only new messages", old import rows purge "no" (NS-ADR-091..093).
+
+- **Agent:** `com.nervcenter.relay` LaunchAgent, `~/.nervcenter/bin/NervePersonalRelay` signed with the owner's Apple Development identity, mode `relay-device`, target `https://nervecenter.celestium.life`; one process, `runs = 1`.
+- **Public route** (verified from outside the cluster): `POST /api/relay/messages` answers 401 (no or bad token) / 422 (garbage); pair, register, import-request, health, the legacy `/api/messages/ingest`, the trailing-slash form and all other paths still return the SSO 302; a 5 MiB body returns 413; 179 of 300 rapid requests returned 429.
+- **Real message, end to end:** the owner texted `test` to themselves at 14:27 UTC. The relay logged `captured=1 sent=1 failed=0 backlog=0` twice (outbound id 17312, inbound id 17313). The server gained 2 `communications` (`content://relay/...` refs) and 2 `relay_seen_messages`; the connection is `healthy`. Both bodies read back from the encrypted store as exactly `test` (4 bytes); none of the 4 relay object files on disk contains the plaintext.
+- **No attention item** was created by the message (79 attention items, 0 commitments before and after).
+
+### Not verified
+- Behaviour across a Mac reboot (the plist has `RunAtLoad` and `KeepAlive`; not rebooted).
+- What the owner sees in the Messages and Today screens (the API scopes reads to a logged-in user).
+- A relay outage with a populated backlog replayed against production (covered by unit tests only).
+- The 69 trial messages imported before bodies were durable have metadata-only refs.
