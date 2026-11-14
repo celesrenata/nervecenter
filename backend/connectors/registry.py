@@ -55,6 +55,10 @@ CONNECTION_KINDS = ("gmail", "imap", "graph_mail", "relay_device", "calendar")
 #: Secret kinds owned by a connection row (owner_kind="connection").
 APP_PASSWORD = "app_password"
 RELAY_TOKEN = "relay_token"
+#: Extra permissions a connection may add to its existing sign-in.
+EXTRA_SCOPES: dict[tuple[str, str], str] = {
+    ("google", "calendar"): "https://www.googleapis.com/auth/calendar.readonly",
+}
 ACCESS_TOKEN = "access_token"
 REFRESH_TOKEN = "refresh_token"
 
@@ -869,7 +873,8 @@ class ConnectionControlPlane:
     # -- OAuth flow (gmail / graph_mail) -------------------------------------------
 
     async def start_oauth(
-        self, connection_id: str, *, callback_url: str | None = None
+        self, connection_id: str, *, callback_url: str | None = None,
+        extra: tuple[str, ...] = (),
     ) -> dict[str, Any]:
         """Begin a provider sign-in: return ``{authorization_url, state, provider, code_verifier, redirect_uri}``.
 
@@ -944,6 +949,14 @@ class ConnectionControlPlane:
         merged["oauth_state"] = state
         merged["oauth_code_verifier"] = verifier
         merged["oauth_redirect_uri"] = redirect_uri
+        # Optional extra permissions on the same account (e.g. calendar).
+        extra_scopes = tuple(EXTRA_SCOPES[(provider_name, e)] for e in extra
+                             if (provider_name, e) in EXTRA_SCOPES)
+        if len(extra_scopes) != len(extra):
+            raise ConnectionControlPlaneError(
+                "bad_request", f"unsupported extra permission for {provider_name}"
+            )
+        merged["oauth_requested_extra"] = sorted(set(extra))
         await self._registry.connections.update_connection(connection_id, config=merged)
         url = build_authorization_url(
             provider_name,
@@ -951,6 +964,7 @@ class ConnectionControlPlane:
             redirect_uri=redirect_uri,
             state=state,
             code_challenge=challenge,
+            extra_scopes=extra_scopes,
         )
         return {
             "authorization_url": url,
@@ -993,6 +1007,9 @@ class ConnectionControlPlane:
         config = dict(row.config or {})
         config.pop("oauth_state", None)
         config.pop("oauth_code_verifier", None)
+        requested = config.pop("oauth_requested_extra", None) or []
+        if requested:
+            config["granted_extra"] = sorted({*config.get("granted_extra", []), *requested})
         await self._registry.connections.update_connection(connection_id, config=config)
         # Persist the durable token kinds. The legacy string exchanger stores
         # only an access token; a grant mapping also carries a refresh token,

@@ -77,6 +77,8 @@ export interface CalendarCreatePayload {
   config?: Record<string, unknown>
   /** Sent to the vault only; never echoed back on the row. */
   credential?: string
+  /** Link to an existing Gmail connection; reuses its Google sign-in. */
+  connection_id?: string
   enabled?: boolean
 }
 

@@ -62,12 +62,12 @@ test('connect form submits honestly (degraded write, no fake success or row)', a
   const form = page.getByTestId('calendar-connect-form')
   await expect(form).toBeVisible()
 
-  // Fill a representative Google account; leave the credential blank so no
-  // secret ever transits. The provider select should default to google.
+  // The provider defaults to google (account picker); switch to CalDAV for the
+  // manual form. Leave the credential blank so no secret ever transits.
+  const select = form.locator('select').first()
+  expect(await select.inputValue()).toBe('google')
+  await select.selectOption('caldav')
   await form.getByPlaceholder('Work calendar').fill('Work calendar')
-  expect(await page.getByTestId('calendar-connect-form').locator('select').first().inputValue()).toBe(
-    'google',
-  )
 
   await page.getByTestId('calendar-connect-submit').click()
 
@@ -78,4 +78,53 @@ test('connect form submits honestly (degraded write, no fake success or row)', a
 
   // No fabricated account row appears.
   await expect(page.locator('[data-testid^="calendar-account-"]')).toHaveCount(0)
+})
+
+test('google lists connected Gmail accounts and starts calendar consent on that connection', async ({
+  page,
+}) => {
+  const created: unknown[] = []
+  const authBodies: unknown[] = []
+  await page.route('**/api/connections', (route) =>
+    route.fulfill({
+      json: {
+        data: [
+          { id: 'conn-gmail-1', kind: 'gmail', label: 'Gmail', config: { account: 'owner@example.com' } },
+          { id: 'conn-relay-1', kind: 'relay_device', label: 'Mac', config: {} },
+        ],
+      },
+    }),
+  )
+  await page.route('**/api/calendar/accounts', async (route) => {
+    if (route.request().method() === 'POST') {
+      created.push(route.request().postDataJSON())
+      return route.fulfill({ status: 201, json: { id: 'cal-1', provider: 'google', config: {} } })
+    }
+    return route.fulfill({ json: { data: [], meta: {} } })
+  })
+  await page.route('**/api/connections/conn-gmail-1/auth', (route) => {
+    authBodies.push(route.request().postDataJSON())
+    return route.fulfill({
+      json: { authorization_url: 'https://accounts.example.test/consent', state: 's', provider: 'google' },
+    })
+  })
+  await page.route('https://accounts.example.test/**', (route) =>
+    route.fulfill({ contentType: 'text/html', body: '<p>consent</p>' }),
+  )
+
+  await visitCalendar(page)
+  await page.getByTestId('calendar-connect-toggle').click()
+  const picker = page.getByTestId('calendar-google-accounts')
+  await expect(picker.getByText('owner@example.com')).toBeVisible()
+  // Only Gmail connections are offered; the token field is gone.
+  await expect(page.locator('[data-testid^="calendar-use-connection-"]')).toHaveCount(1)
+  await expect(page.getByTestId('calendar-connect-form').locator('input[type="password"]')).toHaveCount(0)
+
+  await page.getByTestId('calendar-use-connection-conn-gmail-1').click()
+  await page.waitForURL('https://accounts.example.test/consent')
+
+  expect(created).toHaveLength(1)
+  expect(created[0]).toMatchObject({ provider: 'google', connection_id: 'conn-gmail-1', label: 'owner@example.com' })
+  expect(created[0]).not.toHaveProperty('credential')
+  expect(authBodies).toEqual([{ extra: ['calendar'] }])
 })

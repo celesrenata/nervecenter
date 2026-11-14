@@ -32,7 +32,7 @@ the encrypted vault.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -156,6 +156,8 @@ class AuthFlowRequest(BaseModel):
 
     code: str | None = None
     state: str | None = None
+    #: Extra permissions to add to this account's sign-in (e.g. ``["calendar"]``).
+    extra: list[Literal["calendar"]] | None = None
 
 
 # -- list / get ---------------------------------------------------------------
@@ -312,7 +314,8 @@ async def start_auth_flow(
             }
         if row["kind"] in ("gmail", "graph_mail"):
             return await plane.start_oauth(
-                connection_id, callback_url=_public_callback_url(request)
+                connection_id, callback_url=_public_callback_url(request),
+                extra=tuple(body.extra or ()) if body is not None else (),
             )
         raise ConnectionControlPlaneError(
             "bad_request", f"kind {row['kind']!r} has no auth flow"

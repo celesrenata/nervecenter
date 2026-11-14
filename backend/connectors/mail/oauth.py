@@ -111,6 +111,7 @@ def build_authorization_url(
     redirect_uri: str,
     state: str,
     code_challenge: str | None = None,
+    extra_scopes: tuple[str, ...] = (),
 ) -> str:
     """The consent URL the user opens in a browser to grant IMAP access.
 
@@ -124,11 +125,15 @@ def build_authorization_url(
         "client_id": client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": " ".join(p.scopes),
+        "scope": " ".join(dict.fromkeys((*p.scopes, *extra_scopes))),
         "state": state,
         "access_type": "offline",
         "prompt": "consent",
     }
+    if extra_scopes:
+        # Incremental consent: keep the mail grant and add the new scope to the
+        # same token (Google merges them into one refresh token).
+        query["include_granted_scopes"] = "true"
     if code_challenge:
         query["code_challenge"] = code_challenge
         query["code_challenge_method"] = "S256"

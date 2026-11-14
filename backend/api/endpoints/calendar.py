@@ -343,6 +343,8 @@ class AccountCreateRequest(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     credential: str | None = None
     enabled: bool = True
+    #: Use an existing connected Google account's sign-in (no pasted token).
+    connection_id: str | None = None
 
 
 class AccountUpdateRequest(BaseModel):
@@ -377,12 +379,29 @@ async def create_account(request: Request, body: AccountCreateRequest) -> dict[s
     if registry is None:
         return _degraded_write(request, "durable storage is not configured")
 
+    config = dict(body.config)
+    config.pop("connection_id", None)  # only settable through the checked field
+    if body.connection_id is not None:
+        if body.provider != "google" or body.credential is not None:
+            raise HTTPException(
+                status_code=422,
+                detail="connection_id is for Google accounts, without a credential",
+            )
+        conn = await registry.connections.get_connection(body.connection_id)
+        if conn is None or str(conn.kind) != "gmail":
+            raise HTTPException(status_code=422, detail="connection_id must be a Gmail connection")
+        for existing in await registry.calendar.list_accounts():
+            if (existing.config or {}).get("connection_id") == body.connection_id:
+                raise HTTPException(
+                    status_code=409, detail="this account already has a calendar connected"
+                )
+        config["connection_id"] = body.connection_id
     account = await registry.calendar.create_account(
         provider=body.provider,
         label=body.label,
         account_ref=body.account_ref,
         timezone=body.timezone,
-        config=body.config,
+        config=config,
         enabled=body.enabled,
     )
     if body.credential is not None:

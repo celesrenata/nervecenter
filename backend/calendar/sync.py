@@ -169,6 +169,17 @@ class CalendarSyncRunner:
         """Pull the credential plaintext from the secrets vault for the
         account. ``secret_ref`` addresses the vault row; absent/undecryptable
         → ``None`` (the provider then reports ``no_credential``)."""
+        linked = (getattr(account, "config", None) or {}).get("connection_id")
+        if linked:
+            # Linked to a connected Google account: use that connection's
+            # refresh token (calendar access added by incremental consent).
+            try:
+                return await self.registry.connections.get_secret(
+                    kind="refresh_token", owner_kind="connection", owner_id=str(linked)
+                )
+            except Exception as exc:  # noqa: BLE001 — vault failure is a sync error
+                log.warning("calendar.sync.secret_unreadable", error=redact_message(exc))
+                return None
         if not getattr(account, "secret_ref", None):
             return None
         try:
@@ -205,7 +216,7 @@ class CalendarSyncRunner:
             provider = build_provider(
                 account.provider,
                 self.transport,
-                config=account.config or {},
+                config=_with_app_keys(account),
                 secret=secret,
                 account_timezone=account.timezone or "UTC",
                 sync_state=account.sync_state or {},
@@ -424,6 +435,19 @@ class CalendarSyncSupervisor:
             except Exception as exc:  # noqa: BLE001 — the loop must survive
                 log.error("calendar.sync.loop_failed", error=redact_message(exc))
             await asyncio.sleep(self.interval_s)
+
+
+def _with_app_keys(account: Any) -> dict[str, Any]:
+    """A linked Google account uses the deployment's OAuth app keys (the same
+    ones the mail plane uses); unlinked accounts keep their own config."""
+    import os
+
+    config = dict(getattr(account, "config", None) or {})
+    if config.get("connection_id") and getattr(account, "provider", "") == "google":
+        config.setdefault("client_id", os.environ.get("NERVE_GOOGLE_CLIENT_ID", "").strip())
+        config.setdefault("client_secret",
+                          os.environ.get("NERVE_GOOGLE_CLIENT_SECRET", "").strip())
+    return config
 
 
 async def install_calendar_sync(target: Any) -> CalendarSyncSupervisor | None:

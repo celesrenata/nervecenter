@@ -7,6 +7,7 @@ import {
   type CalendarProvider,
   type CalendarCreatePayload,
 } from '../api/calendar'
+import { connectionsApi, isDegradedWrite as isDegradedConn, type Connection } from '../api/connections'
 
 /**
  * CalendarView — the Calendar plane (prompt2 Phase P2).
@@ -105,17 +106,24 @@ export function CalendarView() {
   const [formLabel, setFormLabel] = useState('')
   const [formTimezone, setFormTimezone] = useState('UTC')
   const [formCredential, setFormCredential] = useState('')
-  const [formCalendarIds, setFormCalendarIds] = useState('')
   const [formServerUrl, setFormServerUrl] = useState('')
   const [connectBusy, setConnectBusy] = useState(false)
   const [connectError, setConnectError] = useState<string | null>(null)
   const [connectOk, setConnectOk] = useState<string | null>(null)
+  // Gmail connections whose Google sign-in a calendar can reuse.
+  const [gmailConns, setGmailConns] = useState<Connection[]>([])
 
   const loadAccounts = useCallback(async () => {
     setAccountError(null)
     try {
       const res = await calendarAccountsApi.list()
       setAccounts(res.data)
+      try {
+        const conns = await connectionsApi.list()
+        setGmailConns(conns.data.filter((c) => c.kind === 'gmail'))
+      } catch {
+        setGmailConns([])
+      }
     } catch (err) {
       setAccountError(err instanceof ApiError ? err.detail : 'Failed to load accounts')
     } finally {
@@ -134,12 +142,6 @@ export function CalendarView() {
       setConnectError(null)
       setConnectOk(null)
       const config: Record<string, unknown> = {}
-      if (formProvider === 'google' && formCalendarIds.trim()) {
-        config.calendarIds = formCalendarIds
-          .split(',')
-          .map((s) => s.trim())
-          .filter(Boolean)
-      }
       if (formProvider === 'caldav' && formServerUrl.trim()) {
         config.server_url = formServerUrl.trim()
       }
@@ -160,7 +162,6 @@ export function CalendarView() {
           setConnectOk(`Connected ${formLabel.trim() || body.provider}.`)
           setFormLabel('')
           setFormCredential('')
-          setFormCalendarIds('')
           setFormServerUrl('')
           void loadAccounts()
         }
@@ -170,7 +171,57 @@ export function CalendarView() {
         setConnectBusy(false)
       }
     },
-    [formProvider, formLabel, formTimezone, formCredential, formCalendarIds, formServerUrl, loadAccounts],
+    [formProvider, formLabel, formTimezone, formCredential, formServerUrl, loadAccounts],
+  )
+
+  /** Ask Google for calendar read access on an existing Gmail connection. */
+  const grantCalendar = useCallback(async (connectionId: string) => {
+    const res = await connectionsApi.startAuth(connectionId, { extra: ['calendar'] })
+    if (isDegradedConn(res)) throw new ApiError(503, res.detail)
+    if (!('authorization_url' in res)) throw new ApiError(500, 'Google sign-in did not start')
+    window.sessionStorage.setItem('nerve.oauth.returnTo', '/calendar')
+    window.location.assign(res.authorization_url)
+  }, [])
+
+  const connectGoogle = useCallback(
+    async (conn: Connection) => {
+      setConnectBusy(true)
+      setConnectError(null)
+      setConnectOk(null)
+      const email = typeof conn.config.account === 'string' ? conn.config.account : null
+      try {
+        const body = await calendarAccountsApi.create({
+          provider: 'google',
+          label: email || conn.label || undefined,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+          connection_id: conn.id,
+          enabled: true,
+        })
+        if (isDegradedWrite(body)) {
+          setConnectError(body.detail || 'Not saved: calendar accounts are not configured on this deployment.')
+          return
+        }
+        await grantCalendar(conn.id)
+      } catch (err) {
+        setConnectError(err instanceof ApiError ? err.detail : 'Failed to connect account')
+        void loadAccounts()
+      } finally {
+        setConnectBusy(false)
+      }
+    },
+    [grantCalendar, loadAccounts],
+  )
+
+  const regrant = useCallback(
+    async (connectionId: string) => {
+      setAccountError(null)
+      try {
+        await grantCalendar(connectionId)
+      } catch (err) {
+        setAccountError(err instanceof ApiError ? err.detail : 'Could not start Google sign-in')
+      }
+    },
+    [grantCalendar],
   )
 
   const runSync = useCallback(
@@ -310,72 +361,105 @@ export function CalendarView() {
             data-testid="calendar-connect-form"
             className="rounded-lg border border-line p-4"
           >
-            <p className="mb-3 text-xs text-muted">
-              Credentials are written to the vault and are never shown again.
-            </p>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="text-muted">Provider</span>
-                <select
-                  value={formProvider}
-                  onChange={(e) => setFormProvider(e.target.value as CalendarProvider)}
-                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
-                >
-                  <option value="google">Google</option>
-                  <option value="caldav">CalDAV</option>
-                  <option value="apple">Apple (relay)</option>
-                </select>
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="text-muted">Label</span>
-                <input
-                  value={formLabel}
-                  onChange={(e) => setFormLabel(e.target.value)}
-                  placeholder="Work calendar"
-                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="text-muted">Timezone</span>
-                <input
-                  value={formTimezone}
-                  onChange={(e) => setFormTimezone(e.target.value)}
-                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
-                />
-              </label>
-              <label className="flex flex-col gap-1 text-sm">
-                <span className="text-muted">
-                  {formProvider === 'caldav' ? 'Server URL' : formProvider === 'google' ? 'OAuth token' : 'Relay token (optional)'}
-                </span>
-                <input
-                  type={formProvider === 'caldav' ? 'url' : 'password'}
-                  value={formProvider === 'caldav' ? formServerUrl : formCredential}
-                  onChange={(e) =>
-                    formProvider === 'caldav'
-                      ? setFormServerUrl(e.target.value)
-                      : setFormCredential(e.target.value)
-                  }
-                  placeholder={formProvider === 'caldav' ? 'https://…' : '••••••••'}
-                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
-                />
-              </label>
-            </div>
-            {formProvider === 'google' && (
-              <label className="mt-3 flex flex-col gap-1 text-sm">
-                <span className="text-muted">Calendar IDs (comma-separated, optional)</span>
-                <input
-                  value={formCalendarIds}
-                  onChange={(e) => setFormCalendarIds(e.target.value)}
-                  placeholder="primary, work@group.calendar.google.com"
-                  className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
-                />
-              </label>
-            )}
-            {formProvider === 'apple' && (
-              <p className="mt-3 text-xs text-muted">
-                Apple events arrive via the authorized relay — NerveCenter holds a
-                read-only copy and makes no outbound network call.
-              </p>
+            <label className="mb-3 flex flex-col gap-1 text-sm sm:w-1/2">
+              <span className="text-muted">Provider</span>
+              <select
+                value={formProvider}
+                onChange={(e) => setFormProvider(e.target.value as CalendarProvider)}
+                className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+              >
+                <option value="google">Google</option>
+                <option value="caldav">CalDAV</option>
+                <option value="apple">Apple (relay)</option>
+              </select>
+            </label>
+            {formProvider === 'google' ? (
+              <div data-testid="calendar-google-accounts" className="space-y-2">
+                <p className="text-xs text-muted">
+                  Pick a connected Google account. Google will ask you to allow
+                  read-only calendar access; nothing else is stored.
+                </p>
+                {gmailConns.length === 0 ? (
+                  <p className="text-sm text-muted">
+                    No Google accounts are connected. Add one under Connections first.
+                  </p>
+                ) : (
+                  <ul className="space-y-2">
+                    {gmailConns.map((c) => {
+                      const email = typeof c.config.account === 'string' ? c.config.account : c.label || c.id
+                      const linked = accounts.some((a) => a.config?.connection_id === c.id)
+                      return (
+                        <li
+                          key={c.id}
+                          className="flex items-center justify-between gap-3 rounded border border-line p-2 text-sm"
+                        >
+                          <span className="truncate text-primary">{email}</span>
+                          {linked ? (
+                            <span className="text-xs text-muted">Calendar connected</span>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => void connectGoogle(c)}
+                              disabled={connectBusy}
+                              data-testid={`calendar-use-connection-${c.id}`}
+                              className="rounded bg-gray-800 dark:bg-gray-200 px-3 py-1 text-xs font-medium text-white dark:text-gray-900 disabled:opacity-50"
+                            >
+                              {connectBusy ? 'Opening Google…' : 'Connect calendar'}
+                            </button>
+                          )}
+                        </li>
+                      )
+                    })}
+                  </ul>
+                )}
+              </div>
+            ) : (
+              <>
+                <p className="mb-3 text-xs text-muted">
+                  Credentials are written to the vault and are never shown again.
+                </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted">Label</span>
+                    <input
+                      value={formLabel}
+                      onChange={(e) => setFormLabel(e.target.value)}
+                      placeholder="Work calendar"
+                      className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted">Timezone</span>
+                    <input
+                      value={formTimezone}
+                      onChange={(e) => setFormTimezone(e.target.value)}
+                      className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1 text-sm">
+                    <span className="text-muted">
+                      {formProvider === 'caldav' ? 'Server URL' : 'Relay token (optional)'}
+                    </span>
+                    <input
+                      type={formProvider === 'caldav' ? 'url' : 'password'}
+                      value={formProvider === 'caldav' ? formServerUrl : formCredential}
+                      onChange={(e) =>
+                        formProvider === 'caldav'
+                          ? setFormServerUrl(e.target.value)
+                          : setFormCredential(e.target.value)
+                      }
+                      placeholder={formProvider === 'caldav' ? 'https://…' : '••••••••'}
+                      className="rounded border border-line bg-surface px-2 py-1.5 text-sm"
+                    />
+                  </label>
+                </div>
+                {formProvider === 'apple' && (
+                  <p className="mt-3 text-xs text-muted">
+                    Apple events arrive via the authorized relay — NerveCenter holds a
+                    read-only copy and makes no outbound network call.
+                  </p>
+                )}
+              </>
             )}
             {connectError && (
               <p
@@ -389,16 +473,18 @@ export function CalendarView() {
             {connectOk && (
               <p className="mt-3 text-sm text-green-700 dark:text-green-300">{connectOk}</p>
             )}
-            <div className="mt-4 flex gap-2">
-              <button
-                type="submit"
-                disabled={connectBusy}
-                data-testid="calendar-connect-submit"
-                className="rounded bg-gray-800 dark:bg-gray-200 px-3 py-1.5 text-sm font-medium text-white dark:text-gray-900 disabled:opacity-50"
-              >
-                {connectBusy ? 'Connecting…' : 'Connect'}
-              </button>
-            </div>
+            {formProvider !== 'google' && (
+              <div className="mt-4 flex gap-2">
+                <button
+                  type="submit"
+                  disabled={connectBusy}
+                  data-testid="calendar-connect-submit"
+                  className="rounded bg-gray-800 dark:bg-gray-200 px-3 py-1.5 text-sm font-medium text-white dark:text-gray-900 disabled:opacity-50"
+                >
+                  {connectBusy ? 'Connecting…' : 'Connect'}
+                </button>
+              </div>
+            )}
           </form>
         )}
 
@@ -436,7 +522,7 @@ export function CalendarView() {
                     </span>
                   </p>
                   <p className="mt-0.5 truncate text-xs text-muted">
-                    {a.secret_ref ? 'Credential configured' : 'No credential stored'} ·{' '}
+                    {a.config?.connection_id ? 'Uses connected Google sign-in' : a.secret_ref ? 'Credential configured' : 'No credential stored'} ·{' '}
                     {a.enabled ? 'enabled' : 'disabled'}
                     {a.operational_status ? ` · ${a.operational_status}` : ''}
                   </p>
@@ -450,6 +536,17 @@ export function CalendarView() {
                   </p>
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
+                  {a.provider === 'google' && typeof a.config?.connection_id === 'string' && a.last_error_code && (
+                    <button
+                      type="button"
+                      onClick={() => void regrant(a.config.connection_id as string)}
+                      disabled={accountBusy !== null}
+                      data-testid={`calendar-grant-${a.id}`}
+                      className="rounded border border-line px-2.5 py-1 text-xs font-medium text-primary disabled:opacity-50"
+                    >
+                      Grant calendar access
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() => void runSync(a.id)}

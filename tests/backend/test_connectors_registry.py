@@ -582,6 +582,49 @@ class TestOauth:
         public = await plane.get_connection(row.id)
         assert "oauth_state" not in public["config"]
 
+    # -- extra permission on the same account (calendar, NS-ADR-096) ---------
+
+    async def test_start_oauth_with_calendar_asks_for_both_scopes(self, env):
+        from urllib.parse import parse_qs, urlsplit
+
+        plane, registry, *_ = env
+        row = await plane.create_connection(kind="gmail")
+        result = await plane.start_oauth(row.id, extra=("calendar",))
+        q = parse_qs(urlsplit(result["authorization_url"]).query)
+        scopes = q["scope"][0].split()
+        assert "https://www.googleapis.com/auth/gmail.readonly" in scopes, "mail access kept"
+        assert "https://www.googleapis.com/auth/calendar.readonly" in scopes
+        assert q["include_granted_scopes"] == ["true"]
+        raw = await registry.connections.get_connection(row.id)
+        assert raw.config["oauth_requested_extra"] == ["calendar"]
+
+    async def test_plain_start_oauth_is_unchanged(self, env):
+        from urllib.parse import parse_qs, urlsplit
+
+        plane, *_ = env
+        row = await plane.create_connection(kind="gmail")
+        q = parse_qs(urlsplit((await plane.start_oauth(row.id))["authorization_url"]).query)
+        assert "calendar" not in q["scope"][0] and "include_granted_scopes" not in q
+
+    async def test_completing_a_calendar_grant_records_it(self, env):
+        plane, registry, *_ = env
+        plane.set_token_exchanger(FakeExchanger({"access_token": "a", "refresh_token": "r"}))
+        row = await plane.create_connection(kind="gmail")
+        started = await plane.start_oauth(row.id, extra=("calendar",))
+        await plane.complete_oauth(row.id, code="c", state=started["state"])
+        raw = await registry.connections.get_connection(row.id)
+        assert raw.config["granted_extra"] == ["calendar"]
+        assert "oauth_requested_extra" not in raw.config
+        refresh = await registry.connections.get_secret(
+            kind="refresh_token", owner_kind="connection", owner_id=row.id)
+        assert refresh == "r"
+
+    async def test_unknown_extra_permission_is_refused(self, env):
+        plane, *_ = env
+        row = await plane.create_connection(kind="gmail")
+        with pytest.raises(ConnectionControlPlaneError):
+            await plane.start_oauth(row.id, extra=("drive",))
+
     async def test_start_oauth_wrong_kind(self, env):
         plane, *_ = env
         row = await plane.create_connection(kind="imap")

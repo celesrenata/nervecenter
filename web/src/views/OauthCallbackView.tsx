@@ -96,7 +96,9 @@ export function OauthCallbackView() {
         // 'id' in res → the row was refreshed with the new auth status.
         setPhase('done')
         // Short beat so the "connected" state is visible before the transition.
-        window.setTimeout(() => navigate('/connections'), 600)
+        const returnTo = window.sessionStorage.getItem('nerve.oauth.returnTo')
+        window.sessionStorage.removeItem('nerve.oauth.returnTo')
+        window.setTimeout(() => navigate(returnTo === '/calendar' ? '/calendar' : '/connections'), 600)
       } catch (e) {
         setPhase('error')
         setError(e instanceof Error ? e.message : 'The token exchange failed.')

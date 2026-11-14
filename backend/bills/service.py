@@ -790,6 +790,9 @@ def register_bills_today_provider() -> BillsTodayProvider:
     """
     from backend.api.endpoints import today
 
+    for existing in today._providers():
+        if isinstance(existing, BillsTodayProvider):
+            return existing
     provider = BillsTodayProvider()
     today.register_today_provider(provider)
     return provider
