@@ -80,6 +80,10 @@ data:
   # Only an UNEXPECTED high-impact ask adds an advisory review reason.
   # Remove this key to stop; seed_expectedness --forget erases learned counts.
   NERVE_MAIL_SECURITY_EXPECTEDNESS_SCOPES: "conn:53b03939-bdf6-4313-a7e3-b91144c598d2,conn:fc4e3c57-2f5f-49b6-87e7-9f3e87fd813e"
+  # Bill candidates from mail (NS-ADR-095, owner "yes"). Only LOW_PRIORITY
+  # mail with an owed-amount phrase; a candidate becomes a bill only when the
+  # owner adds it on the Bills screen. Remove this key to stop proposing.
+  NERVE_BILL_CANDIDATE_SCOPES: "conn:53b03939-bdf6-4313-a7e3-b91144c598d2,conn:fc4e3c57-2f5f-49b6-87e7-9f3e87fd813e"
   # NerveShield attachment scanning (NS-ADR-065): the clamd sidecar's UNIX
   # socket. Remove this key to report attachments as NOT_RUN again.
   NERVE_CLAMD_SOCKET: "/run/clamav/clamd.sock"
