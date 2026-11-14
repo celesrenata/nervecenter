@@ -63,3 +63,16 @@ Owner: durable bodies "yes", permanent route "sure", full history "no, only new 
 - What the owner sees in the Messages and Today screens (the API scopes reads to a logged-in user).
 - A relay outage with a populated backlog replayed against production (covered by unit tests only).
 - The 69 trial messages imported before bodies were durable have metadata-only refs.
+
+## Why `test` did not show on the Messages screen (owner report, 2026-11-14)
+
+The owner did not see the `test` message under Messages. I had verified the database and the encrypted body, not the screen. Two defects:
+
+1. **The live mirror rejected every relay message.** The Messages screen reads an in-memory service; the relay endpoint mirrors each message into it. The relay sends `inbound`/`outbound`, the service's enum is `INBOUND`/`OUTBOUND`, so every mirror raised `'outbound' is not a valid MessageDirection`. That was swallowed as a warning, which the API log showed at 14:27:31 and 14:27:36. The bridge now maps any spelling. A regression test was verified to fail on the old code.
+2. **The screen was empty after every API restart.** The in-memory service is never rebuilt, so even a working mirror only lasts until the next deploy. Startup now replays the most recent 500 relay messages that have a durable body, with attention generation switched off so old messages never re-raise attention.
+
+Also fixed: relay rows were stored as `inbound`/`outbound` while mail and every reader use `incoming`/`outgoing`, so anything filtering on `incoming` skipped relay messages. New rows are canonical; the 71 existing relay rows were updated in one transaction (UPDATE 35 + 36, 0 non-canonical left).
+
+Verified live after deploy: startup logged `restored=2 no_body=69 failed=0` (the 69 are the trial rows from before bodies were durable). `/api/messages` returns 1 conversation, 2 messages, 1 unread, last body `test`; attention items still 79.
+
+Not verified: the screen itself as the logged-in owner. The 69 trial messages cannot appear because their text was never stored.
