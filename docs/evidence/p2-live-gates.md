@@ -14,7 +14,7 @@ PASS LIVE = observed in production · PASS SYNTHETIC = tests only · UNVERIFIED 
 | P2-B | owner adds a proposal, bill on Today | **UNVERIFIED** | waiting for the owner to add one |
 | P2-B | unpaid bill past due -> stale, never "paid" | PASS SYNTHETIC | e2e test; sweep is wall-clock driven in production |
 | P2-B | phishing "invoice" never becomes a bill | PASS SYNTHETIC + LIVE | REVIEW mail blocked in tests; 12 blocked live |
-| P2-C appointments | real calendar event, prep, conflicts, DST | **UNVERIFIED** | no calendar connected (needs Google re-consent with a calendar scope) |
+| P2-C appointments | real calendar event, prep, conflicts, DST | **UNVERIFIED** | no calendar connected yet; connect flow fixed (NS-ADR-096): Calendar → pick a Gmail account → grant calendar.readonly |
 | P2-C | prep tasks / travel buffer | OPEN | not built |
 | P2-D routines | presets, medication kinds, briefing | PASS SYNTHETIC | code + tests; 0 live routines |
 | P2-D | Low Energy Mode 2.0 (Done / Later / Help Me, tiny steps) | OPEN | today's Low Energy collapse exists; the 2.0 interaction does not |
