@@ -242,10 +242,11 @@ class TestHealthInstalled:
             assert entry["kind"] == "imap"
             assert entry["auth_status"] == "authenticated"
             assert entry["operational_status"] == "error"
+            # a transport that never succeeds has no success on record
             assert entry["last_success_at"] is None
-            # the mail worker writes auth/operational status + last error,
-            # not last_attempt_at — report exactly what the DB holds
-            assert entry["last_attempt_at"] is None
+            # P1-108: the worker stamps every poll attempt (success or not),
+            # so a failing source shows when it last tried
+            assert entry["last_attempt_at"] is not None
             assert entry["last_error_code"] == "connect_failed"
             assert entry["last_error_message"] == "smtp timed out: connection refused"
 
