@@ -182,3 +182,21 @@ pending backlog. Every local failure prints the exact fix command.
 | `token: MISSING` in `health` | Keychain item lost (e.g. re-imaged Mac) — re-run `pair`. |
 | `status` shows `cursor 0` | Never ran yet (or outbox deleted) — first `run` seeds it. |
 | LaunchAgent not loaded | `launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.nervcenter.relay.plist` |
+
+## 8. Real-database notes (2026-11-14)
+
+First run against a real `chat.db` (see `specs/personal-ops-production-activation/evidence/relay-trial.md`):
+
+- **Run from launchd, not a terminal.** macOS attributes Full Disk Access to the app that
+  launched the process, so `health`/`status` from Terminal or an editor can report
+  `NOT GRANTED (sqlite rc=23)` even when the binary has the grant. Verify with a one-shot
+  launchd job (or the installed LaunchAgent).
+- **Use a stable signing identity** (`NERVE_RELAY_SIGN_IDENTITY`, e.g. `Apple Development: ...`).
+  An ad-hoc signature changes on every rebuild and silently voids the grant. Keep the binary
+  at a fixed path such as `~/.nervcenter/bin/NervePersonalRelay`.
+- A finished `import` saves `import-cursor.json`; to import a larger window afterwards, move
+  that file aside (server dedup keeps it safe).
+- `pair` prints the one-time token on its own line: redirect its output.
+- The reader supports both the real schema (`message.ROWID`, `chat_message_join`) and the old
+  fixture names, decodes `attributedBody` when `text` is NULL, and skips (counts) rows it
+  cannot read. `status` prints counts only.

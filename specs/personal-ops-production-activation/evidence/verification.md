@@ -96,3 +96,7 @@ Needs the owner: **P1-004** approval, **P1-201 to P1-205** (M5 Max relay, Messag
 - **Third connection deleted** (owner: "yes, continue with 2 accounts"). Row `632e3a89` was unconfigured with no secrets, cursors, import jobs or relay rows; removed through the app's own `delete_connection`, guarded to that ID and to `unconfigured`. The supervisor stopped its worker (`reason=removed`). The two real accounts stayed healthy, with `last_success_at` 13 s and 15 s old, and polling continued.
 - **Messages relay not started.** "Continue with 2 accounts" is not approval to read Messages history (P1-004). Waiting for an explicit yes.
 - **P1-305 baseline recorded** (UTC 2026-11-14 11:02): attention_items 79 (newest 02:42), communications 689 (newest 08:10), obligations 0.
+
+## Update 2026-11-14 (relay trial)
+
+P1-201..203 were exercised with owner approval: see `evidence/relay-trial.md`. Pairing, real-schema read, import (30 days: 68 messages), dedup and `healthy` status all PASS LIVE after fixing five relay defects. Durable message bodies and an SSO-free route for permanent operation are open. A separate `import_jobs` leak (53,905 rows) was found and fixed. P1-205 (physical iPhone/Watch) and P1-305 (deadline email) remain.
