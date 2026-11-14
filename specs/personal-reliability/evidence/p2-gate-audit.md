@@ -32,3 +32,7 @@ The task list's open boxes are partly stale (prep/travel buffer and Low Energy M
 - **Live, production code path, dry run over 394 stored emails:** PROPOSED 7, SECURITY_NOT_LOW_PRIORITY 12, NOT_EXTRACTABLE 2, NOT_A_BILL 373; nothing written.
 - **Known limits:** AWS invoices carry the amount only in the attached PDF (skipped); 2 emails pass the gate but the extractor finds no amount in its own format (NOT_EXTRACTABLE).
 - **Tests:** 26 gate tests, 19 proposer/API/worker tests, 4 Playwright tests; backend suite and 109 Playwright tests pass.
+
+## Update 2026-11-14 (later): stored mail backfilled (owner "yes")
+
+`propose_bills_existing --apply`: 7 proposals created (same counts as the dry run). Billers: Chase ($360, due Dec 5), SiriusXM ($11.99 x3, one linked as a duplicate, one without a due date), Xfinity ($10 x2, due Oct 16, one linked as a duplicate; likely already paid), and one $30 with no payee found ("Unknown biller", no due date). `GET /api/bills/candidates` returns 7. Apple Card and UW did not produce proposals: they are the 2 NOT_EXTRACTABLE emails.
