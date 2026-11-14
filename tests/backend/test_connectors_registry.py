@@ -979,6 +979,84 @@ class TestRelay:
         assert comm.content_ref.startswith("relay://")
         assert "body" not in comm.__dict__  # bodies never land in durable rows
 
+    # -- durable bodies (NS-ADR-091): same encrypted store as mail ----------
+
+    @pytest.fixture
+    async def durable(self, tmp_path):
+        from backend.persistence.connection import make_session_factory
+        from backend.storage.memory import InMemoryObjectStore
+
+        engine = await _engine(tmp_path / "durable.db")
+        try:
+            vault = FernetVault(generate_key())
+            registry = RepositoryRegistry(make_session_factory(engine), secret_codec=vault)
+            store = InMemoryObjectStore()
+            plane = ConnectionControlPlane(registry, vault=vault, object_store=store)
+            yield plane, registry, store
+        finally:
+            await engine.dispose()
+
+    async def test_body_is_stored_durably_and_row_keeps_only_the_ref(self, durable):
+        plane, registry, store = durable
+        pair, _ = await _pair_and_register(plane)
+        await plane.relay_ingest_batch(
+            device_id=pair["device_id"],
+            messages=[{"message_id": "m1", "channel": "imessage",
+                       "peer_identifier": "+15550001111", "body": "dinner at 7?"}],
+        )
+        (comm,) = await registry.communications.list_communications(limit=10)
+        assert comm.content_ref.startswith("content://relay/")
+        assert "dinner" not in repr(comm.__dict__) and comm.subject is None
+        stored = await store.get(comm.content_ref.removeprefix("content://"))
+        assert stored == b"dinner at 7?"
+
+    async def test_replay_does_not_write_the_body_again(self, durable):
+        plane, registry, store = durable
+        pair, _ = await _pair_and_register(plane)
+        batch = [{"message_id": "m1", "peer_identifier": "+15550001111", "body": "once"}]
+        await plane.relay_ingest_batch(device_id=pair["device_id"], messages=batch)
+        before = dict(store._objects)
+        assert len(before) == 1, "the first ingest must have stored exactly one body"
+        again = await plane.relay_ingest_batch(device_id=pair["device_id"], messages=batch)
+        assert again == {"ok": True, "stored": 0, "skipped": 1}
+        assert dict(store._objects) == before
+
+    async def test_a_failed_body_write_loses_nothing_and_retries(self, durable):
+        plane, registry, store = durable
+        pair, _ = await _pair_and_register(plane)
+        batch = [{"message_id": "m1", "peer_identifier": "+15550001111", "body": "keep me"}]
+        real_put = store.put
+        calls = {"n": 0}
+
+        async def flaky(*a, **kw):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("object store down")
+            return await real_put(*a, **kw)
+
+        store.put = flaky  # type: ignore[method-assign]
+        with pytest.raises(OSError):
+            await plane.relay_ingest_batch(device_id=pair["device_id"], messages=batch)
+        assert await registry.communications.list_communications(limit=10) == []
+        assert not await registry.relay_seen.is_seen(
+            (await plane._find_relay_connection(pair["device_id"])).id,
+            pair["device_id"], "m1",
+        ), "a message whose body was not stored must not be marked seen"
+        retry = await plane.relay_ingest_batch(device_id=pair["device_id"], messages=batch)
+        assert retry == {"ok": True, "stored": 1, "skipped": 0}
+        (comm,) = await registry.communications.list_communications(limit=10)
+        assert await store.get(comm.content_ref.removeprefix("content://")) == b"keep me"
+
+    async def test_without_a_store_it_degrades_to_metadata_only(self, env):
+        plane, registry, *_ = env
+        pair, _ = await _pair_and_register(plane)
+        await plane.relay_ingest_batch(
+            device_id=pair["device_id"],
+            messages=[{"message_id": "m1", "peer_identifier": "+1", "body": "x"}],
+        )
+        (comm,) = await registry.communications.list_communications(limit=10)
+        assert comm.content_ref.startswith("relay://")
+
     async def test_ingest_same_peer_resolves_to_one_person(self, env):
         plane, registry, *_ = env
         pair, _ = await _pair_and_register(plane)

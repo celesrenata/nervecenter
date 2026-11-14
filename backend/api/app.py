@@ -184,8 +184,13 @@ def _install_connection_control_plane(app: FastAPI) -> None:
     from backend.connectors.wiring import install_connection_wiring
 
     vault = getattr(app.state, "secret_vault", None)
+    # Relay message bodies go to the same encrypted object store as mail
+    # (None when none is configured: bodies are then not durable, and the
+    # control plane logs it).
+    from backend.ingest.supervisor import _object_store_from_env
+
     app.state.connection_control_plane = ConnectionControlPlane(
-        registry, vault=vault
+        registry, vault=vault, object_store=_object_store_from_env()
     )
     # P1-103: register the production probes, the durable OAuth code→token
     # exchanger, and the mail-ingest sync triggers (the latter only when the

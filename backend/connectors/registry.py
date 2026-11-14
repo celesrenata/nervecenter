@@ -448,8 +448,13 @@ class ConnectionControlPlane:
         *,
         vault: Any | None = None,
         imap_client: ImapClient | None = None,
+        object_store: Any | None = None,
     ) -> None:
         self._registry = registry
+        # Encrypted object store for relay message bodies (same store the mail
+        # path uses). ``None`` degrades to metadata-only rows (see
+        # ``_relay_store_message``); production wiring always passes one.
+        self._object_store = object_store
         if vault is None:
             try:
                 vault = load_from_env()
@@ -1191,9 +1196,26 @@ class ConnectionControlPlane:
         peer = str(message.get("peer_identifier", "")).strip()
         peer_name = message.get("peer_name")
         received_at = _parse_dt(message.get("received_at")) or _now()
-        # Stable, non-empty content_ref (object-storage pattern; in-memory OK).
-        digest = hashlib.sha256(f"{device_id}:{message_id}:{body}".encode("utf-8")).hexdigest()
-        content_ref = f"relay://{device_id}/msg/{digest}"
+        if self._object_store is not None:
+            # Durable body (spec §7): the text goes to the encrypted object
+            # store under a stable, secret-free key, and the row carries only
+            # the ``content://`` ref, exactly like mail. A failed write
+            # propagates BEFORE the message is marked seen, so the relay's
+            # retry stores it instead of losing it.
+            key_digest = hashlib.sha256(f"{device_id}:{message_id}".encode()).hexdigest()[:24]
+            meta = await self._object_store.put(
+                f"relay/{conn.id}/{key_digest}",
+                body.encode(),
+                content_type="text/plain; charset=utf-8",
+                metadata={"device_id": device_id, "message_id": message_id},
+            )
+            content_ref = f"content://{getattr(meta, 'key', f'relay/{conn.id}/{key_digest}')}"
+        else:
+            # No object store: metadata only. The body reaches the in-memory
+            # live plane but is not durable. Production always has a store.
+            log.warning("control_plane.relay_body_not_durable", device_id=device_id)
+            digest = hashlib.sha256(f"{device_id}:{message_id}:{body}".encode("utf-8")).hexdigest()
+            content_ref = f"relay://{device_id}/msg/{digest}"
         person = await self._resolve_person(conn, channel, peer, peer_name)
         await self._registry.communications.create_communication(
             person_id=person.id,
