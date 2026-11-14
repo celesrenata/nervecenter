@@ -90,3 +90,9 @@ Needs the owner: **P1-004** approval, **P1-201 to P1-205** (M5 Max relay, Messag
 | P1-305 | Send one self-addressed email with a deadline (a few seconds); the check afterwards is automated |
 | P1-306 | Not run: forced outages need a staging environment, and production is not used for drills |
 | DNS (NS-ADR-084) | Access to whoever controls the Route 53 zones |
+
+## Update 2026-11-14 (later): owner decisions
+
+- **Third connection deleted** (owner: "yes, continue with 2 accounts"). Row `632e3a89` was unconfigured with no secrets, cursors, import jobs or relay rows; removed through the app's own `delete_connection`, guarded to that ID and to `unconfigured`. The supervisor stopped its worker (`reason=removed`). The two real accounts stayed healthy, with `last_success_at` 13 s and 15 s old, and polling continued.
+- **Messages relay not started.** "Continue with 2 accounts" is not approval to read Messages history (P1-004). Waiting for an explicit yes.
+- **P1-305 baseline recorded** (UTC 2026-11-14 11:02): attention_items 79 (newest 02:42), communications 689 (newest 08:10), obligations 0.
