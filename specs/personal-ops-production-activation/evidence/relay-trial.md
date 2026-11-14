@@ -25,9 +25,9 @@ Database snapshot before importing: `/volume1/Backups/nervecenter/nervecenter-db
 
 1. **`health` hung forever.** `launchAgentIsLoaded()` ran `launchctl print gui/501 <label>` with domain and label as two arguments. That prints the whole GUI domain (135 KB) and the code waited for exit before reading the pipe (64 KB buffer): a deadlock. Now one target, and the pipe is drained first.
 2. **Schema guard rejected every real database.** It required `message.id` and a `chat_message` table. Real databases use `message.ROWID` and `chat_message_join`. A permission denial also surfaced as "cannot introspect table message", which looked like a schema problem. The guard accepts either spelling and still fails closed on anything unknown.
-3. **About a third of messages were unreadable.** On recent macOS, `text` is NULL for most messages and the text lives in the `attributedBody` blob (5,142 of 16,028 text-bearing rows here). Added `AttributedBodyDecoder` (typedstream `NSString` payload). Against the real database it reads **4,901 of 5,142 (95%)**; the other 241 are attachment-only messages.
+3. **About a third of messages were unreadable.** On recent macOS, `text` is NULL for most messages and the text lives in the `attributedBody` blob (5,142 of 16,028 ordinary rows here: 10,884 with `text`, 5,142 blob-only, 2 empty). Added `AttributedBodyDecoder` (typedstream `NSString` payload). Against the real database it reads **4,901 of 5,142 (95%)**; the other 241 are attachment-only messages.
 4. **One unreadable row aborted the whole scan**, and skipping alone would have stalled the cursor. Rows with no readable body or a NULL guid/peer/service are now skipped and counted, and `scan()` reports the highest row scanned so the engine and the importer move past them.
-5. The wrong key name in the guard also meant any real run failed before reading a single row; both are covered by 15 new tests (decoder, real-shaped schema, all-unreadable batch, engine cursor). Apple suite: 128 tests, 0 failures (`scripts/test-apple.sh` expected counts updated, 74 to 89 relay tests).
+5. **Tests:** 15 new ones (decoder, real-shaped schema, all-unreadable batch, engine cursor). Apple suite 128 tests, 0 failures; `scripts/test-apple.sh` expected counts updated (relay 74 to 89).
 
 ## Found along the way (not relay)
 
