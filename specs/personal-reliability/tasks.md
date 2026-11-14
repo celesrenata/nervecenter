@@ -60,6 +60,6 @@ Legend: `[ ]` open · `[x]` done · `[-]` in progress · `[!]` live-verification
 
 ## P2-QA + Evidence
 
-- [ ] `tests/backend/test_p2_e2e.py` durable e2e (SQLite): candidate → confirm → Today → restart → snooze sync → stale flag.
-- [ ] `docs/evidence/p2-live-gates.md`: gate matrix with UNVERIFIED status per gate.
-- [ ] Update `docs/implementation-status.yaml` with honest status (durable vs in-memory vs live-unverified).
+- [x] `tests/backend/test_p2_e2e.py` durable e2e (SQLite): candidate → confirm → Today → restart → snooze sync → stale flag. _Done 2026-11-14 for the bills path (email proposal → Add bill → Today → restart → confirm paid → handled; stale sweep; flagged mail blocked). Snooze sync not covered: bills have no snooze._
+- [x] `docs/evidence/p2-live-gates.md`: gate matrix with UNVERIFIED status per gate. _Done 2026-11-14._
+- [ ] Update `docs/implementation-status.yaml` with honest status (durable vs in-memory vs live-unverified). _Held: the file has someone else's uncommitted edits; the honest status is in `p2-live-gates.md`._
