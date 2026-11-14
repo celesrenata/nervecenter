@@ -500,6 +500,15 @@ async def wire_dependencies(target: FastAPI) -> None:
                         MailCampaignRepository(target.state.repository_registry.session_factory)
                     )
                     _bind_semantic_observer(target)
+                    # NS-ADR-095: bill candidates from LOW_PRIORITY mail
+                    # (own opt-in; inert without NERVE_BILL_CANDIDATE_SCOPES).
+                    from backend.bills.mail_candidates import (
+                        MailBillProposer,
+                        set_bill_proposer,
+                    )
+                    set_bill_proposer(
+                        MailBillProposer(target.state.repository_registry.bills)
+                    )
                     # Phase 2 wiring: explicitly start the flag-gated runner
                     # that sweeps and drains the scheduled jobs. Never reached
                     # with the flag OFF (no task, no construction).

@@ -369,6 +369,27 @@ class BillsRepository:
 
     # -- explicit accept → bill promotion (atomic) ---------------------------
 
+    async def override_candidate_fields(
+        self, candidate_id: str, overrides: dict[str, Any]
+    ) -> BillCandidateRow | None:
+        """Owner-supplied values for a PROPOSED candidate (fill a missing due
+        date, correct a payee). Each override is recorded at confidence 1.0
+        with ``source: "owner"`` and leaves ``needs_review``. ``None`` when the
+        candidate is absent or no longer proposed."""
+        async with self._sessions() as session:
+            candidate = await session.get(BillCandidateRow, candidate_id)
+            if candidate is None or candidate.status != "proposed":
+                return None
+            fields = dict(candidate.extracted_fields or {})
+            review = [f for f in (candidate.needs_review or []) if f not in overrides]
+            for name, value in overrides.items():
+                fields[name] = {"value": value, "confidence": 1.0, "source": "owner"}
+            candidate.extracted_fields = fields
+            candidate.needs_review = review
+            candidate.updated_at = datetime.now(UTC)
+            await session.commit()
+            return candidate
+
     async def accept_candidate(
         self, candidate_id: str
     ) -> tuple[BillCandidateRow, BillRow] | None:

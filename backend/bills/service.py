@@ -534,6 +534,16 @@ class BillService:
             "bill": self._bill_dict(bill),
         }
 
+    async def accept_candidate_with(
+        self, candidate_id: str, overrides: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Apply owner overrides (if any), then accept. ``None`` when absent,
+        not proposed, or still missing payee / amount / due date."""
+        if overrides:
+            if await self._repo.override_candidate_fields(candidate_id, overrides) is None:
+                return None
+        return await self.accept_candidate(candidate_id)
+
     async def reject_candidate(self, candidate_id: str) -> dict[str, Any] | None:
         row = await self._repo.set_candidate_status(candidate_id, "rejected")
         return self._candidate_dict(row) if row is not None else None

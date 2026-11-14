@@ -526,6 +526,8 @@ class MailSecurityWorker:
         self._lap(LatencyStage.PERSIST, lap)
         await self._record_campaign(job, content_ref=content_ref, evidence=evidence)
         await self._observe_semantics(job, evidence=evidence, assessment=assessment)
+        await self._propose_bill(job, content_ref=content_ref, evidence=evidence,
+                                 assessment=assessment)
         log.info(
             "mail_security.job_done",
             trace_id=safe_trace_id(job.id),
@@ -571,6 +573,31 @@ class MailSecurityWorker:
             )
         except Exception as exc:  # noqa: BLE001 - SHADOW signal must never fail a job
             log.warning("mail_security.campaign_record_failed", error_type=type(exc).__name__)
+
+    async def _propose_bill(
+        self, job: Any, *, content_ref: str | None, evidence: ParsedEvidence,
+        assessment: SecurityAssessment,
+    ) -> None:
+        """Bill candidate from this email (NS-ADR-095), after the verdict commits.
+
+        Inert unless a proposer is bound and the account is opted in. Only
+        LOW_PRIORITY mail qualifies (the proposer checks); it never changes the
+        committed verdict and a failure never fails the job.
+        """
+        from backend.bills.mail_candidates import get_bill_proposer
+
+        proposer = get_bill_proposer()
+        if proposer is None:
+            return
+        try:
+            await proposer.propose(
+                job.account_scope,
+                content_ref=content_ref,
+                evidence=evidence,
+                disposition=assessment.policy.disposition.value,
+            )
+        except Exception as exc:  # noqa: BLE001 - a proposal must never fail a job
+            log.warning("mail_security.bill_proposal_failed", error_type=type(exc).__name__)
 
     async def _observe_semantics(
         self, job: Any, *, evidence: ParsedEvidence, assessment: SecurityAssessment

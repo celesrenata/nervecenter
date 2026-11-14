@@ -499,3 +499,70 @@ async def patch_bill(request: Request, bill_id: str, body: BillPatchRequest) -> 
     if bill is None:
         raise HTTPException(status_code=404, detail="bill not found")
     return {"bill": _with_level(bill), "executed": True}
+
+
+# -- bill candidates proposed from mail (NS-ADR-095) ---------------------------
+
+
+class CandidateAcceptRequest(BaseModel):
+    """Optional owner corrections applied before acceptance."""
+
+    payee: str | None = Field(default=None, min_length=1, max_length=200)
+    amount_cents: int | None = Field(default=None, gt=0, le=10_000_000_00)
+    due_at: datetime | None = None
+
+
+@router.get("/candidates")
+async def list_candidates(request: Request, status: str = "proposed") -> JSONResponse:
+    """Bill candidates (default: open proposals). Proposals come from
+    LOW_PRIORITY mail only and never become bills without an accept."""
+    if _registry(request) is None:
+        return _degraded_response()
+    if status not in ("proposed", "accepted", "rejected", "all"):
+        raise HTTPException(status_code=422, detail="unknown candidate status")
+    svc = _service(request)
+    assert svc is not None
+    rows = await svc.list_candidates(status=None if status == "all" else status)
+    return {"candidates": rows, "count": len(rows), "executed": True}
+
+
+@router.post("/candidates/{candidate_id}/accept")
+async def accept_candidate(
+    request: Request, candidate_id: str, body: CandidateAcceptRequest | None = None
+) -> JSONResponse:
+    """Explicit owner action: the candidate becomes a pending bill. 409 when
+    a required field (payee, amount, due date) is still missing."""
+    if _registry(request) is None:
+        return _degraded_response()
+    svc = _service(request)
+    assert svc is not None
+    if await svc.get_candidate(candidate_id) is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    overrides: dict[str, Any] = {}
+    if body is not None:
+        if body.payee is not None:
+            overrides["payee"] = body.payee.strip()
+        if body.amount_cents is not None:
+            overrides["amount_cents"] = body.amount_cents
+        if body.due_at is not None:
+            overrides["due_date"] = body.due_at.isoformat()
+    result = await svc.accept_candidate_with(candidate_id, overrides)
+    if result is None:
+        raise HTTPException(
+            status_code=409,
+            detail="candidate is not open, or payee / amount / due date is still missing",
+        )
+    return {"candidate": result["candidate"], "bill": _with_level(result["bill"]),
+            "executed": True}
+
+
+@router.post("/candidates/{candidate_id}/reject")
+async def reject_candidate(request: Request, candidate_id: str) -> JSONResponse:
+    if _registry(request) is None:
+        return _degraded_response()
+    svc = _service(request)
+    assert svc is not None
+    row = await svc.reject_candidate(candidate_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="candidate not found")
+    return {"candidate": row, "executed": True}
