@@ -194,13 +194,18 @@ func runLaunchctl(_ args: [String]) -> (status: Int32, output: String) {
     } catch {
         return (-1, "exec failed: \(error.localizedDescription)")
     }
-    p.waitUntilExit()
+    // Drain the pipe BEFORE waiting: a child that writes more than the pipe
+    // buffer (64 KiB) blocks until someone reads, so waiting first deadlocks
+    // (seen live: `launchctl print gui/501 <label>` is ~135 KB and hung `health`).
     let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    p.waitUntilExit()
     return (p.terminationStatus, String(data: data, encoding: .utf8) ?? "")
 }
 
 func launchAgentIsLoaded() -> Bool {
-    let (status, output) = runLaunchctl(["print", "gui/\(getuid())", kAgentLabel])
+    // One service target `gui/<uid>/<label>`. Passing the domain and label as
+    // two arguments prints the whole GUI domain (~135 KB) instead of one service.
+    let (status, output) = runLaunchctl(["print", "gui/\(getuid())/\(kAgentLabel)"])
     return status == 0 && output.contains(kAgentLabel)
 }
 
@@ -336,6 +341,15 @@ case "status":
         log("schema      : recognizable (user_version=\(schema)) — read-only")
         log("outbox      : \(config.outboxPath.path)")
         log("queued      : \(backlog) pending, cursor=\(cursor), store max_id=\(maxID)")
+        // Counts only (no content): how many rows carry readable text vs an
+        // attributedBody-only blob, so an unreadable-body gap is visible.
+        let shape = try engine.store.shape()
+        log("shape       : text_rows=\(shape.textRows) body_only_rows=\(shape.bodyOnlyRows) "
+            + "empty_rows=\(shape.emptyRows) attributedBody_column=\(shape.hasAttributedBody) "
+            + "newest_date_digits=\(shape.newestDateDigits)")
+        let decode = try engine.store.bodyDecodeStats()
+        log("body decode : readable=\(decode.decodable) unreadable=\(decode.undecodable) "
+            + "(attributedBody-only rows; counts only)")
         log("target      : \(config.baseURL.absoluteString)")
         // D5' channel planes — local-only state (status makes no network
         // calls). Disabled planes are shown so the opt-in surface is
@@ -778,8 +792,12 @@ case "import":
         var totalRejected = 0
 
         while true {
-            let rows = try store.tail(afterCursor: lastID, limit: batchSize)
-            if rows.isEmpty { break }
+            let scan = try store.scan(afterCursor: lastID, limit: batchSize)
+            let rows = scan.rows
+            // Done only when nothing at all was scanned; a batch of rows that
+            // were all unreadable still advances the cursor below.
+            if scan.scannedMaxID <= lastID { break }
+            totalRejected += scan.unreadable
             var messages: [[String: Any]] = []
             for raw in rows {
                 do {
@@ -804,7 +822,7 @@ case "import":
                     totalRejected += 1  // fail closed per row (unparsable)
                 }
             }
-            lastID = rows.map(\.id).max() ?? lastID
+            lastID = max(rows.map(\.id).max() ?? lastID, scan.scannedMaxID)
             if !messages.isEmpty {
                 do {
                     let result = try await relayPost(url, token: storedToken, body: [

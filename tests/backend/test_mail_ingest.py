@@ -517,6 +517,49 @@ class TestWorkerPoll:
         assert conn.last_success_at == first  # not erased, not advanced
         assert conn.last_attempt_at is not None and conn.operational_status == "error"
 
+    # -- import_jobs must not grow on empty polls ---------------------------
+
+    async def test_empty_polls_do_not_open_new_import_jobs(self, harness) -> None:
+        """Live bug: every 30 s poll opened a fresh job row (53,905 rows, 164 MB)."""
+        imports = harness.registry.imports
+        done = ("done",)
+        worker = _worker(harness.registry, harness.store, harness.conn,
+                         transport=StubMailTransport(items=[_make_item("<1@corp>")],
+                                                     next_cursor={"uid": 1}),
+                         seam=FakeSeam())
+        await worker.poll_once()  # real mail: the first job, completed
+        assert await imports.count_import_jobs(harness.conn.id, states=done) == 1
+        quiet = _worker(harness.registry, harness.store, harness.conn,
+                        transport=StubMailTransport(items=[], next_cursor={"uid": 1}),
+                        seam=FakeSeam())
+        for _ in range(5):
+            await quiet.poll_once()
+        assert await imports.count_import_jobs(harness.conn.id, states=done) == 1, (
+            "five empty polls must not add job rows"
+        )
+
+    async def test_new_mail_after_a_done_job_still_opens_one_new_job(self, harness) -> None:
+        imports = harness.registry.imports
+        done = ("done",)
+        first = _worker(harness.registry, harness.store, harness.conn,
+                        transport=StubMailTransport(items=[_make_item("<1@corp>")],
+                                                    next_cursor={"uid": 1}), seam=FakeSeam())
+        await first.poll_once()
+        second = _worker(harness.registry, harness.store, harness.conn,
+                         transport=StubMailTransport(items=[_make_item("<2@corp>")],
+                                                     next_cursor={"uid": 2}), seam=FakeSeam())
+        await second.poll_once()
+        assert await imports.count_import_jobs(harness.conn.id, states=done) == 2
+
+    async def test_a_first_empty_poll_still_records_the_initial_job_once(self, harness) -> None:
+        imports = harness.registry.imports
+        quiet = _worker(harness.registry, harness.store, harness.conn,
+                        transport=StubMailTransport(items=[], next_cursor={"uid": 0}),
+                        seam=FakeSeam())
+        for _ in range(3):
+            await quiet.poll_once()
+        assert await imports.count_import_jobs(harness.conn.id, states=("done",)) == 1
+
     async def test_connect_error_maps_to_connect_failed(self, harness) -> None:
         transport = StubMailTransport(raise_exc=TransportConnectError("no route to host"))
         worker = _worker(harness.registry, harness.store, harness.conn, transport=transport, seam=FakeSeam())

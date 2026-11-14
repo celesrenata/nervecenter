@@ -109,32 +109,43 @@ public final class MessageStore {
     /// refuses to run rather than guess.
     public func assertSchema() throws {
         guard let db else { throw StoreError.openFailed("store not opened") }
-        let required: [(table: String, column: String)] = [
-            ("message", "id"),
-            ("message", "guid"),
-            ("message", "text"),
-            ("message", "is_from_me"),
-            ("message", "service"),
-            ("message", "date"),
-            ("message", "item_type"),
-            ("handle", "id"),
-            ("chat_message", "message_id"),
+        // Real Messages databases differ from the original fixtures in two
+        // names: the message key is `ROWID` (not `id`), and the chat link table
+        // is `chat_message_join` (not `chat_message`). Either spelling is
+        // accepted; a table or column missing under every spelling still
+        // refuses (fail closed), and an unknown table never matches by accident.
+        let required: [(tables: [String], anyOf: [String])] = [
+            (["message"], ["ROWID", "id"]),
+            (["message"], ["guid"]),
+            (["message"], ["text"]),
+            (["message"], ["is_from_me"]),
+            (["message"], ["service"]),
+            (["message"], ["date"]),
+            (["message"], ["item_type"]),
+            (["handle"], ["id"]),
+            (["chat_message_join", "chat_message"], ["message_id"]),
         ]
-        for (table, column) in required {
-            var stmt: OpaquePointer?
-            let q = "PRAGMA table_info(\(table))"
-            guard sqlite3_prepare_v2(db, q, -1, &stmt, nil) == SQLITE_OK, let stmt else {
-                throw StoreError.schemaIncompatible("cannot introspect table \(table)")
-            }
-            defer { sqlite3_finalize(stmt) }
+        for (tables, anyOf) in required {
             var found = false
-            while sqlite3_step(stmt) == SQLITE_ROW {
-                let name = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) }
-                if name == column { found = true; break }
+            for table in tables {
+                var stmt: OpaquePointer?
+                let q = "PRAGMA table_info(\(table))"
+                guard sqlite3_prepare_v2(db, q, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+                    throw StoreError.schemaIncompatible("cannot introspect table \(table)")
+                }
+                defer { sqlite3_finalize(stmt) }
+                while sqlite3_step(stmt) == SQLITE_ROW {
+                    let name = sqlite3_column_text(stmt, 1).flatMap { String(cString: $0) }
+                    if let name, anyOf.contains(where: { $0.caseInsensitiveCompare(name) == .orderedSame }) {
+                        found = true
+                        break
+                    }
+                }
+                if found { break }
             }
             if !found {
                 throw StoreError.schemaIncompatible(
-                    "table \(table) is missing column \(column) — refusing to parse an unrecognized schema"
+                    "table \(tables.joined(separator: " or ")) is missing column \(anyOf.joined(separator: " or ")) — refusing to parse an unrecognized schema"
                 )
             }
         }
@@ -152,21 +163,35 @@ public final class MessageStore {
         return ncCStr(sqlite3_column_text(stmt, 0)) ?? "unknown"
     }
 
-    /// Tail rows with `id > cursor`. Returns at most `limit` rows, ordered
-    /// by `id ASC` (chronological within the store's own ordering).
+    /// Result of one scan: the readable rows, plus how far the scan got.
     ///
-    /// Only text rows are returned (`item_type = 0`); tapbacks, media, and
-    /// system rows are intentionally skipped (MVP). Rows with an empty
-    /// `text` are dropped here so the engine never forwards empty bodies.
-    public func tail(afterCursor cursor: Int64, limit: Int) throws -> [RawMessage] {
+    /// `scannedMaxID` is the highest row id examined, INCLUDING rows that were
+    /// skipped as unreadable. Callers advance their cursor to it, so a batch
+    /// made only of unreadable rows can never stall the relay.
+    public struct TailScan: Equatable {
+        public var rows: [RawMessage]
+        public var scannedMaxID: Int64
+        public var unreadable: Int
+    }
+
+    /// Tail rows with `ROWID > cursor`, at most `limit` scanned, in id order.
+    ///
+    /// Only `item_type = 0` rows are considered (tapbacks, media and system
+    /// rows are skipped). The body is `text` when present, otherwise the text
+    /// decoded from `attributedBody` (see `AttributedBodyDecoder`).
+    /// A row with no readable body, or a NULL guid / peer / service, is
+    /// skipped and counted in `unreadable`; it never aborts the scan.
+    public func scan(afterCursor cursor: Int64, limit: Int) throws -> TailScan {
         guard let db else { throw StoreError.openFailed("store not opened") }
+        let body = try messageHasColumn("attributedBody")
         let sql = """
-            SELECT m.id, m.guid, h.id, m.is_from_me, m.text, m.service, m.date
+            SELECT m.ROWID, m.guid, h.id, m.is_from_me, m.text, m.service, m.date,
+                   \(body ? "m.attributedBody" : "NULL")
               FROM message m
               JOIN handle h ON m.handle_id = h.ROWID
-             WHERE m.id > ?
+             WHERE m.ROWID > ?
                AND m.item_type = 0
-             ORDER BY m.id ASC
+             ORDER BY m.ROWID ASC
              LIMIT ?
         """
         var stmt: OpaquePointer?
@@ -178,18 +203,27 @@ public final class MessageStore {
         sqlite3_bind_int(stmt, 2, Int32(limit))
 
         var out: [RawMessage] = []
+        var scannedMax = cursor
+        var unreadable = 0
         while sqlite3_step(stmt) == SQLITE_ROW {
             let id = sqlite3_column_int64(stmt, 0)
+            scannedMax = max(scannedMax, id)
             let guid = ncCStr(sqlite3_column_text(stmt, 1))
             let peer = ncCStr(sqlite3_column_text(stmt, 2))
             let isFromMe = sqlite3_column_int(stmt, 3)
-            let bodyText = ncCStr(sqlite3_column_text(stmt, 4))
             let service = ncCStr(sqlite3_column_text(stmt, 5))
             let dateNanos = sqlite3_column_int64(stmt, 6)
-            guard let guid, let peer, let bodyText, let service else {
-                throw StoreError.rowError("row \(id) has NULL in a required column")
+            var bodyText = ncCStr(sqlite3_column_text(stmt, 4)) ?? ""
+            if bodyText.isEmpty, sqlite3_column_type(stmt, 7) == SQLITE_BLOB {
+                let n = Int(sqlite3_column_bytes(stmt, 7))
+                if n > 0, let ptr = sqlite3_column_blob(stmt, 7) {
+                    bodyText = AttributedBodyDecoder.decode(Data(bytes: ptr, count: n)) ?? ""
+                }
             }
-            if bodyText.isEmpty { continue }
+            guard let guid, let peer, let service, !bodyText.isEmpty else {
+                unreadable += 1
+                continue
+            }
             out.append(RawMessage(
                 id: id,
                 guid: guid,
@@ -200,7 +234,96 @@ public final class MessageStore {
                 dateNanos: dateNanos
             ))
         }
-        return out
+        return TailScan(rows: out, scannedMaxID: scannedMax, unreadable: unreadable)
+    }
+
+    /// Readable rows only. Prefer `scan`, which also reports how far it
+    /// got; this form is kept for callers that only need the rows.
+    public func tail(afterCursor cursor: Int64, limit: Int) throws -> [RawMessage] {
+        try scan(afterCursor: cursor, limit: limit).rows
+    }
+
+    /// Whether `message` has a column of this name (case-insensitive).
+    func messageHasColumn(_ name: String) throws -> Bool {
+        guard let db else { throw StoreError.openFailed("store not opened") }
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, "PRAGMA table_info(message)", -1, &stmt, nil) == SQLITE_OK,
+              let stmt else { throw StoreError.schemaIncompatible("cannot introspect table message") }
+        defer { sqlite3_finalize(stmt) }
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            if let n = sqlite3_column_text(stmt, 1).flatMap({ String(cString: $0) }),
+               n.caseInsensitiveCompare(name) == .orderedSame { return true }
+        }
+        return false
+    }
+
+    /// Counts-only: of the rows whose text lives only in `attributedBody`,
+    /// how many the decoder can read. The text is decoded in memory and
+    /// discarded; only the two counts leave this function.
+    public func bodyDecodeStats() throws -> (decodable: Int64, undecodable: Int64) {
+        guard let db else { throw StoreError.openFailed("store not opened") }
+        guard try messageHasColumn("attributedBody") else { return (0, 0) }
+        let sql = """
+            SELECT attributedBody FROM message
+             WHERE item_type = 0 AND (text IS NULL OR text = '') AND attributedBody IS NOT NULL
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt
+        else { throw StoreError.openFailed(String(cString: sqlite3_errmsg(db))) }
+        defer { sqlite3_finalize(stmt) }
+        var ok: Int64 = 0
+        var bad: Int64 = 0
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let n = Int(sqlite3_column_bytes(stmt, 0))
+            if n > 0, let ptr = sqlite3_column_blob(stmt, 0),
+               AttributedBodyDecoder.decode(Data(bytes: ptr, count: n)) != nil {
+                ok += 1
+            } else {
+                bad += 1
+            }
+        }
+        return (ok, bad)
+    }
+
+    /// Counts-only description of the store's shape, for `status`. Never
+    /// selects message content: only COUNTs of NULL/non-NULL predicates and
+    /// the digit length of the newest `date` (to tell seconds from
+    /// nanoseconds). `bodyOnly` is rows with no `text` but an
+    /// `attributedBody` blob (how recent macOS stores most message text).
+    public struct Shape: Equatable {
+        public var textRows: Int64
+        public var bodyOnlyRows: Int64
+        public var emptyRows: Int64
+        public var hasAttributedBody: Bool
+        public var newestDateDigits: Int
+    }
+
+    public func shape() throws -> Shape {
+        guard let db else { throw StoreError.openFailed("store not opened") }
+        let body = try messageHasColumn("attributedBody")
+        let sql = """
+            SELECT
+              COALESCE(SUM(text IS NOT NULL AND text <> ''), 0),
+              \(body ? "COALESCE(SUM((text IS NULL OR text = '') AND attributedBody IS NOT NULL), 0)" : "0"),
+              COALESCE(SUM((text IS NULL OR text = '') \(body ? "AND attributedBody IS NULL" : "")), 0),
+              COALESCE(LENGTH(CAST(MAX(date) AS TEXT)), 0)
+              FROM message WHERE item_type = 0
+        """
+        var stmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK, let stmt
+        else { throw StoreError.openFailed(String(cString: sqlite3_errmsg(db))) }
+        defer { sqlite3_finalize(stmt) }
+        guard sqlite3_step(stmt) == SQLITE_ROW else {
+            return Shape(textRows: 0, bodyOnlyRows: 0, emptyRows: 0,
+                         hasAttributedBody: body, newestDateDigits: 0)
+        }
+        return Shape(
+            textRows: sqlite3_column_int64(stmt, 0),
+            bodyOnlyRows: sqlite3_column_int64(stmt, 1),
+            emptyRows: sqlite3_column_int64(stmt, 2),
+            hasAttributedBody: body,
+            newestDateDigits: Int(sqlite3_column_int64(stmt, 3))
+        )
     }
 
     /// The highest `id` currently in the store — used by `init` to seed
@@ -208,7 +331,7 @@ public final class MessageStore {
     public func maxID() throws -> Int64 {
         guard let db else { throw StoreError.openFailed("store not opened") }
         var stmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(id), 0) FROM message", -1, &stmt, nil) == SQLITE_OK,
+        guard sqlite3_prepare_v2(db, "SELECT COALESCE(MAX(ROWID), 0) FROM message", -1, &stmt, nil) == SQLITE_OK,
               let stmt
         else { throw StoreError.openFailed(String(cString: sqlite3_errmsg(db))) }
         defer { sqlite3_finalize(stmt) }

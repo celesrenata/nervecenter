@@ -1376,6 +1376,13 @@ class MailIngestWorker:
         # reused — open a fresh running job for this poll's progress.
         if job is not None and str(getattr(job, "state", "")) in ("done", "failed"):
             job = None
+        if job is None and ingested <= 0 and job_id:
+            # Nothing new this poll and the connection already has a finished
+            # job: do not open another row. Live, every empty 30 s poll opened
+            # (and closed) a fresh job: ~5,700 rows/day per mailbox, 53,905
+            # rows and 164 MB after nine days. A first-ever poll (no job id
+            # yet) still records its job, and new mail still opens a new one.
+            return
         if job is None:
             job = await self._imports.create_import_job(
                 self.connection_id, self.cursor_kind, state="running"

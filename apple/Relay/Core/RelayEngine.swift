@@ -122,7 +122,9 @@ public final class RelayEngine {
 
         // 1) Capture: tail rows past the capture cursor (see highWaterMark).
         let cursor = try highWaterMark()
-        let rows = try store.tail(afterCursor: cursor, limit: config.batchSize)
+        let scan = try store.scan(afterCursor: cursor, limit: config.batchSize)
+        let rows = scan.rows
+        cycle.skipped += scan.unreadable
         var payloads: [String] = []
         for raw in rows {
             do {
@@ -136,7 +138,12 @@ public final class RelayEngine {
         if !payloads.isEmpty {
             // Attribute the batch to the highest row id so the cursor
             // never re-captures a partially-sent batch.
-            try outbox.enqueue(storeID: rows.map(\.id).max() ?? 0, payloads: payloads)
+            try outbox.enqueue(storeID: max(rows.map(\.id).max() ?? 0, scan.scannedMaxID), payloads: payloads)
+        } else if scan.scannedMaxID > cursor {
+            // Everything scanned was unreadable or skipped: still move past
+            // it, or the same all-skipped batch would be re-read forever and
+            // newer messages would never be reached.
+            try outbox.setCursor(scan.scannedMaxID)
         }
         cycle.captured = payloads.count
         cycle.maxStoreID = try store.maxID()
