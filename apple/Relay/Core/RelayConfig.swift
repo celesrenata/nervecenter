@@ -22,6 +22,12 @@ public struct RelayConfig: Sendable, Equatable {
     /// Phase 4 D5' capture planes (email/voicemail/calendar/contacts).
     /// Disabled by default; tokens are env-only.
     public var channels: ChannelConfigs
+    /// When set, the engine posts to `POST /api/relay/messages` (batch format,
+    /// authenticated with the paired DEVICE token in `token`, durable and
+    /// deduplicated server-side) instead of the legacy unauthenticated
+    /// `POST /api/messages/ingest`. Set by `run` from the pairing identity;
+    /// never read from the config file.
+    public var relayDeviceID: String?
 
     public static let defaultStore = "~/Library/Messages/chat.db"
     public static let defaultOutbox = "~/.nervcenter/relay/outbox.db"
@@ -34,7 +40,8 @@ public struct RelayConfig: Sendable, Equatable {
         outboxPath: URL,
         batchSize: Int = 200,
         interval: TimeInterval = 5,
-        channels: ChannelConfigs = ChannelConfigs()
+        channels: ChannelConfigs = ChannelConfigs(),
+        relayDeviceID: String? = nil
     ) {
         self.baseURL = baseURL
         self.token = token
@@ -43,6 +50,7 @@ public struct RelayConfig: Sendable, Equatable {
         self.batchSize = max(1, batchSize)
         self.interval = max(1, interval)
         self.channels = channels
+        self.relayDeviceID = relayDeviceID
     }
 
     /// Durable outbox path for one capture plane — a separate SQLite file

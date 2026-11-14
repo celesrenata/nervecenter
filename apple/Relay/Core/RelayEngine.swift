@@ -206,19 +206,53 @@ public final class RelayEngine {
 
     // -- wire helpers ------------------------------------------------------------
 
-    /// `POST {base}/api/messages/ingest` with bearer auth.
+    /// The request for one outbox entry.
+    ///
+    /// Relay-device mode (`config.relayDeviceID` set): `POST {base}/api/relay/messages`
+    /// with the device token and a one-message batch. Otherwise the legacy
+    /// `POST {base}/api/messages/ingest`.
     static func makeRequest(entry: OutboxEntry, config: RelayConfig) -> URLRequest {
         var url = config.baseURL
         url.appendPathComponent("api")
-        url.appendPathComponent("messages")
-        url.appendPathComponent("ingest")
+        var body = entry.payloadJSON.data(using: .utf8)
+        if let device = config.relayDeviceID {
+            url.appendPathComponent("relay")
+            url.appendPathComponent("messages")
+            body = relayBatchBody(payloadJSON: entry.payloadJSON, deviceID: device) ?? body
+        } else {
+            url.appendPathComponent("messages")
+            url.appendPathComponent("ingest")
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
-        request.httpBody = entry.payloadJSON.data(using: .utf8)
+        request.httpBody = body
         request.timeoutInterval = 15
         return request
+    }
+
+    /// Convert one legacy ingest payload into the relay endpoint's batch shape
+    /// (`timestamp` becomes `received_at`). `nil` when the payload is not the
+    /// expected JSON object, in which case the caller sends it unchanged and
+    /// the server rejects it loudly.
+    static func relayBatchBody(payloadJSON: String, deviceID: String) -> Data? {
+        guard let raw = payloadJSON.data(using: .utf8),
+              let obj = (try? JSONSerialization.jsonObject(with: raw)) as? [String: Any],
+              let messageID = obj["message_id"] as? String
+        else { return nil }
+        let message: [String: Any] = [
+            "message_id": messageID,
+            "channel": obj["channel"] as? String ?? "imessage",
+            // The relay endpoint stores the value as given and imports use lowercase.
+            "direction": (obj["direction"] as? String ?? "inbound").lowercased(),
+            "peer_identifier": obj["peer_identifier"] as? String ?? "",
+            "peer_name": (obj["peer_name"] as? String).map { $0 as Any } ?? NSNull(),
+            "body": obj["body"] as? String ?? "",
+            "received_at": obj["timestamp"] as? String ?? "",
+            "source": obj["source"] as? String ?? "personal-relay",
+        ]
+        return try? JSONSerialization.data(withJSONObject: ["device_id": deviceID, "messages": [message]])
     }
 
     /// Encode a normalized message into the backend `IngestRequest`
@@ -247,13 +281,29 @@ public final class RelayEngine {
         return String(data: try! encoder.encode(p), encoding: .utf8) ?? "{}"
     }
 
-    /// IngestResponse: `{"duplicate": true/false, ...}` — true means
-    /// this exact message_id was already ingested (a replay, §48).
+    /// Whether the server already had this message (a replay, §48).
+    /// Legacy ingest answers `{"duplicate": true}`; the relay endpoint answers
+    /// `{"ok": true, "stored": 0, "skipped": 1}`.
     static func isDuplicate(_ body: Data) -> Bool {
         guard let obj = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             return false
         }
-        return obj["duplicate"] as? Bool == true
+        if obj["duplicate"] as? Bool == true { return true }
+        if let stored = obj["stored"] as? Int, let skipped = obj["skipped"] as? Int {
+            return stored == 0 && skipped > 0
+        }
+        return false
+    }
+
+    /// Continue exactly where an import ended: adopt `cursor` as the capture
+    /// cursor when none is set yet. Without this the first `run` seeds at the
+    /// newest message and silently skips whatever arrived between the import
+    /// and the first run. Never moves a cursor backwards.
+    @discardableResult
+    public func adoptCursorIfUnset(_ cursor: Int64) throws -> Bool {
+        guard cursor > 0, try outbox.cursor() == 0 else { return false }
+        try outbox.setCursor(cursor)
+        return true
     }
 
     /// Capture cursor: the persisted outbox cursor — the highest chat.db

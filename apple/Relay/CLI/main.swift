@@ -392,9 +392,24 @@ case "status":
 case "run":
     let once = args.contains("--once")
     do {
-        let config = try RelayConfig.load(path: nil)
+        var config = try RelayConfig.load(path: nil)
+        // Paired device => post to the authenticated, durable relay endpoint
+        // with the device token. An identity without its token is an error
+        // (re-pair), never a silent fall back to the unauthenticated legacy path.
+        if let id = try? loadIdentity() {
+            guard let deviceToken = loadStoredToken(deviceID: id.deviceID) else {
+                fail(.config, "paired as \(id.deviceID) but the device token is missing: re-run `nerve-personal-relay pair`")
+            }
+            config.relayDeviceID = id.deviceID
+            config.token = deviceToken
+        }
         let engine = RelayEngine(config: config)
         let (schema, _) = try engine.open()
+        // Continue from where the history import ended (if there was one).
+        if let imported = try? loadImportCursor(RelayConfig.expand(kImportCursorFile)),
+           (try? engine.adoptCursorIfUnset(imported)) == true {
+            log("capture cursor adopted from the import: \(imported)")
+        }
         // D5' channel planes — one engine per *enabled* channel. A channel
         // whose outbox cannot be opened is skipped (and logged) without
         // stopping the rest: each plane owns its durable outbox (§70).
@@ -424,7 +439,7 @@ case "run":
                 log("channel \(channel.rawValue): outbox unavailable (\(error)) — channel skipped this start")
             }
         }
-        log("relay starting: store=\(config.storePath.path) schema=v\(schema) target=\(config.baseURL.absoluteString) interval=\(config.interval)s channels=\(channelEngines.count) \(once ? "mode=once" : "mode=loop")")
+        log("relay starting: mode=\(config.relayDeviceID == nil ? "legacy-ingest" : "relay-device") store=\(config.storePath.path) schema=v\(schema) target=\(config.baseURL.absoluteString) interval=\(config.interval)s channels=\(channelEngines.count) \(once ? "mode=once" : "mode=loop")")
         while true {
             do {
                 let cycle = try await engine.runOnce()

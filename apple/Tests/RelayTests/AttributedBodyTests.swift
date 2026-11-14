@@ -5,7 +5,7 @@ import SQLite3
 /// A synthetic `attributedBody` typedstream blob carrying `text`. Only the bytes
 /// the decoder relies on are real: the `NSString` class marker, the `+` UTF-8
 /// type byte and the typedstream length prefix.
-private func blob(_ text: String, lengthPrefix: [UInt8]? = nil) -> Data {
+func blob(_ text: String, lengthPrefix: [UInt8]? = nil) -> Data {
     let utf8 = Array(text.utf8)
     var prefix = lengthPrefix
     if prefix == nil {
@@ -96,9 +96,9 @@ final class AttributedBodyDecoderTests: XCTestCase {
 
 // MARK: - a database shaped like a real chat.db
 
-private let nsv = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+let nsv = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-private func makeRealShapedStore(at url: URL) throws -> OpaquePointer {
+func makeRealShapedStore(at url: URL) throws -> OpaquePointer {
     var db: OpaquePointer?
     guard sqlite3_open(url.path, &db) == SQLITE_OK, let db else { throw NSError(domain: "t", code: 1) }
     let ddl = """
@@ -121,7 +121,7 @@ private func makeRealShapedStore(at url: URL) throws -> OpaquePointer {
     return db
 }
 
-private func insert(_ db: OpaquePointer, guid: String, text: String?, body: Data?, service: String? = "iMessage") throws {
+func insert(_ db: OpaquePointer, guid: String, text: String?, body: Data?, service: String? = "iMessage") throws {
     var stmt: OpaquePointer?
     let sql = "INSERT INTO message (guid, text, handle_id, service, date, item_type, attributedBody) VALUES (?,?,1,?,?,0,?)"
     guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else { throw NSError(domain: "t", code: 3) }
