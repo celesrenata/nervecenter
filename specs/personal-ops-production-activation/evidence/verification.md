@@ -26,7 +26,7 @@ Legend: PASS LIVE = observed on production. PASS SYNTHETIC = proven by tests or 
 | P1-105 worker reconcile on create/enable/disable/delete | **PASS SYNTHETIC** | `MailIngestSupervisor.reconcile_once`; 9 tests: start on add, stop on disable and removal, restart on re-enable, no restart needed, survives DB failure. *Live:* 2 Gmail connections, both healthy |
 | P1-106 Gmail OAuth hardening | PARTIAL | PKCE verifier/challenge and state in `oauth.py`; the Graph provider not shown healthy is **UNVERIFIED**; live consented staging test not run |
 | P1-107 durable ingest / outbox boundary | **PASS SYNTHETIC** | commits `642e2b33`, `4f6fe4e3`, `55a2fbab` (stable id, durable-first reads, TOCTOU, pagination) |
-| P1-108 per-connector health | PARTIAL | `last_success_at`, `last_attempt_at` in calendar and Today; connections diagnostics endpoint exists; full set (cursor age, worker state, recovery action) not checked field by field |
+| P1-108 per-connector health | **FIXED 2026-11-14, PASS LIVE** (see update below); rest PARTIAL | `last_success_at`, `last_attempt_at` in calendar and Today; connections diagnostics endpoint exists; full set (cursor age, worker state, recovery action) not checked field by field |
 | P1-109 history imports | PARTIAL | Gmail history-expired handling and IMAP UIDVALIDITY reset exist in `mail_transport.py`; consent and progress UI not checked |
 | P1-110 two-mailbox smoke | **PASS LIVE (partly)** | two real Gmail accounts have run side by side for weeks with separate scopes and cursors; no dedicated smoke test exists |
 
@@ -66,3 +66,27 @@ Legend: PASS LIVE = observed on production. PASS SYNTHETIC = proven by tests or 
 ## What blocks "Production Activated" (P1-308)
 
 Needs the owner: **P1-004** approval, **P1-201 to P1-205** (M5 Max relay, Messages, physical iPhone/Watch), **P1-303/305/306** (controlled test mailboxes and staging outage drills). Buildable without the owner: **P1-101 and P1-102** (IMAP credential endpoint and wizard form), plus a connections-API owner-isolation negative test. No IMAP account exists today, so these two matter only if you add a non-Gmail mailbox.
+
+## Update 2026-11-14: P1-108 bug found and fixed
+
+**Found (live):** the two healthy Gmail connections had `last_success_at = NULL` and a last attempt about 9 days old, although polls succeeded every 30 s and mail arrived the same day. The continuous worker set `operational_status="healthy"` but never wrote `last_success_at` or `last_attempt_at`; only the manual "Sync Now" path did. So "healthy" was a stale label from connection time, and the Today screen reported "fresh" with no success on record. It could not have detected a silently dead account.
+
+**Fixed (`b485437d`, `mail_worker.py`):** every poll outcome stamps `last_attempt_at`; a successful poll (including an empty one) also stamps `last_success_at`. A failure never touches `last_success_at`, so the last real success stays on record and the 24 h stale window now works.
+- 5 new tests (success, empty poll, auth and connect failure, failure after success); verified to **fail on the original worker**.
+- One existing test (`test_health_reporting`) asserted the old behaviour ("the mail worker writes ... not last_attempt_at"). Updated to the corrected behaviour.
+- Full suite: 8803 passed. Deployed.
+- **Live check:** both accounts now show `last_success_at` 8 s and 28 s old, advancing across two reads 40 s apart; mail polling unaffected; no new errors.
+
+**P1-201 build side (this Mac is the M5 Max):** `NervePersonalRelay` release build compiles; an ad-hoc signature on a `/tmp` copy verifies (`codesign --verify --strict`); `help` lists init-config, status, run, install, uninstall, pair, health and `import --consent`. **Not installed.** Install needs Full Disk Access (only the owner can grant it) and then reads Messages history, which is the P1-004 approval.
+
+**New live observation:** a third connection row `632e3a89` (gmail, created 2026-11-14 04:01 UTC) is enabled but has no token, so it fails every poll with `connect_failed` and shows as "disconnected" on Today. Left in place pending the owner's decision.
+
+## Still needs the owner
+
+| Item | What only the owner can do |
+|---|---|
+| P1-004 + P1-201..203 | Approve reading Messages history; grant Full Disk Access; paste the pairing token |
+| P1-205 | Physical iPhone/Watch delivery test |
+| P1-305 | Send one self-addressed email with a deadline (a few seconds); the check afterwards is automated |
+| P1-306 | Not run: forced outages need a staging environment, and production is not used for drills |
+| DNS (NS-ADR-084) | Access to whoever controls the Route 53 zones |
