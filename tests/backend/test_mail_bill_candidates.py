@@ -239,3 +239,19 @@ async def test_a_proposer_crash_never_fails_the_security_job(harness, monkeypatc
         (job,) = (await s.execute(select(MailSecurityJobRow))).scalars().all()
         assert len((await s.execute(select(MailSecurityAssessmentRow))).scalars().all()) == 1
     assert job.state == "DONE"
+
+
+async def test_owner_tool_dry_run_repo_never_writes(registry) -> None:
+    from backend.owner_tools.propose_bills_existing import _DryRunRepo
+
+    dry = _DryRunRepo(registry.bills)
+    p = MailBillProposer(dry, clock=lambda: NOW)
+    import os
+
+    os.environ[ENV_BILL_CANDIDATE_SCOPES] = SCOPE
+    try:
+        assert await _propose(p, BILL) == "PROPOSED"
+    finally:
+        os.environ.pop(ENV_BILL_CANDIDATE_SCOPES, None)
+    assert dry.would_create == 1
+    assert await registry.bills.list_candidates() == []
