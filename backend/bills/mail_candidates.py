@@ -27,8 +27,15 @@ from typing import Any
 
 import structlog
 
-from backend.bills.extractor import BillSourceData, extract_bill_candidate
-from backend.bills.signal import bill_signal
+from backend.bills.extractor import (
+    NEEDS_REVIEW_THRESHOLD,
+    BillCandidateData,
+    BillSourceData,
+    extract_bill_candidate,
+    extract_bill_fields,
+    extract_payee,
+)
+from backend.bills.signal import BillSignal, bill_signal, plain_text
 
 log = structlog.get_logger(__name__)
 
@@ -78,13 +85,14 @@ class MailBillProposer:
         if await self._repo.candidate_exists_for_source(SOURCE_KIND, content_ref):
             return "ALREADY_PROPOSED"
         name = email.utils.parseaddr(_header(evidence, "from") or "")[0] or None
+        # Same cleaned text the gate matched (HTML removed): the raw text of
+        # some billers is markup and the extractor found no amount in it.
+        clean = plain_text(text)
         candidate = extract_bill_candidate(
-            BillSourceData(source_id=content_ref, source_kind=SOURCE_KIND, text=text,
+            BillSourceData(source_id=content_ref, source_kind=SOURCE_KIND, text=clean,
                            subject=subject, sender_display_name=name),
             now=self._clock(),
-        )
-        if candidate is None:
-            return "NOT_EXTRACTABLE"
+        ) or self._from_signal(content_ref, clean, subject, name, signal)
         fields = dict(candidate.extracted_fields)
         fields["amount_cents"] = {"value": signal.amount_cents, "confidence": 0.97,
                                   "anchor": signal.phrase}
@@ -106,6 +114,30 @@ class MailBillProposer:
             await self._repo.set_candidate_duplicate_of(row.id, duplicate_of)
         log.info("bills.mail_candidate_proposed", needs_review=len(candidate.needs_review))
         return "PROPOSED"
+
+    def _from_signal(
+        self, content_ref: str, text: str, subject: str | None, name: str | None,
+        signal: BillSignal,
+    ) -> BillCandidateData:
+        """The gate already found the owed amount; the extractor only failed to
+        read it in its own format. Keep the gate's amount and take payee and due
+        date from the extractor's field readers (payee defaults to a flagged
+        "Unknown biller", so the owner fills it in)."""
+        fields = {k: v for k, v in extract_bill_fields(text, now=self._clock(), subject=subject)
+                  .items() if k in ("due_date", "currency")}
+        payee, conf = extract_payee(name, text)
+        fields["payee"] = {"value": payee or "Unknown biller",
+                           "confidence": conf if payee else 0.45}
+        fields["currency"] = fields.get("currency") or {"value": "USD", "confidence": 0.85}
+        fields["amount_cents"] = {"value": signal.amount_cents, "confidence": 0.97}
+        return BillCandidateData(
+            source_kind=SOURCE_KIND,
+            source_id=content_ref,
+            extracted_fields=fields,
+            needs_review=sorted(k for k, v in fields.items()
+                                if v["confidence"] < NEEDS_REVIEW_THRESHOLD),
+            evidence=[],
+        )
 
     async def _find_duplicate(self, fields: dict[str, Any]) -> str | None:
         payee = (fields.get("payee") or {}).get("value")

@@ -87,6 +87,11 @@ def _plain(value: str) -> str:
     return html.unescape(_TAG.sub(" ", _STYLE.sub(" ", value)))
 
 
+def plain_text(value: str | None) -> str:
+    """The text the gate matches on: HTML removed, whitespace collapsed."""
+    return " ".join(_plain(value or "").split())
+
+
 def bill_signal(subject: str | None, text: str | None) -> BillSignal | None:
     """The anchored owed amount if this email reads as a bill, else ``None``."""
     body = " ".join(_plain(f"{subject or ''}\n{text or ''}").split())
@@ -103,4 +108,4 @@ def bill_signal(subject: str | None, text: str | None) -> BillSignal | None:
     return None
 
 
-__all__ = ["BillSignal", "bill_signal"]
+__all__ = ["BillSignal", "bill_signal", "plain_text"]

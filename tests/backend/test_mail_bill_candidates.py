@@ -255,3 +255,33 @@ async def test_owner_tool_dry_run_repo_never_writes(registry) -> None:
         os.environ.pop(ENV_BILL_CANDIDATE_SCOPES, None)
     assert dry.would_create == 1
     assert await registry.bills.list_candidates() == []
+
+
+async def test_html_heavy_bill_is_proposed_with_the_gate_amount(proposer, registry) -> None:
+    """Live case: the biller's text part is HTML; the extractor found no amount."""
+    body = ('<table><tr><td style="font-weight:bold">Amount due</td>'
+            '<td style="padding:4px">&nbsp;</td><td>&#36;2,500.00</td></tr></table>'
+            '<p>Payment is due by December 15, 2026.</p>')
+    raw = _mail("Your tuition statement", body, sender="Student Fiscal Services <sfs@uni.example>")
+    assert await _propose(proposer, raw) == "PROPOSED"
+    (row,) = await registry.bills.list_candidates()
+    assert row.extracted_fields["amount_cents"]["value"] == 250000
+    assert row.extracted_fields["payee"]["value"] == "Student Fiscal Services"
+    assert "due_date" in row.extracted_fields
+
+
+async def test_amount_in_a_form_the_extractor_misses_still_proposes(proposer, registry) -> None:
+    raw = _mail("Your statement", "Past due amount USD 482.17. Please pay to avoid fees.",
+                sender="Example Card <no-reply@card.example>")
+    assert await _propose(proposer, raw) == "PROPOSED"
+    (row,) = await registry.bills.list_candidates()
+    assert row.extracted_fields["amount_cents"]["value"] == 48217
+    assert row.extracted_fields["payee"]["value"] == "Example Card"
+
+
+async def test_no_payee_found_is_flagged_for_review(proposer, registry) -> None:
+    raw = _mail("Notice", "Amount due $30.00", sender="<billing@noname.example>")
+    assert await _propose(proposer, raw) == "PROPOSED"
+    (row,) = await registry.bills.list_candidates()
+    assert row.extracted_fields["payee"]["value"] in ("Unknown biller", "billing@noname.example")
+    assert "payee" in row.needs_review
