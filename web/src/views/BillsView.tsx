@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import {
   billsApi,
   type Bill,
+  type BillCandidate,
   type BillRecurrence,
   type BillStatus,
   type Calendar,
@@ -271,6 +272,87 @@ function AddBillForm({ busy, onAdded }: { busy: boolean; onAdded: () => void }) 
 
 // ─── monthly grid ───────────────────────────────────────────────────────────
 
+/**
+ * Bills proposed from incoming email (NS-ADR-095). A proposal is not a bill:
+ * nothing appears in the list or on Today until the user adds it. Mail held
+ * by the security review never produces one.
+ */
+function EmailProposals({
+  candidates,
+  busy,
+  onAccept,
+  onReject,
+}: {
+  candidates: BillCandidate[]
+  busy: boolean
+  onAccept: (id: string, dueAt?: string) => void
+  onReject: (id: string) => void
+}) {
+  const [dueById, setDueById] = useState<Record<string, string>>({})
+  if (candidates.length === 0) return null
+  return (
+    <section aria-label="Proposed from email" className="rounded border border-line bg-elevated p-4">
+      <h2 className="text-lg font-semibold text-primary">From your email</h2>
+      <p className="mt-1 text-sm text-secondary">
+        These look like bills. Nothing is added until you choose <em>Add bill</em>.
+      </p>
+      <ul className="mt-3 divide-y divide-line">
+        {candidates.map((c) => {
+          const f = c.extracted_fields
+          const payee = String(f.payee?.value ?? 'Unknown biller')
+          const cents = f.amount_cents?.value
+          const currency = String(f.currency?.value ?? 'USD')
+          const due = f.due_date?.value ? String(f.due_date.value) : null
+          const typedDue = dueById[c.id] ?? ''
+          const canAdd = Boolean(due) || typedDue !== ''
+          return (
+            <li key={c.id} data-testid="bill-proposal" className="flex flex-wrap items-center gap-3 py-3">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-primary">{payee}</div>
+                <div className="text-sm text-secondary tabular-nums">
+                  {cents !== undefined ? fmtAmount(String(cents), currency) : 'amount unknown'}
+                  {' · '}
+                  {due ? `due ${fmtDate(due)}` : 'no due date found'}
+                  {c.duplicate_of ? ' · probably a reminder for another proposal' : ''}
+                  {c.needs_review.length > 0 ? ` · check: ${c.needs_review.join(', ')}` : ''}
+                </div>
+              </div>
+              {!due && (
+                <label className="text-sm text-secondary">
+                  <span className="sr-only">Due date for {payee}</span>
+                  <input
+                    type="date"
+                    aria-label={`Due date for ${payee}`}
+                    className="rounded border border-line bg-surface px-2 py-1 text-primary"
+                    value={typedDue}
+                    onChange={(e) => setDueById((prev) => ({ ...prev, [c.id]: e.target.value }))}
+                  />
+                </label>
+              )}
+              <button
+                type="button"
+                disabled={busy || !canAdd}
+                onClick={() => onAccept(c.id, due ? undefined : `${typedDue}T12:00:00Z`)}
+                className="rounded bg-accent px-3 py-1.5 text-sm font-medium text-white disabled:opacity-50"
+              >
+                Add bill
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => onReject(c.id)}
+                className="rounded border border-line px-3 py-1.5 text-sm text-secondary hover:bg-hover disabled:opacity-50"
+              >
+                Dismiss
+              </button>
+            </li>
+          )
+        })}
+      </ul>
+    </section>
+  )
+}
+
 function MonthlyCalendar({ calendar }: { calendar: Calendar }) {
   const [month, monthNum] = calendar.month.split('-').map(Number)
   const daysInMonth =
@@ -357,6 +439,7 @@ export default function BillsView() {
   const [bills, setBills] = useState<Bill[]>([])
   const [upcoming, setUpcoming] = useState<Bill[]>([])
   const [calendar, setCalendar] = useState<Calendar | null>(null)
+  const [candidates, setCandidates] = useState<BillCandidate[]>([])
   const [month, setMonth] = useState<string>(() => currentMonth())
   const [durable, setDurable] = useState<boolean | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -392,6 +475,11 @@ export default function BillsView() {
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Failed to load bills')
     }
+    try {
+      setCandidates((await billsApi.listCandidates()).candidates ?? [])
+    } catch {
+      setCandidates([]) // proposals are optional; never block the bills view
+    }
   }, [])
 
   useEffect(() => {
@@ -411,6 +499,31 @@ export default function BillsView() {
       await refresh(month)
     } catch (e) {
       flash(e instanceof Error ? e.message : 'Could not record the confirmation')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const acceptCandidate = async (id: string, dueAt?: string) => {
+    setBusy(true)
+    try {
+      const res = await billsApi.acceptCandidate(id, dueAt ? { due_at: dueAt } : {})
+      flash(`Added ${res.bill.payee} as a bill. Nothing was paid by NerveCenter.`)
+      await refresh(month)
+    } catch (e) {
+      flash(e instanceof Error ? e.message : 'Could not add the bill')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const rejectCandidate = async (id: string) => {
+    setBusy(true)
+    try {
+      await billsApi.rejectCandidate(id)
+      await refresh(month)
+    } catch (e) {
+      flash(e instanceof Error ? e.message : 'Could not dismiss it')
     } finally {
       setBusy(false)
     }
@@ -461,6 +574,13 @@ export default function BillsView() {
           {notice}
         </div>
       )}
+
+      <EmailProposals
+        candidates={candidates}
+        busy={busy}
+        onAccept={(id, dueAt) => void acceptCandidate(id, dueAt)}
+        onReject={(id) => void rejectCandidate(id)}
+      />
 
       <div className="grid gap-6 lg:grid-cols-3">
         {/* ── bill list ─────────────────────────────────────────────────── */}

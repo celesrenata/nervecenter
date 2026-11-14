@@ -83,6 +83,49 @@ export interface BillActionResponse {
   reason?: string
 }
 
+/** One extracted field and how sure the extractor is (0-1). */
+export interface CandidateField {
+  value: string | number
+  confidence: number
+  source?: string
+}
+
+/**
+ * A bill PROPOSED from an incoming email. It is not a bill until the user
+ * accepts it; mail flagged by the security review never produces one.
+ */
+export interface BillCandidate {
+  id: string
+  source_kind: string
+  source_id: string
+  status: 'proposed' | 'accepted' | 'rejected'
+  extracted_fields: {
+    payee?: CandidateField
+    amount_cents?: CandidateField
+    currency?: CandidateField
+    due_date?: CandidateField
+  } & Record<string, CandidateField | undefined>
+  evidence: Record<string, unknown>[]
+  needs_review: string[]
+  duplicate_of: string | null
+  bill_id: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface CandidatesResponse {
+  candidates: BillCandidate[]
+  count: number
+  executed?: boolean
+}
+
+/** Optional corrections applied before accepting. */
+export interface CandidateAcceptPayload {
+  payee?: string
+  amount_cents?: number
+  due_at?: string
+}
+
 /** Empty shapes used in mock mode (no backend configured). */
 const EMPTY_BILLS: BillsResponse = { bills: [], durable: false }
 const EMPTY_UPCOMING: UpcomingResponse = { bills: [], days: 14, durable: false }
@@ -103,6 +146,31 @@ async function json<T>(res: Response): Promise<T> {
 }
 
 export const billsApi = {
+  /** Bills proposed from incoming mail, waiting for the user. */
+  async listCandidates(): Promise<CandidatesResponse> {
+    if (useMockMode) return { candidates: [], count: 0 }
+    const res = await apiFetch('/api/bills/candidates')
+    return json<CandidatesResponse>(res)
+  },
+  /** Accept a proposal: it becomes a pending bill. 409 when a field is missing. */
+  async acceptCandidate(
+    id: string,
+    payload: CandidateAcceptPayload = {}
+  ): Promise<{ candidate: BillCandidate; bill: Bill; executed: boolean }> {
+    const res = await apiFetch(`/api/bills/candidates/${encodeURIComponent(id)}/accept`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    })
+    return json(res)
+  },
+  /** Dismiss a proposal (it is kept, marked rejected). */
+  async rejectCandidate(id: string): Promise<{ candidate: BillCandidate; executed: boolean }> {
+    const res = await apiFetch(`/api/bills/candidates/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+    })
+    return json(res)
+  },
   /** List bills, optionally filtered by status. */
   async listBills(status?: BillStatus): Promise<BillsResponse> {
     if (useMockMode) return EMPTY_BILLS
