@@ -245,6 +245,25 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                     log.info("api.messages_rehydrated", **counts)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.messages_rehydrate_failed", error=str(exc))
+            # The Email screen reads an in-memory service; fill it from stored
+            # mail (security verdicts respected, see backend.email.durable_feed).
+            try:
+                from backend.email.durable_feed import DurableEmailFeed
+                from backend.ingest.supervisor import _object_store_from_env
+
+                registry = getattr(app.state, "repository_registry", None)
+                if registry is not None:
+                    if getattr(app.state, "email_service", None) is None:
+                        app.state.email_service = get_email_service()
+                    feed = DurableEmailFeed(
+                        registry, _object_store_from_env(), app.state.email_service
+                    )
+                    app.state.email_durable_feed = feed
+                    counts = await feed.refresh(force=True)
+                    if any(counts.values()):
+                        log.info("api.email_rehydrated", **counts)
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.email_rehydrate_failed", error=str(exc))
             yield
 
     target.router.lifespan_context = _lifespan

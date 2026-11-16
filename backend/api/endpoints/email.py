@@ -62,6 +62,22 @@ def _service(request: Request) -> EmailService:
     return svc
 
 
+async def _refresh_from_durable(request: Request) -> None:
+    """Pull newly stored mail into the screen's service (throttled, idempotent)."""
+    state = request.app.state
+    feed = getattr(state, "email_durable_feed", None)
+    if feed is None:
+        registry = getattr(state, "repository_registry", None)
+        if registry is None:
+            return
+        from backend.email.durable_feed import DurableEmailFeed
+        from backend.ingest.supervisor import _object_store_from_env
+
+        feed = DurableEmailFeed(registry, _object_store_from_env(), _service(request))
+        state.email_durable_feed = feed
+    await feed.refresh()
+
+
 def _thread_not_found(thread_id: str) -> HTTPException:
     return HTTPException(status_code=404, detail=f"Thread {thread_id} not found.")
 
@@ -112,6 +128,7 @@ class DraftEmailResponse(BaseModel):
 @router.get("/", response_model=ListResponse)
 async def list_threads(request: Request) -> ListResponse:
     """List reconstructed threads, most recently active first (§75)."""
+    await _refresh_from_durable(request)
     svc = _service(request)
     threads = svc.list_threads()
     total = len(threads)

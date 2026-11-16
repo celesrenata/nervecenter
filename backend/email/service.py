@@ -103,7 +103,9 @@ class EmailService:
         self._threads: dict[str, EmailThread] = {}
 
     # -- ingestion -----------------------------------------------------------
-    def ingest(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def ingest(
+        self, payload: dict[str, Any], *, generate_attention: bool = True
+    ) -> dict[str, Any]:
         """Ingest one normalized email (as posted by the Personal Relay).
 
         Returns ``{"message": EmailMessage, "thread": EmailThread,
@@ -177,7 +179,7 @@ class EmailService:
         # exactly ONE live item: if the thread already has an unresolved
         # item we *refresh* it in place instead of stacking duplicates.
         new_attention = None
-        if direction is EmailDirection.RECEIVED:
+        if generate_attention and direction is EmailDirection.RECEIVED:
             should_escalate = (
                 thread.unread == 1
                 or bool(_REPLY_REQUEST_PATTERN.search(message.body or ""))
