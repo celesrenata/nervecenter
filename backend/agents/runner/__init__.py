@@ -52,7 +52,9 @@ def build_runner(engine: Any, app: Any = None) -> AgentRunner:
     raw_transport = OmniRouteTransport.from_env()
     # NS-ADR-108: every agent run is sensitive by default (secure combo,
     # no-memory headers, route guard). No agent is marked non-sensitive today.
-    transport = secure_transport("agent_runner", raw_transport)
+    backoff = BackoffController()
+    # NS-ADR-109: secure-route retries feed the runner's adaptive back-off.
+    transport = secure_transport("agent_runner", raw_transport, on_throttle=backoff.record_throttle)
 
     async def grant_for(agent_id: str) -> str | None:
         if app is None:
@@ -93,7 +95,7 @@ def build_runner(engine: Any, app: Any = None) -> AgentRunner:
             return None
         return any(r.availability == "ready" for r in routes)
 
-    return AgentRunner(RunnerStore(factory), infer, health_probe=health)
+    return AgentRunner(RunnerStore(factory), infer, backoff=backoff, health_probe=health)
 
 
 def get_runner(app: Any) -> AgentRunner | None:

@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   com.nervcenter.handoff: Mac handoff agent (NS-ADR-106, pull model).
-  Install (after the owner approved the SSO-free device paths):
+  Install (device paths approved, NS-ADR-109; polls https://nervecenter.celestium.life
+  from the relay pairing identity):
     sed "s#{{SCRIPT}}#$PWD/nerve_handoff_agent.py#; s#{{LOGS}}#$HOME/Library/Logs#g" \
       com.nervcenter.handoff.plist.template > ~/Library/LaunchAgents/com.nervcenter.handoff.plist
     launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nervcenter.handoff.plist

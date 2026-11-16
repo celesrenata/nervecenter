@@ -6,6 +6,11 @@
 #     POST /api/relay/messages      (pathType Exact: nothing else matches)
 #     POST /api/relay/contacts      (NS-ADR-097, owner: "contacts: ok"; same rules)
 #
+# A THIRD Ingress at the end (nervcenter-handoff, NS-ADR-109; owner: "for
+# requests, we should use https since I'm not always home") exposes exactly two
+# Exact paths for the Mac handoff agent: POST /api/handoffs/device/claim and
+# POST /api/handoffs/device/result (relay device token, 64 KiB, 2 req/s burst 10).
+#
 # A SECOND Ingress below (nervcenter-health, NS-ADR-100) exposes exactly one more
 # path for the iPhone Apple Health bridge: POST /api/health/ingest. It has its own
 # tighter limits (2 MiB, 5 req/s) and the same per-device bearer token check.
@@ -124,6 +129,66 @@ spec:
       http:
         paths:
           - path: /api/health/ingest
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+---
+# Mac handoff agent (NS-ADR-106/109). Both endpoints check the paired relay
+# device token themselves (X-Nerve-Device + Bearer, one generic 401, nothing
+# read first) and cap the body at 64 KiB. Rollback:
+#   kubectl -n nervecenter delete ingress nervcenter-handoff middleware handoff-body-limit handoff-rate-limit
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: handoff-body-limit
+  labels:
+    app: nervcenter
+spec:
+  buffering:
+    maxRequestBodyBytes: 65536
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: handoff-rate-limit
+  labels:
+    app: nervcenter
+spec:
+  rateLimit:
+    average: 2
+    burst: 10
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nervcenter-handoff
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: ingress-handoff
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: nervecenter-handoff-body-limit@kubernetescrd,nervecenter-handoff-rate-limit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - nervecenter.celestium.life
+      secretName: nervecenter-celestium-tls
+  rules:
+    - host: nervecenter.celestium.life
+      http:
+        paths:
+          - path: /api/handoffs/device/claim
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+          - path: /api/handoffs/device/result
             pathType: Exact
             backend:
               service:

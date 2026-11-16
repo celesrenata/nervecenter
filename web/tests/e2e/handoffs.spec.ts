@@ -17,7 +17,7 @@ test.describe('Handoffs', () => {
     let created: Record<string, unknown> | null = null
     await page.route('**/api/handoffs/status', (r) => r.fulfill(json({
       central: { configured: false, running: false, busy: false, url: null },
-      mac: { pull_path_enabled: false, note: '' },
+      mac: { pull_path_enabled: true, note: '' },
     })))
     await page.route('**/api/handoffs', async (r) => {
       if (r.request().method() === 'POST') {

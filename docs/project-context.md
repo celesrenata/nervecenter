@@ -84,4 +84,5 @@ directly and does not need the tunnel; the tunnel is for model-driven tool use.
 See `docs/central-opencode/README.md` for the central opencode server (namespace
 `opencode`, live manifests on the kube host). Queue: web Handoffs view, `/api/handoffs`,
 MCP tool `enqueue_coding_handoff`. Mac agent: `apple/HandoffAgent` (needs the
-SSO-free device paths, pending owner approval).
+SSO-free device paths `POST /api/handoffs/device/claim` and `/result` on
+https://nervecenter.celestium.life, approved NS-ADR-109).

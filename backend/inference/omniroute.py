@@ -260,11 +260,14 @@ class OmniRouteTransport:
         parameters: dict[str, Any] | None = None,
         timeout: int | None = None,
         headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
     ) -> dict[str, Any]:
         """Run one inference call against the configured deployment.
 
         ``headers`` are extra request headers (e.g. the NS-ADR-108 secure
         ``x-omniroute-no-memory`` / ``x-omniroute-compression`` opt-outs).
+        ``max_tokens`` (optional) caps the completion; a failed HTTP hop
+        carries the server's ``Retry-After`` seconds as ``retry_after``.
 
         The network path POSTs an OpenAI-compatible chat-completions body
         (``{"model", "messages": [{"role": "user", "content": prompt}]}``) to
@@ -345,6 +348,8 @@ class OmniRouteTransport:
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
         }
+        if max_tokens:
+            request_body["max_tokens"] = int(max_tokens)
         started = time.monotonic()
         try:
             response = self._http_request(
@@ -366,9 +371,14 @@ class OmniRouteTransport:
         status = getattr(response, "status_code", 0)
         if status >= 400:
             self._record_failure(model, model, started)
-            raise OmniRouteUnavailableError(
+            error = OmniRouteUnavailableError(
                 [(model, model)], {(model, model): f"http_{status}"}
             )
+            try:
+                error.retry_after = float(response.headers.get("retry-after"))
+            except (AttributeError, TypeError, ValueError):
+                error.retry_after = None
+            raise error
 
         try:
             payload = response.json()

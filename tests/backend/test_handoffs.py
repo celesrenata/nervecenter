@@ -123,7 +123,7 @@ async def test_owner_api_queue_approve_cancel_retry(service):
         assert (await c.post(f"/api/handoffs/{hid}/retry")).json()["status"] == "queued"
         assert len((await c.get("/api/handoffs")).json()["handoffs"]) == 1
         status = (await c.get("/api/handoffs/status")).json()
-        assert status["mac"]["pull_path_enabled"] is False
+        assert status["mac"]["pull_path_enabled"] is True
         assert (await c.get("/api/handoffs/nope")).status_code == 404
 
 
@@ -291,3 +291,23 @@ async def test_mcp_tool_posts_to_handoffs():
     api = NerveAPI("http://unit", transport=httpx.MockTransport(handler))
     await tool.handler({"target": "opencode", "title": "t", "brief": "b"}, api)
     assert seen["path"] == "/api/handoffs" and seen["body"]["target"] == "opencode"
+
+
+def test_handoff_ingress_is_exact_paths_with_limits():
+    from pathlib import Path
+
+    import yaml
+
+    path = Path(__file__).resolve().parents[2] / "deployments/kubernetes/base/relay-ingress.yaml"
+    docs = [d for d in yaml.safe_load_all(path.read_text()) if d]
+    ing = next(d for d in docs if d["kind"] == "Ingress" and d["metadata"]["name"] == "nervcenter-handoff")
+    paths = ing["spec"]["rules"][0]["http"]["paths"]
+    assert {(p["path"], p["pathType"]) for p in paths} == {
+        ("/api/handoffs/device/claim", "Exact"),
+        ("/api/handoffs/device/result", "Exact"),
+    }
+    mw = ing["metadata"]["annotations"]["traefik.ingress.kubernetes.io/router.middlewares"]
+    assert "handoff-body-limit" in mw and "handoff-rate-limit" in mw
+    by = {d["metadata"]["name"]: d for d in docs if d["kind"] == "Middleware"}
+    assert by["handoff-body-limit"]["spec"]["buffering"]["maxRequestBodyBytes"] == 65536
+    assert by["handoff-rate-limit"]["spec"]["rateLimit"] == {"average": 2, "burst": 10}

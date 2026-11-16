@@ -37,6 +37,7 @@ dependencies = [
     "opentelemetry-exporter-prometheus",
     "prometheus-client",
     "tabulate>=0.9",
+    "tenacity>=9.0",
 ]
 
 [project.optional-dependencies]

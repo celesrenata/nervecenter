@@ -4,9 +4,9 @@ Owner/agent routes (behind SSO): ``/api/handoffs*``.
 Mac worker routes: ``POST /api/handoffs/device/claim`` and
 ``POST /api/handoffs/device/result``. They authenticate with the paired relay
 device token (``X-Nerve-Device`` + Bearer, one generic 401, nothing read
-before the check) and cap the body at 64 KiB. They are NOT on any SSO-free
-Ingress until the owner approves one (see
-deployments/kubernetes/optional/handoff-device-ingress.yaml).
+before the check) and cap the body at 64 KiB. They are the only two SSO-free
+handoff paths (Ingress ``nervcenter-handoff`` in relay-ingress.yaml, NS-ADR-109;
+owner approved, https on the public host).
 """
 
 from __future__ import annotations
@@ -78,7 +78,7 @@ async def handoff_status(request: Request) -> dict[str, Any]:
             "running": executor is not None,
             "busy": bool(executor and executor.busy),
         },
-        "mac": {"pull_path_enabled": False, "note": "Mac pull route awaits owner approval"},
+        "mac": {"pull_path_enabled": True, "note": "Mac agent polls over https (NS-ADR-109)"},
     }
 
 

@@ -494,8 +494,12 @@ def build_engine(app: Any) -> ResearchEngine | None:
     runner = getattr(app.state, "agent_runner", None)
     return ResearchEngine(
         make_session_factory(engine),
-        # NS-ADR-108: secure/planner + no-memory headers + route guard per call.
-        secure_transport("researcher"),
+        # NS-ADR-108/109: secure/planner + no-memory headers + route guard per
+        # call; its retries feed the shared runner back-off.
+        secure_transport(
+            "researcher",
+            on_throttle=getattr(getattr(runner, "backoff", None), "record_throttle", None),
+        ),
         backoff=getattr(runner, "backoff", None),
         skillhub=getattr(runner, "skillhub", None),
     )
