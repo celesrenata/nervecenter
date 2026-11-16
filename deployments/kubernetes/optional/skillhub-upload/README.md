@@ -24,3 +24,7 @@ python -m backend.owner_tools.skillhub_upload verify          # GET /api/skills/
 The Job runs as uid/gid 10001 by default (`--uid`/`--gid` change it). If the NFS export
 rejects that user, pick the uid that owns the share. `refresh` and `verify` read
 `NERVE_OMNIROUTE_PRIVILEGED_KEY` or the cluster Secret and never print it.
+OmniRoute caches the catalog per replica, so `refresh` and `verify` reach every
+Running omniroute pod through `kubectl port-forward` (nothing in the omniroute
+namespace is changed). A single refresh through the public URL updates only the
+replica that served it.

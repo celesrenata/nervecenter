@@ -13,7 +13,10 @@ without ``--approved``; it creates ConfigMap ``nervecenter-skillpack`` and Job
 ``nervecenter-skillpack-upload`` in namespace ``nervecenter``, and the Job
 writes only ``nervecenter/<slug>/SKILL.md`` on the share. ``refresh`` asks
 OmniRoute to rescan the catalog and ``verify`` checks the new skills are listed
-under domain ``nervecenter``. The privileged key comes from
+under domain ``nervecenter``. OmniRoute caches the catalog per replica, so both
+talk to every replica through ``kubectl port-forward`` (read-only access to the
+omniroute namespace; nothing there is changed); without kubectl access, or with
+``NERVE_SKILLHUB_API_URL`` set, they use that one URL. The privileged key comes from
 ``NERVE_OMNIROUTE_PRIVILEGED_KEY`` or the cluster Secret and is never printed.
 """
 
@@ -23,9 +26,12 @@ import argparse
 import base64
 import json
 import os
+import socket
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import time
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 
@@ -43,6 +49,9 @@ DEFAULT_IMAGE = "registry.celestium.life/nervecenter/api:latest"
 DEFAULT_API_URL = "https://omniroute.celestium.life"
 KEY_ENV = "NERVE_OMNIROUTE_PRIVILEGED_KEY"
 KEY_SECRET = "nervecenter-omniroute-privileged"
+OMNIROUTE_NAMESPACE = "omniroute"
+OMNIROUTE_SELECTOR = "app.kubernetes.io/name=omniroute"
+OMNIROUTE_PORT = 20128
 TEMPLATE_DIR = (
     Path(__file__).resolve().parents[2]
     / "deployments"
@@ -52,6 +61,7 @@ TEMPLATE_DIR = (
 )
 
 Runner = Callable[..., subprocess.CompletedProcess[str]]
+Forwarder = Callable[[str], AbstractContextManager[str]]
 
 
 def _run(args: Sequence[str], **kw: Any) -> subprocess.CompletedProcess[str]:
@@ -174,11 +184,78 @@ def _client(transport: httpx.BaseTransport | None) -> httpx.Client:
     return httpx.Client(transport=transport, timeout=30.0)
 
 
+def _replica_pods(run: Runner) -> list[str]:
+    out = run(
+        [
+            "kubectl",
+            "-n",
+            OMNIROUTE_NAMESPACE,
+            "get",
+            "pods",
+            "-l",
+            OMNIROUTE_SELECTOR,
+            "--field-selector=status.phase=Running",
+            "-o",
+            "jsonpath={.items[*].metadata.name}",
+        ]
+    )
+    return sorted((out.stdout or "").split()) if out.returncode == 0 else []
+
+
+@contextmanager
+def port_forward(pod: str) -> Iterator[str]:
+    """``kubectl port-forward`` to one OmniRoute pod; yields its local base URL."""
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    proc = subprocess.Popen(  # noqa: S603
+        [
+            "kubectl",
+            "-n",
+            OMNIROUTE_NAMESPACE,
+            "port-forward",
+            f"pod/{pod}",
+            f"{port}:{OMNIROUTE_PORT}",
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.2)
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=10)
+
+
+@contextmanager
+def _fixed(url: str) -> Iterator[str]:
+    yield url
+
+
+def _targets(env: dict[str, str], run: Runner, forward: Forwarder) -> list[tuple[str, Any]]:
+    """``(label, context manager yielding a base URL)`` for every OmniRoute replica."""
+    url = env.get("NERVE_SKILLHUB_API_URL", "").rstrip("/")
+    if url:
+        return [(url, _fixed(url))]
+    pods = _replica_pods(run)
+    if not pods:
+        return [(DEFAULT_API_URL, _fixed(DEFAULT_API_URL))]
+    return [(pod, forward(pod)) for pod in pods]
+
+
 def cmd_refresh(
     args: argparse.Namespace,
     run: Runner,
     env: dict[str, str],
     transport: httpx.BaseTransport | None,
+    forward: Forwarder = port_forward,
 ) -> int:
     key = _api_key(env, run)
     if not key:
@@ -187,13 +264,20 @@ def cmd_refresh(
             file=sys.stderr,
         )
         return 1
-    url = env.get("NERVE_SKILLHUB_API_URL", DEFAULT_API_URL).rstrip("/")
-    with _client(transport) as client:
-        resp = client.post(
-            f"{url}/api/skills/catalog/refresh", headers={"Authorization": f"Bearer {key}"}
-        )
-    print(f"refresh: HTTP {resp.status_code}")
-    return 0 if resp.status_code == 200 else 1
+    failed = 0
+    for label, target in _targets(env, run, forward):
+        with target as base, _client(transport) as client:
+            try:
+                resp = client.post(
+                    f"{base}/api/skills/catalog/refresh",
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+                status = str(resp.status_code)
+            except httpx.HTTPError:
+                status = "unreachable"
+        print(f"refresh {label}: HTTP {status}")
+        failed += status != "200"
+    return 0 if not failed else 1
 
 
 def cmd_verify(
@@ -201,34 +285,49 @@ def cmd_verify(
     run: Runner,
     env: dict[str, str],
     transport: httpx.BaseTransport | None,
+    forward: Forwarder = port_forward,
 ) -> int:
     key = _api_key(env, run)
     if not key:
         print("no privileged key available", file=sys.stderr)
         return 1
-    url = env.get("NERVE_SKILLHUB_API_URL", DEFAULT_API_URL).rstrip("/")
-    with _client(transport) as client:
-        resp = client.get(
-            f"{url}/api/skills/catalog",
-            params={"domain": DOMAIN, "limit": 2000},
-            headers={"Authorization": f"Bearer {key}"},
-        )
-    if resp.status_code != 200:
-        print(f"verify: HTTP {resp.status_code}", file=sys.stderr)
-        return 1
-    listed = {
-        r.get("name"): r.get("id") for r in resp.json().get("results", []) if isinstance(r, dict)
-    }
-    missing = [slug for slug in build_pack() if f"{DOMAIN}-{slug}" not in listed]
-    print(
-        f"verify: {len(build_pack()) - len(missing)}/{len(build_pack())} nervecenter skills listed"
-    )
-    for slug in missing:
-        print(f"  missing: {DOMAIN}-{slug}")
-    for slug in build_pack():
-        if f"{DOMAIN}-{slug}" in listed:
-            print(f"  id: {listed[f'{DOMAIN}-{slug}']}")
-    return 0 if not missing else 1
+    pack = build_pack()
+    expected = [f"{DOMAIN}-{slug}" for slug in pack]
+    ok = True
+    listed: dict[str, Any] = {}
+    for label, target in _targets(env, run, forward):
+        with target as base, _client(transport) as client:
+            try:
+                resp = client.get(
+                    f"{base}/api/skills/catalog",
+                    params={"domain": DOMAIN, "limit": 2000},
+                    headers={"Authorization": f"Bearer {key}"},
+                )
+            except httpx.HTTPError:
+                print(f"verify {label}: unreachable", file=sys.stderr)
+                ok = False
+                continue
+        if resp.status_code != 200:
+            print(f"verify {label}: HTTP {resp.status_code}", file=sys.stderr)
+            ok = False
+            continue
+        listed = {
+            r.get("name"): r.get("id")
+            for r in resp.json().get("results", [])
+            if isinstance(r, dict)
+        }
+        missing = [name for name in expected if name not in listed]
+        extra = sorted(n for n in listed if n not in expected)
+        print(f"verify {label}: {len(expected) - len(missing)}/{len(expected)} nervecenter skills")
+        for name in missing:
+            print(f"  missing: {name}")
+        for name in extra:
+            print(f"  not in pack: {name}")
+        ok = ok and not missing and not extra
+    for name in expected:
+        if name in listed:
+            print(f"  id: {listed[name]}")
+    return 0 if ok else 1
 
 
 def main(
@@ -237,6 +336,7 @@ def main(
     run: Runner = _run,
     env: dict[str, str] | None = None,
     transport: httpx.BaseTransport | None = None,
+    forward: Forwarder = port_forward,
 ) -> int:
     parser = argparse.ArgumentParser(prog="skillhub_upload", description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -258,8 +358,8 @@ def main(
     if args.command == "apply":
         return cmd_apply(args, run)
     if args.command == "refresh":
-        return cmd_refresh(args, run, env, transport)
-    return cmd_verify(args, run, env, transport)
+        return cmd_refresh(args, run, env, transport, forward)
+    return cmd_verify(args, run, env, transport, forward)
 
 
 if __name__ == "__main__":

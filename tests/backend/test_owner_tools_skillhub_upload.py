@@ -111,6 +111,42 @@ def test_refresh_and_verify_use_the_key_without_printing_it(capsys) -> None:
     assert KEY not in captured.out + captured.err
 
 
+def test_refresh_and_verify_reach_every_replica(capsys) -> None:
+    from contextlib import contextmanager
+
+    pack = build_pack()
+    refreshed: set[str] = set()
+
+    class PodRun(FakeRun):
+        def __call__(self, argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+            if "pods" in argv:
+                return subprocess.CompletedProcess(argv, 0, "omni-b omni-a", "")
+            return super().__call__(argv, **kw)
+
+    @contextmanager
+    def forward(pod: str):  # type: ignore[no-untyped-def]
+        yield f"http://{pod}.test"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        host = request.url.host
+        if request.method == "POST":
+            refreshed.add(host)
+            return httpx.Response(200, json={"success": True})
+        names = [f"nervecenter-{s}" for s in pack] if host in refreshed else []
+        if host == "omni-b.test":
+            names.append("nervecenter-research-agent")
+        return httpx.Response(200, json={"results": [{"name": n, "id": n} for n in names]})
+
+    transport = httpx.MockTransport(handler)
+    env = {tool.KEY_ENV: KEY}
+    assert tool.main(["verify"], run=PodRun(), env=env, transport=transport, forward=forward) == 1
+    assert tool.main(["refresh"], run=PodRun(), env=env, transport=transport, forward=forward) == 0
+    assert refreshed == {"omni-a.test", "omni-b.test"}
+    assert tool.main(["verify"], run=PodRun(), env=env, transport=transport, forward=forward) == 1
+    out = capsys.readouterr().out
+    assert "not in pack: nervecenter-research-agent" in out and KEY not in out
+
+
 def test_verify_reports_missing_ids_and_key_comes_from_the_secret() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"results": []})
