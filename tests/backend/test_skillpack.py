@@ -9,6 +9,7 @@ from backend.agents.registry import _create_native_manifests
 from backend.agents.skillpack import (
     DOMAIN,
     FEATURE_AGENTS,
+    MERGED_INTO,
     build_pack,
     manifest_text,
     pack_hashes,
@@ -25,8 +26,16 @@ _ADDRESS = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b|https?://", re.IGNORECASE)
 
 def test_count_equals_manifests_plus_features() -> None:
     pack = build_pack()
-    assert len(pack) == len(_create_native_manifests()) + len(FEATURE_AGENTS)
+    assert len(pack) == len(_create_native_manifests()) + len(FEATURE_AGENTS) - len(MERGED_INTO)
     assert {"finance", "mental-health", "health", "researcher", "coding-handoff"} <= set(pack)
+
+
+def test_research_skills_are_merged_into_one() -> None:
+    pack = build_pack()
+    assert "research-agent" not in pack
+    assert [slug for slug in pack if "research" in slug] == ["researcher"]
+    researcher = pack["researcher"]
+    assert "- `web_search`" in researcher and "Find and synthesize information" in researcher
 
 
 def test_frontmatter_is_valid_and_names_are_unique() -> None:

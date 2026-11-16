@@ -97,7 +97,8 @@ async def run_with_tools(
         if not calls:
             break
         lines = [
-            format_result(c, await gateway.call(agent, c.server, c.tool, c.args)) for c in calls
+            format_result(c, await gateway.call(agent, c.server, c.tool, c.args, context=prompt))
+            for c in calls
         ]
         current = f"{current}\n\n{result.get('content', '')}\n\n" + "\n".join(lines)
         result = await infer_once(current)

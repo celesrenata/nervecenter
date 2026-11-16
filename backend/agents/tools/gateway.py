@@ -16,6 +16,7 @@ import httpx
 import structlog
 
 from backend.agents.tools import policy
+from backend.agents.tools.fetch_guard import MAX_RESPONSE_CHARS, FetchGuard, host_of
 from backend.agents.tools.mcp_client import McpClient, McpToolError
 
 log = structlog.get_logger(__name__)
@@ -38,6 +39,7 @@ class ToolGateway:
         omniroute_key: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 20.0,
+        fetch_guard: FetchGuard | None = None,
     ) -> None:
         self._hub_url = (hub_url or os.environ.get(HUB_URL_ENV, "") or DEFAULT_HUB_URL).rstrip("/")
         self._hub_token = (
@@ -52,6 +54,7 @@ class ToolGateway:
         self._transport = transport
         self._timeout = timeout_s
         self._clients: dict[str, McpClient] = {}
+        self._fetch_guard = fetch_guard or FetchGuard()
 
     @property
     def hub_configured(self) -> bool:
@@ -109,17 +112,32 @@ class ToolGateway:
         args: dict[str, Any] | None = None,
         *,
         non_sensitive: bool = False,
+        context: str = "",
+        sensitive: bool = False,
     ) -> dict[str, Any]:
-        """``{"ok": True, "result": ...}`` or ``{"ok": False, "denied_reason": code}``."""
+        """``{"ok": True, "result": ...}`` or ``{"ok": False, "denied_reason": code}``.
+
+        ``context`` is the run's own prompt; ``fetch`` refuses URLs carrying its
+        personal values. ``sensitive`` marks the run sensitive (NS-ADR-114).
+        """
         args = {} if args is None else args
         agent_id = str(getattr(agent, "id", "") or "-")
         reason = policy.check(agent, server, tool, args, non_sensitive=non_sensitive)
         if reason is None and not self.available(server):
             reason = "unconfigured"
+        is_fetch = server == "fetch" and tool == "fetch"
+        host = host_of(str(args.get("url", ""))) if is_fetch and isinstance(args, dict) else "-"
+        if reason is None and is_fetch:
+            reason, args = await self._fetch_guard.check(
+                agent, args, context=context, sensitive=sensitive
+            )
+            host = host_of(str(args.get("url", ""))) if reason is None else host
         if reason is not None:
             log.info(
                 "agent_tools.denied", agent_id=agent_id, server=server, tool=tool, reason=reason
             )
+            if is_fetch:
+                self._audit_fetch(agent_id, host, "refused", reason)
             return {"ok": False, "denied_reason": reason}
         try:
             result = await self._client(server).call_tool(tool, args)
@@ -127,9 +145,20 @@ class ToolGateway:
             log.warning(
                 "agent_tools.failed", agent_id=agent_id, server=server, tool=tool, reason=exc.reason
             )
+            if is_fetch:
+                self._audit_fetch(agent_id, host, "failed", exc.reason)
             return {"ok": False, "denied_reason": exc.reason}
+        if is_fetch:
+            if isinstance(result, str) and len(result) > MAX_RESPONSE_CHARS:
+                result = result[:MAX_RESPONSE_CHARS] + "\n[truncated]"
+            self._audit_fetch(agent_id, host, "allowed", "ok")
         log.info("agent_tools.call", agent_id=agent_id, server=server, tool=tool)
         return {"ok": True, "result": result}
+
+    @staticmethod
+    def _audit_fetch(agent_id: str, host: str, outcome: str, reason: str) -> None:
+        """One audit entry per fetch: host, outcome and reason code only (never the URL)."""
+        log.info("agent_tools.fetch", agent_id=agent_id, host=host, outcome=outcome, reason=reason)
 
     # -- back-off signal ------------------------------------------------------------------
 

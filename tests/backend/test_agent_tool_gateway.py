@@ -10,9 +10,24 @@ import httpx
 import pytest
 
 from backend.agents.tools import ToolGateway, policy
+from backend.agents.tools.fetch_guard import FetchGuard
 from backend.agents.tools.protocol import MAX_ROUNDS, parse_calls, run_with_tools
 
 HUB_TOKEN = "hub-token-value"
+
+
+async def _public(host: str) -> list[str]:
+    return ["93.184.215.14"]
+
+
+def _guard() -> FetchGuard:
+    return FetchGuard(
+        resolver=_public,
+        transport=httpx.MockTransport(lambda r: httpx.Response(200)),
+        sensitive_allowlist=frozenset(),
+    )
+
+
 OMNI_KEY = "omni-key-value"
 
 
@@ -48,6 +63,7 @@ class Mcp:
             omniroute_url="https://omni.test/mcp",
             omniroute_key=OMNI_KEY,
             transport=httpx.MockTransport(self.handler),
+            fetch_guard=_guard(),
             **kw,
         )
 
@@ -126,7 +142,7 @@ async def test_http_failure_is_a_reason_code_without_the_body() -> None:
         omniroute_key="",
         transport=httpx.MockTransport(lambda r: httpx.Response(503, text="secret body")),
     )
-    out = await gw.call(AGENT, "fetch", "fetch", {})
+    out = await gw.call(AGENT, "sequential-thinking", "sequentialthinking", {})
     assert out == {"ok": False, "denied_reason": "http_503"}
 
 
@@ -171,7 +187,8 @@ async def test_tool_loop_is_bounded_and_sums_tokens() -> None:
     async def infer(prompt: str) -> dict[str, Any]:
         prompts.append(prompt)
         return {
-            "content": 'TOOL_CALL {"server":"fetch","tool":"fetch","args":{"url":"u"}}',
+            "content": 'TOOL_CALL {"server":"fetch","tool":"fetch",'
+            '"args":{"url":"https://example.org/a"}}',
             "input_tokens": 2,
             "output_tokens": 3,
         }

@@ -19,6 +19,10 @@ DOMAIN = "nervecenter"
 SKILL_VERSION = "1.0.0"
 MANIFEST_FILE = ".pack-manifest"
 
+#: Native agents whose skill is folded into a feature agent's skill (owner decision:
+#: one research skill). The native agent still exists; only the skill pack merges.
+MERGED_INTO = {"research-agent": "researcher"}
+
 
 @dataclass(frozen=True)
 class FeatureAgent:
@@ -86,9 +90,10 @@ FEATURE_AGENTS: tuple[FeatureAgent, ...] = (
     FeatureAgent(
         "researcher",
         "Long-term researcher",
-        "Plans and carries out long-running research projects in checkpointed "
-        "steps with a final report.",
-        "Break a research question into steps, work one step per cycle and keep working notes.",
+        "Finds and synthesizes information, and plans and carries out long-running "
+        "research projects in checkpointed steps with a final report.",
+        "Find and synthesize information. For larger questions, break them into steps, "
+        "work one step per cycle and keep working notes.",
         (
             "Use a step budget and stretch the cadence when inference is busy.",
             "Report what is uncertain; cite sources fetched through the allowed tools.",
@@ -180,16 +185,23 @@ def _render(
 def build_pack() -> dict[str, str]:
     """``{slug: SKILL.md text}`` for every NerveCenter agent (deterministic)."""
     pack: dict[str, str] = {}
+    merged_tools: dict[str, set[str]] = {}
+    merged_rules: dict[str, list[str]] = {}
     for manifest in _create_native_manifests().values():
         slug = slugify(manifest.name)
+        limit = manifest.loop_protection.get("max_iterations")
+        rules = [f"Stop after at most {limit} iterations."] if limit else []
+        target = MERGED_INTO.get(slug)
+        if target is not None:
+            merged_tools.setdefault(target, set()).update(manifest.tools)
+            merged_rules.setdefault(target, []).extend(rules)
+            continue
         pack[slug] = _render(
             slug,
             manifest.name,
             manifest.description,
             manifest.prompt_template,
-            [f"Stop after at most {manifest.loop_protection['max_iterations']} iterations."]
-            if manifest.loop_protection.get("max_iterations")
-            else [],
+            rules,
             sorted(manifest.tools),
         )
     for feature in FEATURE_AGENTS:
@@ -198,8 +210,8 @@ def build_pack() -> dict[str, str]:
             feature.title,
             feature.description,
             feature.role,
-            list(feature.rules),
-            None,
+            [*feature.rules, *merged_rules.get(feature.slug, [])],
+            sorted(merged_tools[feature.slug]) if feature.slug in merged_tools else None,
         )
     return dict(sorted(pack.items()))
 
