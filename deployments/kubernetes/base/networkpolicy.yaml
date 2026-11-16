@@ -6,7 +6,8 @@
 #   traefik (kube-system) -> nervecenter-oauth:4180, mcp:8000, and api:8000
 #     (api only for the relay's exact-path ingress, relay-ingress.yaml)
 #   nervecenter-oauth -> web:80
-#   web, mcp -> api:8000
+#   web, mcp, tunnel-client -> api:8000 (tunnel-client only reaches the
+#     token-protected /api/mcp/projects; see tunnel-client.yaml, NS-ADR-105)
 #   api, migration job, one-off db-snapshot pods -> postgres:5432
 #   api -> nats:4222
 # Kubelet probes come from the node and are allowed by k3s's policy
@@ -75,7 +76,7 @@ spec:
     - from:
         - podSelector:
             matchExpressions:
-              - {key: app, operator: In, values: [web, mcp]}
+              - {key: app, operator: In, values: [web, mcp, tunnel-client]}
       ports:
         - {protocol: TCP, port: 8000}
 ---

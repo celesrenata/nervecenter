@@ -44,6 +44,7 @@ from .obligations import (
 )
 from .planned_changes import PlannedChange
 from .relationships import Relationship
+from .projects import ProjectContext, ProjectContextNote
 from .research import ResearchCheckpoint, ResearchProject, ResearchStep
 from .tasks import Task, TaskRun
 
@@ -74,6 +75,8 @@ __all__ = [
     "LedgerEntryRow",
     "StatementImportRow",
     "MhFormRow",
+    "ProjectContext",
+    "ProjectContextNote",
     "ResearchProject",
     "ResearchStep",
     "ResearchCheckpoint",

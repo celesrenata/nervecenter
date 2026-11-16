@@ -38,6 +38,9 @@ resources:
   # nothing object-store-related is in this kustomization.
   - object-store-bootstrap.yaml
   - api-deployment.yaml
+  # OpenAI Secure MCP Tunnel client (NS-ADR-105); needs the owner's Secret
+  # nervecenter-openai-tunnel, otherwise only this pod stays unconfigured.
+  - tunnel-client.yaml
   - api-service.yaml
   - mcp-deployment.yaml
   - mcp-service.yaml

@@ -138,6 +138,24 @@ spec:
                   name: nervecenter-skillhub
                   key: key
                   optional: true
+            # OpenAI API key for the project-aware OpenAI engine (NS-ADR-104).
+            # Out-of-band Secret; optional: without it the engine answers
+            # "not configured".
+            - name: NERVE_OPENAI_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-openai
+                  key: key
+                  optional: true
+            # Bearer tokens for POST /api/mcp/projects, "client:token,client2:token2"
+            # (each token >= 32 chars; the client name tags the notes it writes).
+            # Optional: without it the endpoint answers 401 to everyone.
+            - name: NERVE_MCP_PROJECTS_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-mcp-projects
+                  key: tokens
+                  optional: true
           readinessProbe:
             httpGet:
               path: /api/health

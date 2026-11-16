@@ -1,0 +1,140 @@
+# OpenAI Secure MCP Tunnel client (NS-ADR-105; owner created tunnel
+# tunnel_6afad59db3f481918919526c820f3e2a, an identifier, not a secret).
+#
+# tunnel-client opens an OUTBOUND-only HTTPS path to OpenAI, pulls queued MCP
+# requests and forwards each one to the restricted project MCP endpoint
+# (list_projects / get_project_context / add_project_note) in the api service.
+# No Ingress, no inbound port and no public route is created.
+#
+# Auth stays on the endpoint: tunnel-client adds `Authorization: Bearer <mcp_token>`
+# to every request it forwards (MCP_EXTRA_HEADERS, value from the Secret), and
+# the endpoint verifies it itself (NS-ADR-104). A request that carries no valid
+# token still gets the generic 401, so a misconfigured tunnel cannot bypass auth.
+# Note: OpenAI documents that headers an app forwards through the tunnel override
+# these static ones, so the token the endpoint accepts is always what decides.
+#
+# Secret (created by the OWNER, never in this repo; do not print values):
+#   kubectl -n nervecenter create secret generic nervecenter-openai-tunnel \
+#     --from-literal=runtime_api_key=... --from-literal=mcp_token=...
+#   runtime_api_key: runtime API key with Tunnels Read + Use for this tunnel
+#   mcp_token:       the same token that appears for the matching client in the
+#                    `nervecenter-mcp-projects` Secret (`tokens`: client:token)
+# Without that Secret this pod stays in CreateContainerConfigError. That is the
+# honest "not configured" state: it does not restart-loop and no other pod, nor
+# deploy.sh (which waits only on api, web, nats), is affected.
+#
+# Image pinned to release v0.0.21 by digest (multi-arch index; verify with
+# `gh attestation verify oci://ghcr.io/openai/tunnel-client:v0.0.21 -R openai/tunnel-client`).
+#
+# Rollback: `kubectl -n nervecenter delete deployment/tunnel-client networkpolicy/tunnel-client-egress`.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tunnel-client
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: tunnel-client
+spec:
+  # One replica: the MCP target is stateless, but one client per tunnel keeps
+  # the queue and the logs simple.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: tunnel-client
+  template:
+    metadata:
+      labels:
+        app: tunnel-client
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: tunnel-client
+          image: ghcr.io/openai/tunnel-client:v0.0.21@sha256:983df88cd56d49ae3863ae52b751d106c95aba8a03783c87ac2304b4e0cd154a
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: CONTROL_PLANE_TUNNEL_ID
+              value: tunnel_6afad59db3f481918919526c820f3e2a
+            - name: MCP_SERVER_URL
+              value: http://api.nervecenter.svc.cluster.local:8000/api/mcp/projects
+            # The endpoint is token-protected, not OAuth: skip OAuth discovery.
+            - name: MCP_OAUTH_DISCOVERY
+              value: disabled
+            - name: CONTROL_PLANE_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-openai-tunnel
+                  key: runtime_api_key
+            - name: MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-openai-tunnel
+                  key: mcp_token
+            # Kubernetes expands $(MCP_TOKEN) (defined above) in this value.
+            - name: MCP_AUTH_HEADER_VALUE
+              value: "Bearer $(MCP_TOKEN)"
+            - name: MCP_EXTRA_HEADERS
+              value: "Authorization: env:MCP_AUTH_HEADER_VALUE"
+            - name: HEALTH_LISTEN_ADDR
+              value: ":8080"
+            - name: LOG_LEVEL
+              value: info
+            - name: LOG_FORMAT
+              value: json
+          ports:
+            - name: health
+              containerPort: 8080
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests: {memory: "64Mi", cpu: "50m"}
+            limits: {memory: "256Mi", cpu: "250m"}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 10001
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+# Egress for tunnel-client (the namespace is default-deny for ingress; egress is
+# opened per pod). Allowed: DNS, the api pod on 8000 (the MCP target), and TCP 443
+# to public addresses for api.openai.com (and mtls.api.openai.com if control-plane
+# mTLS is ever configured). A NetworkPolicy cannot match a hostname, and OpenAI
+# publishes no stable IPs, so 443 is open to every non-private address, as for
+# freshclam in clamav.yaml. Private ranges stay excluded: the pod cannot reach
+# postgres, nats, the NAS or other namespaces.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: tunnel-client-egress
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    nervecenter.policy: hardening
+spec:
+  podSelector:
+    matchLabels: {app: tunnel-client}
+  policyTypes: [Egress]
+  egress:
+    - ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - podSelector:
+            matchLabels: {app: api}
+      ports:
+        - {protocol: TCP, port: 8000}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - {protocol: TCP, port: 443}

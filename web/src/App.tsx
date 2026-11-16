@@ -16,6 +16,7 @@ import MentalHealthView from './views/MentalHealthView'
 import BillsView from './views/BillsView'
 import FinanceView from './views/FinanceView'
 import ResearchView from './views/ResearchView'
+import ProjectsView from './views/ProjectsView'
 import RoutinesView from './views/RoutinesView'
 import { ContactsView } from './views/ContactsView'
 import { PeopleView } from './views/PeopleView'
@@ -98,6 +99,7 @@ function App() {
             <Route path="/bills" element={<BillsView />} />
             <Route path="/finance" element={<FinanceView />} />
             <Route path="/research" element={<ResearchView />} />
+            <Route path="/projects" element={<ProjectsView />} />
             <Route path="/routines" element={<RoutinesView />} />
             <Route path="/systems" element={<SystemsView />} />
             <Route path="/logs" element={<LogsView />} />

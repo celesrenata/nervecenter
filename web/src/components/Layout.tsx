@@ -58,6 +58,7 @@ const navItems: NavItem[] = [
   { path: '/bills', label: 'Bills', Icon: WaitingOnIcon },
   { path: '/finance', label: 'Finance', Icon: WaitingOnIcon },
   { path: '/research', label: 'Research', Icon: SearchIcon },
+  { path: '/projects', label: 'Projects', Icon: GoalsIcon },
   { path: '/routines', label: 'Routines', Icon: TimelineIcon },
   { path: '/systems', label: 'Systems', Icon: SystemsIcon },
   { path: '/logs', label: 'Logs', Icon: LogsIcon },

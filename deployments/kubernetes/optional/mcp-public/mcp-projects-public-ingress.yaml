@@ -1,0 +1,74 @@
+# NOT ENABLED. This file is deliberately not listed in base/kustomization.yaml.
+# (NS-ADR-104; owner: ChatGPT Plus cannot register custom MCP servers today, so
+# no public route exists. Keep this for when a plan that can, or another remote
+# MCP client, needs it.)
+#
+# What it would expose: exactly ONE path, SSO-free:
+#
+#     POST /api/mcp/projects      (pathType Exact: nothing else matches)
+#
+# The endpoint authenticates every call itself (bearer token, or OIDC when
+# NERVE_MCP_OIDC_ENABLED=1) with one generic 401 and reads no body before that,
+# exposes only list_projects / get_project_context / add_project_note, caps the
+# body at 64 KiB and logs tool, project and outcome without content.
+#
+# To enable:
+#   1. Create the Secret `nervecenter-mcp-projects` (key `tokens`, value
+#      `client:token`, token >= 32 random chars) and, if you use OAuth, set
+#      the NERVE_MCP_OIDC_* variables (see docs/project-context.md).
+#   2. Copy this file next to relay-ingress.yaml, add it to
+#      base/kustomization.yaml resources, and deploy with
+#      `SKIP_DOCKER_LOGIN=1 ./deployments/harbor/deploy.sh`.
+#   3. Verify: no token -> 401; GET, trailing slash and other /api paths -> SSO
+#      redirect; a body over 64 KiB -> 413.
+#
+# Rollback: `kubectl -n nervecenter delete ingress nervcenter-mcp-projects
+#   middleware mcp-projects-body-limit mcp-projects-rate-limit`.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mcp-projects-body-limit
+  labels:
+    app: nervcenter
+spec:
+  buffering:
+    maxRequestBodyBytes: 65536       # 64 KiB
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mcp-projects-rate-limit
+  labels:
+    app: nervcenter
+spec:
+  rateLimit:
+    average: 5                       # requests per second per client IP
+    burst: 10
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nervcenter-mcp-projects
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: ingress-mcp-projects
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: nervecenter-mcp-projects-body-limit@kubernetescrd,nervecenter-mcp-projects-rate-limit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - nervecenter.celestium.life
+      secretName: nervecenter-celestium-tls
+  rules:
+    - host: nervecenter.celestium.life
+      http:
+        paths:
+          - path: /api/mcp/projects
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000

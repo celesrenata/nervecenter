@@ -355,3 +355,10 @@ def _sanitize_binding(raw: dict[str, Any] | None) -> dict[str, Any] | None:
     if model:
         out["model"] = model
     return out or None
+
+
+def openai_engine_info() -> dict[str, Any]:
+    """Sanitized status of the project-aware OpenAI engine (never a key value)."""
+    from backend.inference.openai_engine import OpenAIEngine
+
+    return OpenAIEngine().status()
