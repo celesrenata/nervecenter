@@ -14,6 +14,7 @@ enum Probe {
         "~/Library/Group Containers/group.com.apple.telephonyutilities.callservicesd",
         "~/Library/Containers/com.apple.mobilephone",
         "~/Library/Application Support/AddressBook",
+        "~/Library/Group Containers/group.com.apple.FaceTime",
     ]
     static let dbExtensions: Set<String> = ["db", "sqlite", "sqlitedb", "storedata", "abcddb"]
 
@@ -83,8 +84,6 @@ enum Probe {
     }
 
     static func run() {
-        describeCallAudio()
-        findVoicemailDirs()
         let fm = FileManager.default
         for root in roots {
             let path = NSString(string: root).expandingTildeInPath
@@ -134,10 +133,16 @@ enum Probe {
         for table in tables where !table.hasPrefix("sqlite_") {
             let quoted = "\"" + table.replacingOccurrences(of: "\"", with: "\"\"") + "\""
             let count = strings(db, "SELECT count(*) FROM \(quoted)")?.first ?? "?"
-            let interesting = ["voice", "transcri", "message"]
+            let interesting = ["voice", "transcri", "message", "asset", "record"]
             let columns = strings(db, "SELECT name FROM pragma_table_info('\(table.replacingOccurrences(of: "'", with: "''"))')") ?? []
             let show = interesting.contains { table.lowercased().contains($0) }
             print("     \(table): \(count) rows" + (show ? " cols=\(columns)" : ""))
+        }
+        if tables.contains("ZSTOREDMESSAGE") {
+            // Counts per (message type, file type): transcripts present, deleted, unread.
+            // Type 1 is voicemail (.amr); type 0 holds video/audio messages.
+            let sql = "SELECT ZMESSAGETYPE || '/' || ZFILETYPE || ': ' || count(*) || ' msgs, ' || sum(ZTRANSCRIPT IS NOT NULL) || ' transcript, ' || sum(ZTRANSCRIPTDATA IS NOT NULL) || ' transcriptdata, ' || sum(ZDATEDELETED IS NOT NULL) || ' deleted, ' || sum(ZISREAD = 0) || ' unread, ' || sum(ZFROM IS NOT NULL) || ' with-from' FROM ZSTOREDMESSAGE GROUP BY ZMESSAGETYPE, ZFILETYPE"
+            for line in strings(db, sql) ?? ["(query failed)"] { print("       type/file \(line)") }
         }
     }
 
