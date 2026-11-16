@@ -50,6 +50,7 @@ from backend.api.endpoints import (
     projects,
     mcp_projects,
     handoffs,
+    model_policy,
     calendar,
     communications,
     contact_photos,
@@ -171,6 +172,7 @@ ALL_ROUTERS = (
     projects.router,
     mcp_projects.router,
     handoffs.router,
+    model_policy.router,
     health_samples.router,
     mental_health.router,
     obligations.router,
@@ -440,11 +442,13 @@ def _install_ask_wiring(target: FastAPI) -> None:
     try:
         from backend.context.ask import AskService
         from backend.inference import OmniRouteTransport
+        from backend.inference.local_first import LocalFirstTransport
         from backend.inference.providers import default_inference
 
         default = default_inference()
         target.state.ask_service = AskService(
-            transport=OmniRouteTransport.from_env(),
+            # NS-ADR-107: local models first; cloud defaults are swapped and logged.
+            transport=LocalFirstTransport(OmniRouteTransport.from_env(), "ask"),
             remote_provider_allowed=True,
             provider=default.get("provider", "omniroute"),
             model=default.get("model", "nerve-ask"),

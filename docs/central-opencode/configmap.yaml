@@ -1,6 +1,7 @@
 # opencode server config and the workspace clone list (NS-ADR-106).
-# Models come from OmniRoute (in-cluster, namespace omniroute); OmniRoute picks
-# the real model per route. No secret values here: the OmniRoute key is read
+# Models come from OmniRoute (in-cluster, namespace omniroute), local combos
+# only (NS-ADR-107: "we have 3 models locally to use first"); `local/*` combos
+# are capped at tier 1, so no cloud model is reachable from here. No secret values here: the OmniRoute key is read
 # from the env var OMNIROUTE_API_KEY (Secret opencode-server).
 apiVersion: v1
 kind: ConfigMap
@@ -21,13 +22,14 @@ data:
             "apiKey": "{env:OMNIROUTE_API_KEY}"
           },
           "models": {
-            "auto/best-coding": {"name": "OmniRoute best coding"},
-            "auto/fast": {"name": "OmniRoute fast"}
+            "local/code": {"name": "Local code (vllm qwen3.8-27b, tier 1 only)"},
+            "local/fast": {"name": "Local fast (tier 1 only)"},
+            "local/planner": {"name": "Local planner (llama-cpp deepseek-v41)"}
           }
         }
       },
-      "model": "omniroute/auto/best-coding",
-      "small_model": "omniroute/auto/fast",
+      "model": "omniroute/local/code",
+      "small_model": "omniroute/local/fast",
       "permissions": [
         {"action": "shell", "resource": "git push *", "effect": "deny"},
         {"action": "shell", "resource": "git remote *", "effect": "deny"}

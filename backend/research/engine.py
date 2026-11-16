@@ -485,6 +485,7 @@ class ResearchEngine:
 
 
 def build_engine(app: Any) -> ResearchEngine | None:
+    from backend.inference.local_first import LocalFirstTransport
     from backend.inference.omniroute import OmniRouteTransport
     from backend.persistence.connection import make_session_factory
 
@@ -494,7 +495,8 @@ def build_engine(app: Any) -> ResearchEngine | None:
     runner = getattr(app.state, "agent_runner", None)
     return ResearchEngine(
         make_session_factory(engine),
-        OmniRouteTransport.from_env(),
+        # NS-ADR-107: secure/planner is tier-1 local only; the wrapper keeps it so.
+        LocalFirstTransport(OmniRouteTransport.from_env(), "researcher"),
         backoff=getattr(runner, "backoff", None),
         skillhub=getattr(runner, "skillhub", None),
     )

@@ -32,8 +32,15 @@ __all__ = [
 ]
 
 
-def build_runner(engine: Any) -> AgentRunner:
-    """Wire a runner to the DB engine and the OmniRoute transport."""
+def build_runner(engine: Any, app: Any = None) -> AgentRunner:
+    """Wire a runner to the DB engine and the OmniRoute transport.
+
+    NS-ADR-107: agents run on local models (``LocalFirstTransport``). An agent
+    reaches the OpenAI API only with an owner grant: ``owner_requested`` goes
+    straight to OpenAI, ``high_stakes`` retries locally ``max_local_failures``
+    times first. Every OpenAI call goes through the shared limiter.
+    """
+    from backend.inference.local_first import LocalFirstTransport, background_call
     from backend.inference.omniroute import OmniRouteTransport
     from backend.inference.providers import default_inference
     from backend.persistence.connection import make_session_factory
@@ -41,18 +48,42 @@ def build_runner(engine: Any) -> AgentRunner:
 
     factory = make_session_factory(engine)
     service = AgentService(engine, session_factory=factory)
-    transport = OmniRouteTransport.from_env()
+    raw_transport = OmniRouteTransport.from_env()
+    transport = LocalFirstTransport(raw_transport, "agent_runner")
+
+    async def grant_for(agent_id: str) -> str | None:
+        if app is None:
+            return None
+        from backend.inference.escalation import get_grants
+
+        grants = get_grants(app)
+        return await grants.get("agent", agent_id) if grants else None
+
+    async def openai(prompt: str, reason: Any) -> dict[str, Any]:
+        from backend.inference.openai_engine import get_engine
+
+        if app is None:
+            raise RuntimeError("OpenAI escalation is not available")
+        return await get_engine(app).generate(prompt, caller="agent_runner", reason=str(reason))
 
     async def infer(agent: Any, prompt: str) -> dict[str, Any]:
         binding = await service.get_inference(str(agent.id)) or {}
-        model = binding.get("model") or default_inference()["model"]
-        return await asyncio.to_thread(transport.generate, model, prompt)
+        requested = binding.get("model") or default_inference()["model"]
+        return await background_call(
+            requested,
+            await grant_for(str(agent.id)),
+            caller="agent_runner",
+            local=lambda model: asyncio.to_thread(transport.generate, model, prompt),
+            openai=lambda reason: openai(prompt, reason),
+        )
+
+    transport_for_health = raw_transport
 
     async def health() -> bool | None:
-        if not transport.base_url and not transport.fixture_mode:
+        if not transport_for_health.base_url and not transport_for_health.fixture_mode:
             return None
         try:
-            routes = await asyncio.to_thread(transport.route_candidates)
+            routes = await asyncio.to_thread(transport_for_health.route_candidates)
         except Exception:  # noqa: BLE001 - probe failure is "no signal", not "down"
             return None
         if not routes:
@@ -70,6 +101,6 @@ def get_runner(app: Any) -> AgentRunner | None:
     engine = getattr(app.state, "db_engine", None)
     if engine is None:
         return None
-    runner = build_runner(engine)
+    runner = build_runner(engine, app)
     app.state.agent_runner = runner
     return runner

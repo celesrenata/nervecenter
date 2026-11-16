@@ -50,6 +50,9 @@ export const projectsApi = {
   addNote: (slug: string, body: string) =>
     request<ProjectNote>(`/api/projects/${enc(slug)}/notes`, json('POST', { body })),
   openaiStatus: () => request<OpenAIStatus>('/api/projects/openai/status'),
-  ask: (slug: string, prompt: string) =>
-    request<{ content: string; model: string }>(`/api/projects/${enc(slug)}/ask`, json('POST', { prompt })),
+  ask: (slug: string, prompt: string, useOpenai = false) =>
+    request<{ content: string; model: string; engine: 'local' | 'openai'; reason: string | null }>(
+      `/api/projects/${enc(slug)}/ask`,
+      json('POST', { prompt, use_openai: useOpenai }),
+    ),
 }

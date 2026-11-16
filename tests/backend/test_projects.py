@@ -442,20 +442,60 @@ async def test_openai_upstream_error_does_not_leak_the_key(service):
     assert "sk-secret-key" not in str(info.value) and info.value.status == 401
 
 
-async def test_ask_endpoint_503_without_key_and_200_with_key(service, monkeypatch):
-    await service.create("p", "P")
+class FakeLocal:
+    def __init__(self, fail: int = 0) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.fail = fail
+
+    def generate(self, model: str, prompt: str, *a, **k):
+        self.calls.append((model, prompt))
+        if len(self.calls) <= self.fail:
+            raise RuntimeError("local down")
+        return {"content": "local answer", "input_tokens": 1, "output_tokens": 2}
+
+
+async def test_ask_goes_local_first_with_project_context(service, monkeypatch):
+    await service.create("p", "P", "Rack plans")
     monkeypatch.delenv("NERVE_OPENAI_KEY", raising=False)
     app = make_app(service)
+    app.state.projects_local_transport = local = FakeLocal()
+    seen: list[dict[str, Any]] = []
+    app.state.openai_engine = OpenAIEngine(
+        service, env={"NERVE_OPENAI_KEY": "k" * 20}, transport=fake_openai(seen)
+    )
     async with client(app) as c:
         r = await c.post("/api/projects/p/ask", json={"prompt": "hi"})
+    assert r.status_code == 200
+    assert r.json()["engine"] == "local" and r.json()["content"] == "local answer"
+    assert local.calls[0][0] == "local/any" and "Rack plans" in local.calls[0][1]
+    assert seen == []  # OpenAI untouched
+
+
+async def test_ask_escalates_after_local_failures_and_only_when_asked(service, monkeypatch):
+    await service.create("p", "P")
+    app = make_app(service)
+    seen: list[dict[str, Any]] = []
+    app.state.openai_engine = OpenAIEngine(
+        service, env={"NERVE_OPENAI_KEY": "k" * 20}, transport=fake_openai(seen)
+    )
+    app.state.projects_local_transport = local = FakeLocal(fail=5)
+    async with client(app) as c:
+        r = await c.post("/api/projects/p/ask", json={"prompt": "hi"})
+        assert r.json()["engine"] == "openai" and r.json()["reason"] == "local_failed"
+        assert len(local.calls) == 2  # default N = 2
+        local.calls.clear()
+        r = await c.post("/api/projects/p/ask", json={"prompt": "hi", "use_openai": True})
+        assert r.json()["reason"] == "owner_requested" and local.calls == []
+    assert len(seen) == 2
+
+
+async def test_ask_openai_503_without_key(service, monkeypatch):
+    await service.create("p", "P")
+    monkeypatch.delenv("NERVE_OPENAI_KEY", raising=False)
+    async with client(make_app(service)) as c:
+        r = await c.post("/api/projects/p/ask", json={"prompt": "hi", "use_openai": True})
         assert r.status_code == 503 and "not configured" in r.json()["detail"]
         assert (await c.get("/api/projects/openai/status")).json()["key_configured"] is False
-        seen: list[dict[str, Any]] = []
-        app.state.openai_engine = OpenAIEngine(
-            service, env={"NERVE_OPENAI_KEY": "k" * 20}, transport=fake_openai(seen)
-        )
-        r = await c.post("/api/projects/p/ask", json={"prompt": "hi"})
-        assert r.status_code == 200 and r.json()["content"] == "answer"
 
 
 def test_provider_registry_entry_never_contains_a_key(monkeypatch):

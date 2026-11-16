@@ -47,6 +47,7 @@ class OpenAIEngine:
         env: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout: float = 60.0,
+        limiter: Any = None,
     ) -> None:
         e = env if env is not None else os.environ
         self._key = (e.get(KEY_ENV) or "").strip() or None
@@ -55,6 +56,8 @@ class OpenAIEngine:
         self._context = context_provider  # object with async context_text(slug)
         self._transport = transport
         self._timeout = timeout
+        # NS-ADR-107: every call goes through the one app-wide OpenAILimiter.
+        self._limiter = limiter
 
     @property
     def configured(self) -> bool:
@@ -75,10 +78,29 @@ class OpenAIEngine:
             )
         return [{"role": "system", "content": system}, {"role": "user", "content": prompt}]
 
-    async def generate(self, prompt: str, project_slug: str | None = None) -> dict[str, Any]:
+    async def generate(
+        self,
+        prompt: str,
+        project_slug: str | None = None,
+        *,
+        caller: str = "openai",
+        reason: str = "owner_requested",
+    ) -> dict[str, Any]:
+        """One chat completion. ``reason`` is the NS-ADR-107 escalation code."""
         if not self._key:
             raise OpenAINotConfigured(f"OpenAI is not configured (set {KEY_ENV})")
         messages = await self.build_messages(prompt, project_slug)
+        if self._limiter is None:
+            return await self._once(messages, project_slug)
+        return await self._limiter.run(
+            lambda: self._once(messages, project_slug), caller=caller, reason=reason
+        )
+
+    async def _once(
+        self, messages: list[dict[str, str]], project_slug: str | None
+    ) -> dict[str, Any]:
+        from backend.inference.openai_limiter import OpenAIThrottled
+
         try:
             async with httpx.AsyncClient(
                 base_url=self._base_url, timeout=self._timeout, transport=self._transport
@@ -90,6 +112,8 @@ class OpenAIEngine:
                 )
         except httpx.HTTPError as exc:
             raise OpenAIError(f"cannot reach OpenAI ({exc.__class__.__name__})") from None
+        if resp.status_code == 429:
+            raise OpenAIThrottled(_retry_after(resp.headers.get("retry-after")))
         if resp.status_code >= 400:
             log.warning("openai.call_failed", status=resp.status_code)
             raise OpenAIError(f"OpenAI answered HTTP {resp.status_code}", resp.status_code)
@@ -106,3 +130,35 @@ class OpenAIEngine:
             "input_tokens": usage.get("prompt_tokens"),
             "output_tokens": usage.get("completion_tokens"),
         }
+
+
+def _retry_after(value: str | None) -> float | None:
+    """Seconds from a Retry-After header (delta-seconds or HTTP date)."""
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        pass
+    from email.utils import parsedate_to_datetime
+
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    from datetime import UTC, datetime
+
+    return max(0.0, (when - datetime.now(UTC)).total_seconds())
+
+
+def get_engine(app: Any) -> OpenAIEngine:
+    """App-wide engine: project context from the store, the shared limiter."""
+    existing = getattr(app.state, "openai_engine", None)
+    if existing is not None:
+        return existing
+    from backend.inference.openai_limiter import get_limiter
+    from backend.projects import get_service
+
+    engine = OpenAIEngine(get_service(app), limiter=get_limiter(app))
+    app.state.openai_engine = engine
+    return engine

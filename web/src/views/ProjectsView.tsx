@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { projectsApi, type OpenAIStatus, type ProjectDetail, type ProjectSummary } from '../api/projects'
+import { modelPolicyApi, type ModelPolicy } from '../api/modelPolicy'
 
 /**
  * ProjectsView (NS-ADR-104): shared project context. Notes are append-only and
@@ -13,6 +14,8 @@ function Detail({ slug, openai, onChanged }: { slug: string; openai: OpenAIStatu
   const [note, setNote] = useState('')
   const [prompt, setPrompt] = useState('')
   const [answer, setAnswer] = useState<string | null>(null)
+  const [answeredBy, setAnsweredBy] = useState<string | null>(null)
+  const [useOpenai, setUseOpenai] = useState(false)
   const [err, setErr] = useState<string | null>(null)
 
   const load = useCallback(async () => {
@@ -61,20 +64,23 @@ function Detail({ slug, openai, onChanged }: { slug: string; openai: OpenAIStatu
         onClick={() => void act(async () => { await projectsApi.addNote(slug, note.trim()); setNote('') })}
         className="rounded border border-border px-3 py-1 disabled:opacity-50">Add note</button>
       <section data-testid="proj-ask">
-        <h3 className="font-semibold text-primary">Ask OpenAI with this context</h3>
-        {openai && !openai.key_configured ? (
-          <p className="text-xs text-muted" data-testid="proj-openai-off">
-            OpenAI is not configured. Add the NERVE_OPENAI_KEY secret to turn this on.
-          </p>
-        ) : (
-          <>
-            <textarea aria-label="Question" className={input} rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
-            <button type="button" disabled={!prompt.trim()}
-              onClick={() => void act(async () => setAnswer((await projectsApi.ask(slug, prompt.trim())).content))}
-              className="rounded border border-border px-3 py-1 disabled:opacity-50">Ask</button>
-            {answer && <pre className="mt-2 whitespace-pre-wrap text-sm" data-testid="proj-answer">{answer}</pre>}
-          </>
-        )}
+        <h3 className="font-semibold text-primary">Ask with this context</h3>
+        <p className="text-xs text-muted">Local models answer first. OpenAI is used only if you tick the box below or the local models fail.</p>
+        <textarea aria-label="Question" className={input} rows={2} value={prompt} onChange={(e) => setPrompt(e.target.value)} />
+        <label className="block text-xs">
+          <input type="checkbox" checked={useOpenai} disabled={!!openai && !openai.key_configured}
+            onChange={(e) => setUseOpenai(e.target.checked)} /> Use OpenAI for this question
+          {openai && !openai.key_configured && <span data-testid="proj-openai-off"> (OpenAI is not configured)</span>}
+        </label>
+        <button type="button" disabled={!prompt.trim()}
+          onClick={() => void act(async () => {
+            const out = await projectsApi.ask(slug, prompt.trim(), useOpenai)
+            setAnswer(out.content)
+            setAnsweredBy(out.engine === 'local' ? `Local (${out.model})` : `OpenAI (${out.reason})`)
+          })}
+          className="rounded border border-border px-3 py-1 disabled:opacity-50">Ask</button>
+        {answer && <pre className="mt-2 whitespace-pre-wrap text-sm" data-testid="proj-answer">{answer}</pre>}
+        {answeredBy && <p className="text-xs text-muted" data-testid="proj-answered-by">Answered by {answeredBy}</p>}
       </section>
       {err && <p role="alert" className="text-danger">{err}</p>}
     </div>
@@ -107,6 +113,73 @@ function NewProject({ onCreated }: { onCreated: () => void }) {
         className="col-span-2 rounded border border-border px-3 py-1 text-sm disabled:opacity-50">Create project</button>
       {err && <p role="alert" className="col-span-2 text-sm text-danger">{err}</p>}
     </div>
+  )
+}
+
+function ModelUse() {
+  const [p, setP] = useState<ModelPolicy | null>(null)
+  const [err, setErr] = useState<string | null>(null)
+  const [kind, setKind] = useState('agent')
+  const [id, setId] = useState('')
+  const [mode, setMode] = useState('high_stakes')
+  const load = useCallback(async () => {
+    try {
+      setP(await modelPolicyApi.get())
+      setErr(null)
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Could not load model use')
+    }
+  }, [])
+  useEffect(() => {
+    void load()
+    const t = setInterval(() => void load(), 15000)
+    return () => clearInterval(t)
+  }, [load])
+  const act = async (fn: () => Promise<unknown>) => {
+    try {
+      await fn()
+      await load()
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : 'Action failed')
+    }
+  }
+  if (!p) return err ? <p role="alert" className="text-sm text-danger">{err}</p> : null
+  const o = p.openai
+  return (
+    <section className="rounded border border-border p-4 text-sm text-secondary" data-testid="model-use">
+      <h2 className="text-sm font-semibold text-primary">Model use</h2>
+      <p>Local first: {p.local_model}. OpenAI only when you ask, for a high-stakes task, or after {p.max_local_failures} local failures.</p>
+      <p data-testid="openai-usage">
+        OpenAI {o.key_configured ? `(${o.model_id})` : '(not configured)'}: today {o.today.requests} requests,{' '}
+        {o.today.input_tokens + o.today.output_tokens} tokens, {o.today.throttled} rate-limited. Queue {o.queue_depth},
+        running {o.in_flight}.{o.next_slot_at ? ` Next slot ${o.next_slot_at.slice(11, 19)} UTC.` : ''}
+      </p>
+      <p className="text-xs text-muted">
+        Limits: {o.limits.concurrency} at a time, {o.limits.min_spacing_s}s apart, {o.limits.max_requests_hour}/h, {o.limits.max_requests_day}/day.
+      </p>
+      <h3 className="mt-2 font-semibold text-primary">OpenAI permissions</h3>
+      <ul data-testid="grants">
+        {p.grants.length === 0 && <li className="text-xs text-muted">None. Everything stays local.</li>}
+        {p.grants.map((g) => (
+          <li key={`${g.subject_kind}:${g.subject_id}`}>
+            {g.subject_kind} {g.subject_id}: {g.mode === 'owner_requested' ? 'always use OpenAI' : 'high stakes (OpenAI after local fails)'}{' '}
+            <button type="button" className="text-xs underline" onClick={() => void act(() => modelPolicyApi.removeGrant(g.subject_kind, g.subject_id))}>Remove</button>
+          </li>
+        ))}
+      </ul>
+      <div className="mt-2 flex flex-wrap gap-2 text-xs">
+        <select aria-label="Kind" className="rounded border border-border bg-transparent" value={kind} onChange={(e) => setKind(e.target.value)}>
+          <option value="agent">agent</option><option value="project">project</option><option value="handoff">handoff</option>
+        </select>
+        <input aria-label="Id" placeholder="agent id or project slug" className="rounded border border-border bg-transparent px-1" value={id} onChange={(e) => setId(e.target.value)} />
+        <select aria-label="Mode" className="rounded border border-border bg-transparent" value={mode} onChange={(e) => setMode(e.target.value)}>
+          <option value="high_stakes">high stakes</option><option value="owner_requested">always use OpenAI</option>
+        </select>
+        <button type="button" disabled={!id.trim()} className="rounded border border-border px-2 disabled:opacity-50"
+          onClick={() => void act(async () => { await modelPolicyApi.setGrant({ subject_kind: kind as 'agent', subject_id: id.trim(), mode: mode as 'high_stakes' }); setId('') })}>Allow</button>
+      </div>
+      {err && <p role="alert" className="text-danger">{err}</p>}
+    </section>
   )
 }
 
@@ -157,6 +230,7 @@ export default function ProjectsView() {
         <h2 className="text-sm font-semibold text-primary">New project</h2>
         <NewProject onCreated={load} />
       </section>
+      <ModelUse />
     </div>
   )
 }
