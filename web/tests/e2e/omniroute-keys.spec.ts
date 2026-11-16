@@ -30,7 +30,7 @@ test('OmniRoute keys: set, test, clear; the value is never shown', async ({ page
     return r.fulfill(
       json(
         kind === 'regular'
-          ? { key: 'regular', ok: true, inference: { ok: true, status: 'ok', routes: 7, ready: 5 } }
+          ? { key: 'regular', ok: true, inference: { ok: true, status: 'ok', routes: 7 } }
           : {
               key: 'privileged',
               ok: false,
@@ -74,7 +74,7 @@ test('OmniRoute keys: set, test, clear; the value is never shown', async ({ page
 
   // Test buttons show counts and status only.
   await page.getByTestId('omniroute-test-regular').click()
-  await expect(page.getByTestId('omniroute-result-regular')).toContainText('7 routes, 5 ready')
+  await expect(page.getByTestId('omniroute-result-regular')).toContainText('7 routes')
   await page.getByTestId('omniroute-test-privileged').click()
   await expect(page.getByTestId('omniroute-result-privileged')).toContainText('950 skills')
   await expect(page.getByTestId('omniroute-result-privileged')).toContainText('OmniRoute MCP: unauthorized')

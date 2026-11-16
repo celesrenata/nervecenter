@@ -92,12 +92,14 @@ def _mock_omniroute(request: httpx.Request) -> httpx.Response:
     auth = request.headers.get("authorization", "")
     if auth not in (f"Bearer {VAULT_REGULAR}", f"Bearer {VAULT_PRIV}"):
         return httpx.Response(401, json={"error": "bad key echo-" + auth})
-    if request.url.path == "/v1/routes":
+    if request.url.path == "/v1/models":
         return httpx.Response(
-            200, json={"routes": [{"availability": "ready"}, {"availability": "down"}]}
+            200, json={"object": "list", "data": [{"id": "secure/coder"}, {"id": "auto/fast"}]}
         )
     if request.url.path == "/api/skills/catalog":
-        return httpx.Response(200, json={"results": [{"id": "s1"}], "total": 950})
+        return httpx.Response(
+            200, json={"query": "", "count": 950, "results": [{"id": "s1"}]}
+        )
     if request.url.path == "/api/mcp/stream":
         return httpx.Response(
             200, json={"jsonrpc": "2.0", "id": 1, "result": {}}, headers={"mcp-session-id": "s"}
@@ -234,7 +236,6 @@ def test_test_buttons_report_counts_and_status_only(api):
         "ok": True,
         "status": "ok",
         "routes": 2,
-        "ready": 1,
     }
     priv = c.post("/api/settings/omniroute/keys/privileged/test").json()
     assert priv["ok"] is True

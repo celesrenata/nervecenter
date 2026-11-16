@@ -173,7 +173,7 @@ def _classify(code: int | str | None) -> str:
 
 
 async def _test_regular() -> dict[str, Any]:
-    """Inference health: the OmniRoute route list, read with the regular key."""
+    """Inference health: the OmniRoute model/route list, read with the regular key."""
     key = kr.regular_key()
     if not key:
         return {"ok": False, "status": "not_set"}
@@ -182,17 +182,17 @@ async def _test_regular() -> dict[str, Any]:
         return {"ok": False, "status": "unconfigured"}
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=False) as client:
-            resp = await client.get(f"{base}/v1/routes", headers={"Authorization": f"Bearer {key}"})
+            resp = await client.get(f"{base}/v1/models", headers={"Authorization": f"Bearer {key}"})
         resp.raise_for_status()
         data = resp.json()
     except httpx.HTTPStatusError as exc:
         return {"ok": False, "status": _classify(exc.response.status_code)}
     except Exception:  # noqa: BLE001 - status class only
         return {"ok": False, "status": "unreachable"}
-    routes = data.get("routes") if isinstance(data, dict) else None
+    # OpenAI-shaped list: {"object": "list", "data": [{"id": "secure/coder", ...}]}.
+    routes = data.get("data") if isinstance(data, dict) else None
     routes = [r for r in routes or [] if isinstance(r, dict)]
-    ready = sum(1 for r in routes if r.get("availability") == "ready")
-    return {"ok": True, "status": "ok", "routes": len(routes), "ready": ready}
+    return {"ok": True, "status": "ok", "routes": len(routes)}
 
 
 async def _test_catalog() -> dict[str, Any]:
@@ -203,14 +203,16 @@ async def _test_catalog() -> dict[str, Any]:
     if not client.configured:
         return {"ok": False, "status": "not_set"}
     try:
-        params = {"query": "a", "limit": 1}
-        data = await client._request("GET", "/api/skills/catalog", params=params)
+        # No query or limit: Skill Hub's ``count`` is the size of the returned
+        # page, so only the unfiltered list gives the catalog size.
+        data = await client._request("GET", "/api/skills/catalog")
     except httpx.HTTPStatusError as exc:
         return {"ok": False, "status": _classify(exc.response.status_code)}
     except Exception:  # noqa: BLE001
         return {"ok": False, "status": "unreachable"}
-    total = data.get("total") if isinstance(data, dict) else None
-    count = total if isinstance(total, int) else len((data or {}).get("results", []))
+    data = data if isinstance(data, dict) else {}
+    total = data.get("total", data.get("count"))
+    count = total if isinstance(total, int) else len(data.get("results") or [])
     return {"ok": True, "status": "ok", "skills": count}
 
 

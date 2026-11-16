@@ -34,7 +34,8 @@ function describeCheck(label: string, c: OmniRouteCheck | undefined): string {
   if (!c) return ''
   if (!c.ok) return `${label}: ${c.status.replace(/_/g, ' ')}`
   const counts: string[] = []
-  if (c.routes !== undefined) counts.push(`${c.routes} routes, ${c.ready ?? 0} ready`)
+  if (c.routes !== undefined)
+    counts.push(c.ready !== undefined ? `${c.routes} routes, ${c.ready} ready` : `${c.routes} routes`)
   if (c.skills !== undefined) counts.push(`${c.skills} skills`)
   return `${label}: ok${counts.length ? ` (${counts.join(', ')})` : ''}`
 }
