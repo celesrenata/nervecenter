@@ -60,3 +60,15 @@ test('connectors, write-only credentials, host key confirmation and plan approva
     JSON.stringify({ act_mode: 'opencode' }),
   ])
 })
+
+test('an SSH host without a pinned key explains the next step and keeps Test disabled', async ({ page }) => {
+  await page.route('**/api/infra/connectors', (r) => r.fulfill({ json: { connectors: [
+    { id: 's1', kind: 'ssh', name: 'esnixi', secret_set: true, updated_at: null, host: '192.168.133.3', port: 22,
+      user: 'celes', host_key_status: 'unpinned', fingerprints: [], pending_fingerprints: [] },
+  ] } }))
+  await page.route('**/api/infra/plans', (r) => r.fulfill({ json: { plans: [] } }))
+  await seedBreakGlassSession(page)
+  await page.goto('/infrastructure', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByTestId('infra-needs-key-esnixi')).toContainText('Scan host key')
+  await expect(page.getByTestId('infra-test-esnixi')).toBeDisabled()
+})

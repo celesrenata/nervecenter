@@ -6,7 +6,7 @@ import {
   durableInferenceApi,
   type DurableCombo,
 } from '../api/inferenceDurable'
-import { ApiError } from '../api/client'
+import { ApiError, apiFetch } from '../api/client'
 
 /**
  * Agents view — round 3 (AG-2, AG-3 resolved).
@@ -118,6 +118,9 @@ const AgentsView = () => {
   const [inferComboInitial, setInferComboInitial] = useState('')
   const [inferCombos, setInferCombos] = useState<DurableCombo[]>([])
   const [inferCombosLoading, setInferCombosLoading] = useState(false)
+  // OmniRoute combos (secure/coder, local/esnixi, ...): any agent can run on one;
+  // the choice is stored as the agent's model ("or:<name>" in the picker).
+  const [orCombos, setOrCombos] = useState<{ name: string; enabled: boolean; secure: boolean; models: string[] }[]>([])
 
   const openInference = async (agentId: string) => {
     setInferenceAgentId(agentId)
@@ -126,8 +129,21 @@ const AgentsView = () => {
     const agent = agents.find((a) => a.id === agentId)
     setInferProvider(agent?.inference?.provider ?? '')
     setInferModel(agent?.inference?.model ?? '')
-    setInferCombo(agent?.combo_id ?? '')
-    setInferComboInitial(agent?.combo_id ?? '')
+    const model = agent?.inference?.model ?? ''
+    const initial =
+      agent?.inference?.provider === 'omniroute' && model.includes('/')
+        ? `or:${model}`
+        : agent?.combo_id
+          ? `nc:${agent.combo_id}`
+          : ''
+    setInferCombo(initial)
+    setInferComboInitial(initial)
+    if (orCombos.length === 0) {
+      apiFetch('/api/agents/omniroute-combos')
+        .then(async (res: Response) => (res.ok ? ((await res.json()) as { combos: typeof orCombos }).combos : []))
+        .then(setOrCombos)
+        .catch(() => setOrCombos([]))
+    }
     if (inferOptions === null && !inferOptionsLoading) {
       setInferOptionsLoading(true)
       try {
@@ -176,23 +192,21 @@ const AgentsView = () => {
       // the key leaves it unchanged — so a model-only save never clobbers a
       // live combo shadow.
       const payload: AgentUpdatePayload = {}
-      if (inferProvider || inferModel) {
-        payload.inference = {
-          provider: inferProvider || null,
-          model: inferModel || null,
-        }
-      }
       const target = agents.find((a) => a.id === inferenceAgentId)
-      if (target && isBuiltin(target)) {
-        // Built-ins have no combo binding; a blank choice clears the override.
-        payload.inference = {
-          provider: inferProvider || null,
-          model: inferModel || null,
+      const builtin = !!target && isBuiltin(target)
+      const hadNcCombo = inferComboInitial.startsWith('nc:')
+      if (inferCombo.startsWith('or:')) {
+        // An OmniRoute combo is the agent's model; it replaces a NerveCenter combo.
+        payload.inference = { provider: 'omniroute', model: inferCombo.slice(3) }
+        if (!builtin && hadNcCombo) payload.combo_id = ''
+      } else {
+        if (inferProvider || inferModel || builtin) {
+          payload.inference = { provider: inferProvider || null, model: inferModel || null }
         }
-      } else if (inferCombo) {
-        payload.combo_id = inferCombo
-      } else if (inferComboInitial) {
-        payload.combo_id = ''
+        if (!builtin) {
+          if (inferCombo.startsWith('nc:')) payload.combo_id = inferCombo.slice(3)
+          else if (hadNcCombo) payload.combo_id = ''
+        }
       }
       await agentsApi.update(inferenceAgentId, payload)
       setInferSuccess(true)
@@ -844,19 +858,42 @@ const AgentsView = () => {
                 id="agent-infer-combo"
                 data-testid="agent-infer-combo"
                 value={inferCombo}
-                onChange={(e) => setInferCombo(e.target.value)}
+                onChange={(e) => {
+                  const v = e.target.value
+                  setInferCombo(v)
+                  if (v.startsWith('or:')) {
+                    setInferProvider('omniroute')
+                    setInferModel(v.slice(3))
+                  }
+                }}
                 disabled={inferBusy}
                 className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
               >
-                <option value="">None (per-agent default)</option>
-                {(inferCombos.length === 0 && inferCombosLoading) && (
-                  <option value="">Loading…</option>
+                <option value="">None (use provider / model below)</option>
+                {orCombos.length > 0 && (
+                  <optgroup label="OmniRoute combos">
+                    {orCombos.map((c) => (
+                      <option key={c.name} value={`or:${c.name}`} disabled={!c.enabled}>
+                        {c.name}{c.models.length ? ` (${c.models.join(', ')})` : ''}{c.enabled ? '' : ' — disabled'}
+                      </option>
+                    ))}
+                  </optgroup>
                 )}
-                {inferCombos.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name} ({c.provider_name} / {c.model_id})
-                  </option>
-                ))}
+                {inferCombo.startsWith('or:') && !orCombos.some((c) => `or:${c.name}` === inferCombo) && (
+                  <option value={inferCombo}>{inferCombo.slice(3)}</option>
+                )}
+                {!(agents.find((a) => a.id === inferenceAgentId) && isBuiltin(agents.find((a) => a.id === inferenceAgentId)!)) && inferCombos.length > 0 && (
+                  <optgroup label="NerveCenter combos">
+                    {inferCombos.map((c) => (
+                      <option key={c.id} value={`nc:${c.id}`}>
+                        {c.name} ({c.provider_name} / {c.model_id})
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {(inferCombos.length === 0 && inferCombosLoading) && (
+                  <option value="" disabled>Loading…</option>
+                )}
               </select>
               <p className="mt-1 text-xs text-muted">
                 A combo shadows the provider/model below and is resolved at

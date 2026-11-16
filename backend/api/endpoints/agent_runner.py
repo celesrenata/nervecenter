@@ -114,6 +114,52 @@ def _gateway(request: Request) -> ToolGateway:
     return gateway if gateway is not None else ToolGateway()
 
 
+_COMBO_CACHE: dict[str, Any] = {"at": 0.0, "combos": None}
+COMBO_CACHE_S = 60.0
+
+
+def _parse_combos(result: Any) -> list[dict[str, Any]]:
+    import json as _json
+
+    data = result
+    if isinstance(result, str):
+        try:
+            data = _json.loads(result)
+        except ValueError:
+            return []
+    items = data.get("combos", []) if isinstance(data, dict) else data
+    out: list[dict[str, Any]] = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+            continue
+        models = [m.get("model") for m in item.get("models") or [] if isinstance(m, dict)]
+        out.append({
+            "name": item["name"],
+            "enabled": bool(item.get("enabled", True)),
+            "secure": item["name"].startswith("secure/"),
+            "models": [m for m in models if isinstance(m, str)][:8],
+        })
+    return sorted(out, key=lambda c: (not c["secure"], c["name"]))
+
+
+@router.get("/api/agents/omniroute-combos")
+async def omniroute_combos(request: Request) -> dict[str, Any]:
+    """OmniRoute combos an agent can run on (names and their models only; cached 60 s).
+
+    Choosing one sets the agent's model to the combo name (e.g. ``secure/coder``);
+    the runner's local-first routing and secure/no-memory rules still apply.
+    """
+    import time
+
+    now = time.monotonic()
+    if _COMBO_CACHE["combos"] is None or now - _COMBO_CACHE["at"] > COMBO_CACHE_S:
+        outcome = await _gateway(request).call(None, "omniroute", "omniroute_list_combos", {})
+        combos = _parse_combos(outcome.get("result")) if outcome.get("ok") else []
+        if combos or _COMBO_CACHE["combos"] is None:
+            _COMBO_CACHE.update(at=now, combos=combos)
+    return {"combos": _COMBO_CACHE["combos"] or []}
+
+
 @router.get("/api/agents/tools")
 async def list_tools(request: Request) -> dict[str, Any]:
     """The frozen tool allowlist and whether each server is reachable-configured."""

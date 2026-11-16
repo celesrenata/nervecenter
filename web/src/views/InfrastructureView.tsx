@@ -13,6 +13,17 @@ const btn = 'rounded px-3 py-1.5 text-sm font-medium disabled:opacity-50'
 const primary = `${btn} bg-blue-600 text-white hover:bg-blue-700`
 const secondary = `${btn} border border-line text-primary hover:bg-hover`
 
+/** Plain-language text for the executor's refusal codes. */
+const REASONS: Record<string, string> = {
+  host_key_not_pinned: 'The host key is not confirmed yet: press "Scan host key", check the fingerprint, then "Trust these keys".',
+  ssh_key_missing: 'No SSH key is stored yet: paste the private key and press "Save credential".',
+  kube_token_missing: 'No token is stored yet: paste it and press "Save credential".',
+  host_unreachable: 'The host did not answer on that port.',
+  binary_missing: 'The executor is missing kubectl or ssh.',
+  unknown_connector: 'That connector no longer exists.',
+}
+const reasonText = (code?: string) => (code ? REASONS[code] ?? code : 'unknown')
+
 function stepText(s: InfraStep): string {
   if (s.args) return `kubectl ${s.args.join(' ')}`
   const params = s.params && Object.keys(s.params).length ? ` ${JSON.stringify(s.params)}` : ''
@@ -41,7 +52,11 @@ function AddConnector({ onAdded }: { onAdded: () => void }) {
         kind === 'kubernetes'
           ? { server, namespace: namespace || undefined, ca_pem: ca || undefined, insecure_skip_tls_verify: insecure }
           : { host, port, user }
-      await infraApi.create(kind, name, config)
+      const created = await infraApi.create(kind, name, config)
+      if (kind === 'ssh') {
+        // Fetch the host key straight away so its fingerprint is ready to confirm.
+        await infraApi.scanHostKey(created.name).catch(() => undefined)
+      }
       setName('')
       onAdded()
     } catch (err) {
@@ -143,10 +158,11 @@ function ConnectorCard({ c, onChange }: { c: InfraConnector; onChange: () => voi
     }, 'Saved to the encrypted vault.')
   }
 
+  const needsHostKey = c.kind === 'ssh' && c.host_key_status !== 'pinned'
   const test = () =>
     void run(async () => {
       const r = await infraApi.test(c.name)
-      setOutput(r.ok ? r.output ?? '' : `Refused or failed: ${r.denied_reason ?? r.output ?? 'unknown'}`)
+      setOutput(r.ok ? r.output ?? '' : `Refused or failed: ${r.denied_reason ? reasonText(r.denied_reason) : r.output ?? 'unknown'}`)
     })
 
   return (
@@ -164,7 +180,15 @@ function ConnectorCard({ c, onChange }: { c: InfraConnector; onChange: () => voi
           </p>
         </div>
         <div className="flex gap-2">
-          <button className={secondary} disabled={busy || !c.secret_set} onClick={test} data-testid={`infra-test-${c.name}`}>Test</button>
+          <button
+            className={secondary}
+            disabled={busy || !c.secret_set || needsHostKey}
+            title={needsHostKey ? 'Confirm the host key first' : !c.secret_set ? 'Save a credential first' : undefined}
+            onClick={test}
+            data-testid={`infra-test-${c.name}`}
+          >
+            Test
+          </button>
           {c.kind === 'ssh' && (
             <button className={secondary} disabled={busy} onClick={() => void run(() => infraApi.scanHostKey(c.name))} data-testid={`infra-scan-${c.name}`}>
               Scan host key
@@ -188,6 +212,11 @@ function ConnectorCard({ c, onChange }: { c: InfraConnector; onChange: () => voi
             Trust these keys
           </button>
         </div>
+      )}
+      {needsHostKey && c.host_key_status !== 'pending' && (
+        <p className="text-sm text-amber-700 dark:text-amber-300" data-testid={`infra-needs-key-${c.name}`}>
+          Before this host can be used: press <strong>Scan host key</strong>, check the fingerprint, then <strong>Trust these keys</strong>.
+        </p>
       )}
       {c.kind === 'ssh' && c.host_key_status === 'pinned' && (
         <p className="font-mono text-xs text-muted">Pinned: {(c.fingerprints ?? []).join(', ')}</p>
