@@ -311,6 +311,7 @@ class TestEventsWebSocket:
         """Event bus not configured → honest error frame, then the socket closes."""
         with TestClient(app) as c:
             with c.websocket_connect("/api/events/ws") as ws:
+                ws.send_text('{"type": "auth", "token": "fake-test-token"}')
                 frame = ws.receive_text()
         import json
 
@@ -323,6 +324,7 @@ class TestEventsWebSocket:
         with TestClient(app) as c:
             app.state.nats_client = _FakeNats()
             with c.websocket_connect("/api/events/ws") as ws:
+                ws.send_text('{"type": "auth", "token": "fake-test-token"}')
                 frame = ws.receive_text()
         import json
 

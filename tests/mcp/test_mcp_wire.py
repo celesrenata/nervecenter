@@ -13,6 +13,7 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 from fastapi.testclient import TestClient
 
 import mcp
@@ -234,7 +235,34 @@ def test_build_server_stdio_and_http() -> None:
     assert http_server.transport == "http"
 
 
-def test_http_app_serves_both_mcp_path_spellings() -> None:
+SERVER_TOKEN = "mcp-wire-test-server-token-0123456789abcdef"
+
+
+def test_http_endpoints_require_the_server_bearer(monkeypatch: pytest.MonkeyPatch) -> None:
+    """NS-ADR-122: /mcp and /mcp/ refuse without a configured bearer; health stays open."""
+    message = {"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+    app = create_app(api=_mock_api(lambda request: httpx.Response(200, json={})))
+    with TestClient(app) as client:
+        monkeypatch.delenv("NERVE_MCP_SERVER_TOKENS", raising=False)
+        for path in ("/mcp", "/mcp/"):
+            assert client.post(path, json=message).status_code == 401
+            assert (
+                client.post(path, json=message, headers={"Authorization": f"Bearer {SERVER_TOKEN}"}).status_code
+                == 401
+            )  # no tokens configured: fail closed
+        monkeypatch.setenv("NERVE_MCP_SERVER_TOKENS", f"{SERVER_TOKEN},other-{SERVER_TOKEN}")
+        for path in ("/mcp", "/mcp/"):
+            assert client.post(path, json=message).status_code == 401
+            bad = client.post(path, json=message, headers={"Authorization": f"Bearer {SERVER_TOKEN}x"})
+            assert bad.status_code == 401
+            assert SERVER_TOKEN not in bad.text
+            ok = client.post(path, json=message, headers={"Authorization": f"Bearer {SERVER_TOKEN}"})
+            assert ok.status_code == 200
+        assert client.get("/mcp/health").status_code == 200
+
+
+def test_http_app_serves_both_mcp_path_spellings(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NERVE_MCP_SERVER_TOKENS", SERVER_TOKEN)
     """The JSON-RPC POST handler is registered on BOTH ``/mcp`` and ``/mcp/``.
 
     The ingress serves the ``/mcp/`` prefix behind TLS while plain ``/mcp``
@@ -255,7 +283,9 @@ def test_http_app_serves_both_mcp_path_spellings() -> None:
     with TestClient(app, follow_redirects=False) as client:
         for path in ("/mcp", "/mcp/"):
             response = client.post(
-                path, json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}
+                path,
+                json={"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}},
+                headers={"Authorization": f"Bearer {SERVER_TOKEN}"},
             )
             assert response.status_code == 200, path  # no 307/301 redirect
             body = response.json()

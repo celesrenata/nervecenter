@@ -37,8 +37,9 @@ import json
 from typing import Any
 
 import structlog
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 
+from backend.api import auth
 from backend.events.models import EventEnvelope
 
 log = structlog.get_logger(__name__)
@@ -50,9 +51,36 @@ router = APIRouter(prefix="/api/events", tags=["events-ws"])
 #: the upstream proxy warm. 30s is comfortably under the nginx ``proxy_read_timeout``.
 FETCH_TIMEOUT_S = 30.0
 
+#: Seconds a new connection has to send its auth frame, and the close code used
+#: when it does not (or the credential is not a signed-in person).
+AUTH_TIMEOUT_S = 5.0
+CLOSE_UNAUTHORIZED = 4401
+
 
 def _frame(kind: str, payload: Any) -> str:
     return json.dumps({"type": kind, "payload": payload}, default=str)
+
+
+async def _authenticate_first_frame(websocket: WebSocket) -> bool:
+    """Read ``{"type":"auth","token":...}`` and verify it as a person (NS-ADR-122).
+
+    A browser WebSocket cannot send an ``Authorization`` header, so the first
+    frame carries the bearer token. On any failure the socket closes with 4401.
+    """
+    try:
+        raw = await asyncio.wait_for(websocket.receive_text(), timeout=AUTH_TIMEOUT_S)
+        frame = json.loads(raw)
+        is_auth = isinstance(frame, dict) and frame.get("type") == "auth"
+        token = frame.get("token") if is_auth else None
+        if not isinstance(token, str) or not token:
+            raise ValueError("no auth frame")
+        await auth._authenticate_default(websocket, token)
+    except WebSocketDisconnect:
+        return False
+    except (TimeoutError, ValueError, HTTPException):
+        await websocket.close(code=CLOSE_UNAUTHORIZED)
+        return False
+    return True
 
 
 async def _forward_event(websocket: WebSocket, subscription: Any, subject: str) -> None:
@@ -98,6 +126,8 @@ async def _forward_event(websocket: WebSocket, subscription: Any, subject: str) 
 async def events_websocket(websocket: WebSocket) -> None:
     """Accept a realtime connection and stream live events until disconnect."""
     await websocket.accept()
+    if not await _authenticate_first_frame(websocket):
+        return
 
     nats = getattr(websocket.app.state, "nats_client", None)
     if nats is None:

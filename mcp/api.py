@@ -8,6 +8,7 @@ run. An optional ``httpx`` transport can be injected for tests.
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from typing import Any
 
@@ -15,6 +16,9 @@ import httpx
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 TRACE_HEADER = "Nerve-Trace-Id"
+#: Internal service credential the api accepts for this pod's tool paths only
+#: (NS-ADR-122). Never logged.
+API_TOKEN_ENV = "NERVE_MCP_API_TOKEN"
 
 
 class ApiError(Exception):
@@ -52,9 +56,11 @@ class NerveAPI:
         timeout: float = 10.0,
         transport: httpx.BaseTransport | None = None,
         trace_header: str = TRACE_HEADER,
+        api_token: str | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.trace_header = trace_header
+        self._api_token = api_token if api_token is not None else os.environ.get(API_TOKEN_ENV, "")
         self._client = httpx.AsyncClient(base_url=self.base_url, timeout=timeout, transport=transport)
 
     async def close(self) -> None:
@@ -68,7 +74,10 @@ class NerveAPI:
         await self.close()
 
     def _headers(self) -> dict[str, str]:
-        return {self.trace_header: uuid.uuid4().hex}
+        headers = {self.trace_header: uuid.uuid4().hex}
+        if self._api_token:
+            headers["Authorization"] = f"Bearer {self._api_token}"
+        return headers
 
     async def request(
         self,

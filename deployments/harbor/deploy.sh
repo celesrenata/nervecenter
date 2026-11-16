@@ -10,6 +10,7 @@
 #   6. apply    — render kustomize to yaml, sed-retag :latest -> TAG, apply (amd64)
 #   7. wait     — migration Job Complete, then workloads Available/Ready
 #   8. probe    — in-pod /api/health (python stdlib) + web index (wget)
+#               + default-deny route-auth check (check-route-auth.py)
 #   9. print    — ingress URL https://nervecenter.celestium.life
 #
 # Usage:
@@ -264,6 +265,13 @@ log "api in-pod probe OK: ${api_pod}"
 kubectl -n "${NS}" exec "${web_pod}" -- wget -q -O - http://127.0.0.1/ >/dev/null \
   || fail "web pod ${web_pod} failed index probe"
 log "web in-pod probe OK: ${web_pod}"
+# Default-deny check (NS-ADR-122): every operation outside the public allowlist
+# must refuse an unauthenticated call. Runs inside the api pod against
+# 127.0.0.1:8000 (and 8001 for the infra MCP listener); a non-zero exit fails
+# the deploy. It sends no credential and only invalid ids / empty bodies.
+kubectl -n "${NS}" exec -i "${api_pod}" -c api -- python - < deployments/harbor/check-route-auth.py \
+  || fail "route-auth check failed on ${api_pod}: a route answers without a login (see output above)"
+log "route-auth check OK: 0 open routes outside the allowlist"
 
 # --- 9. done ----------------------------------------------------------------------
 log "deploy ${TAG} complete"

@@ -14,6 +14,14 @@ data:
   APP_ENV: "production"
   LOG_LEVEL: "INFO"
   TZ: "UTC"
+  # Sessions (NS-ADR-123): access token 1 h refreshed silently; 24 h sliding idle
+  # timeout; 30 day absolute cap; 10 s grace for concurrent tabs. The refresh
+  # cookie is Secure (set NERVE_COOKIE_SECURE=0 only for plain-http local dev).
+  NERVE_ACCESS_TOKEN_TTL_MINUTES: "60"
+  NERVE_SESSION_IDLE_HOURS: "24"
+  NERVE_SESSION_MAX_DAYS: "30"
+  NERVE_REFRESH_REUSE_GRACE_SECONDS: "10"
+  NERVE_COOKIE_SECURE: "1"
   # api listens on 8000 inside the pod (uvicorn entrypoint).
   API_PORT: "8000"
   # web (nginx) proxies to the api Service in this namespace.

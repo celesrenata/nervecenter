@@ -249,3 +249,21 @@ full kustomization prematurely would send every visitor to a Keycloak
 the `nervecenter/` folder of the Skill Hub NFS share. It is not in the base kustomization,
 so `deploy.sh` never runs it. Use `python -m backend.owner_tools.skillhub_upload`
 (`plan`, then `apply --approved`, `refresh`, `verify`); see that folder's README.
+
+## Default-deny API and the mcp credential (NS-ADR-122)
+
+Every api route needs a signed-in person (SSO, NerveCenter session or personal API
+token) unless it is on the allowlist in `backend/api/public_routes.py`.
+
+- **mcp pod**: the api accepts the scoped service credential `NERVE_INTERNAL_SERVICE_TOKENS`
+  (`mcp:<token>`, built from Secret `nervecenter-internal-mcp` key `api-token`) only on the
+  paths in `mcp/tools_module.py`. The mcp pod sends it as `NERVE_MCP_API_TOKEN`, and
+  requires `Authorization: Bearer` on `/mcp` and `/mcp/` (`NERVE_MCP_SERVER_TOKENS`, Secret
+  key `server-tokens`; `GET /mcp/health` stays open).
+  **Deploy both together**: the api change alone breaks the mcp tools (401), and the mcp
+  bearer alone has nothing to send. Create the Secret first (`secrets.yaml.example`).
+- **Post-deploy check**: `deploy.sh` runs `deployments/harbor/check-route-auth.py` inside the
+  api pod. It calls every operation without a credential and fails the deploy when a
+  non-allowlisted route answers anything but 401/403. Local run (no Postgres, no 8001
+  listener): start the app, then
+  `NERVE_CHECK_BASE=http://127.0.0.1:8000 NERVE_CHECK_LOCAL=1 python deployments/harbor/check-route-auth.py`.

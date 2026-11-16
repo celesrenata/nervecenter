@@ -9,6 +9,7 @@ catalogue metadata (names, total, required args) and error behavior.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -256,3 +257,25 @@ def test_base_url_env_override(monkeypatch: Any) -> None:
     monkeypatch.setenv("NERVE_API", "http://127.0.0.1:9999")
     assert resolve_base_url() == "http://127.0.0.1:9999"
     assert resolve_base_url("http://arg:1") == "http://arg:1"
+
+
+def test_api_service_token_is_sent_as_bearer_and_never_in_errors() -> None:
+    """NS-ADR-122: the pod sends NERVE_MCP_API_TOKEN to the api on every call."""
+    token = "fake-mcp-api-token-0123456789abcdef012345"
+    seen: list[str | None] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.headers.get("authorization"))
+        return httpx.Response(401, json={"detail": "nope"})
+
+    async def run() -> str:
+        api = NerveAPI("http://unit-test", transport=httpx.MockTransport(handler), api_token=token)
+        try:
+            await api.get("/api/search")
+        except Exception as exc:  # noqa: BLE001 - asserting on the message
+            return str(exc)
+        return ""
+
+    message = asyncio.run(run())
+    assert seen == [f"Bearer {token}"]
+    assert token not in message

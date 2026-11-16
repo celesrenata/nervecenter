@@ -32,13 +32,15 @@ import hmac
 import secrets
 from typing import Annotated, Any
 
+import jwt
 import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
+from starlette.requests import HTTPConnection
 
-from backend.api import auth_service, auth_sessions
+from backend.api import auth_service, auth_sessions, public_routes, service_auth
 from backend.api.auth_service import (
     TYP_ACCESS,
     TokenError,
@@ -167,7 +169,7 @@ class ApprovalDecisionRequest(BaseModel):
 # ─── Auth context (per-request) ────────────────────────────────────────────────
 
 
-def _get_ctx(request: Request) -> "auth_service.AuthContext":
+def _get_ctx(request: HTTPConnection) -> "auth_service.AuthContext":
     """Return the app-scoped :class:`AuthContext`, building it on first use.
 
     ``request.app.state.db_engine`` (set by
@@ -194,6 +196,50 @@ def _get_ctx(request: Request) -> "auth_service.AuthContext":
     return ctx
 
 
+def _bearer_token(conn: HTTPConnection) -> str | None:
+    """The bearer token of the ``Authorization`` header, if any."""
+    scheme, _, value = (conn.headers.get("authorization") or "").partition(" ")
+    value = value.strip()
+    return value if scheme.lower() == "bearer" and value else None
+
+
+def _route_template(conn: HTTPConnection) -> str:
+    return getattr(conn.scope.get("route"), "path", None) or "unknown"
+
+
+async def _authenticate_token(conn: HTTPConnection, token: str) -> dict[str, Any]:
+    """Verify one bearer token and return its claims (401 on any failure).
+
+    Order: internal service token (scoped, never a person), personal API token,
+    then a NerveCenter or SSO JWT. A service token outside its scope is a 403.
+    """
+    ctx = _get_ctx(conn)
+    service = service_auth.identify_service(token)
+    if service is not None:
+        method = "WS" if conn.scope.get("type") == "websocket" else conn.scope.get("method", "")
+        if not service_auth.authorize_service(service, method, conn.url.path):
+            raise HTTPException(
+                status_code=403, detail="service credential is not scoped for this route"
+            )
+        return service_auth.service_claims(service)
+    try:
+        if auth_sessions.looks_like_pat(token):
+            claims = await auth_sessions.authenticate_pat(ctx, token)
+            log.info(
+                "auth.pat_used",
+                token_id=claims["token_id"],
+                token_name=claims["token_name"],
+                method=conn.scope.get("method", "WS"),
+                route=_route_template(conn),
+            )
+            return claims
+        return await ctx.verify_token(token, expected_typ=TYP_ACCESS)
+    except TokenError as exc:
+        raise HTTPException(status_code=401, detail=exc.detail) from exc
+    except jwt.PyJWTError as exc:
+        raise HTTPException(status_code=401, detail="invalid bearer token") from exc
+
+
 async def current_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Security(bearer),
@@ -202,25 +248,62 @@ async def current_access(
 
     Raises ``401`` for missing/invalid/expired/revoked tokens.
     """
-    ctx = _get_ctx(request)
     if credentials is None or not credentials.credentials:
         raise HTTPException(status_code=401, detail="missing bearer token")
-    token = credentials.credentials
+    return await _authenticate_token(request, credentials.credentials)
+
+
+async def _device_claims(conn: HTTPConnection, token: str) -> dict[str, Any] | None:
+    """Claims of a live paired-device credential, or ``None``."""
+    ctx = _get_ctx(conn)
     try:
-        if auth_sessions.looks_like_pat(token):
-            claims = await auth_sessions.authenticate_pat(ctx, token)
-            route = request.scope.get("route")
-            log.info(
-                "auth.pat_used",
-                token_id=claims["token_id"],
-                token_name=claims["token_name"],
-                method=request.method,
-                route=getattr(route, "path", None) or "unknown",
-            )
-            return claims
-        return await ctx.verify_token(token, expected_typ=TYP_ACCESS)
-    except TokenError as exc:
-        raise HTTPException(status_code=401, detail=exc.detail) from exc
+        claims = await ctx.verify_token(token, expected_typ=auth_service.TYP_DEVICE)
+    except (TokenError, jwt.PyJWTError):
+        return None
+    if claims.get("typ") != auth_service.TYP_DEVICE:
+        return None
+    device_id = claims.get("device_id")
+    if device_id and await auth_service._device_revoked(ctx, str(device_id)):
+        return None
+    return claims
+
+
+async def _authenticate_default(
+    conn: HTTPConnection, token: str | None = None, *, allow_device: bool = False
+) -> dict[str, Any]:
+    """Authenticate the caller for the default-deny gate (NS-ADR-122).
+
+    Accepts a signed-in person (SSO, NerveCenter session, personal API token)
+    or a scoped internal service credential. A device credential is a 403, or
+    accepted when ``allow_device`` (the approvals routes). The test suite
+    replaces this function; production has no bypass.
+    """
+    token = token or _bearer_token(conn)
+    if not token:
+        raise HTTPException(status_code=401, detail="missing bearer token")
+    try:
+        return await _authenticate_token(conn, token)
+    except HTTPException as exc:
+        if exc.status_code != 401:
+            raise
+        device = await _device_claims(conn, token)
+        if device is None:
+            raise
+        if allow_device:
+            return device
+        raise HTTPException(status_code=403, detail="A signed-in person is required.") from exc
+
+
+async def require_person(conn: HTTPConnection) -> None:
+    """App-level dependency: every route needs a person unless allowlisted."""
+    method = "WS" if conn.scope.get("type") == "websocket" else conn.scope.get("method", "")
+    template = getattr(conn.scope.get("route"), "path", None)
+    if public_routes.is_public(method, template):
+        return
+    claims = await _authenticate_default(
+        conn, allow_device=public_routes.is_person_or_device(method, template)
+    )
+    conn.state.principal = claims
 
 
 def _constant_time_equal(a: str, b: str) -> bool:

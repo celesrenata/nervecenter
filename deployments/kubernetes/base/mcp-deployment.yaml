@@ -7,7 +7,11 @@
 #
 # envFrom: nervcenter-config (ConfigMap — APP_ENV, LOG_LEVEL, NERVE_MCP_API,
 #          which points the §46 proxy at the api service). The nervecenter-env
-#          secret is not needed: the MCP server holds no credentials of its own.
+#          secret is not needed.
+# Secret nervecenter-internal-mcp (NS-ADR-122): `api-token` is sent to the api
+#          (scoped service credential) and `server-tokens` (comma-separated) are the
+#          bearer tokens /mcp and /mcp/ require. Deploy together with the api change
+#          that accepts the service token, or the tools get 401.
 # imagePullSecrets: harbor-pull (per-namespace copy; see deployments/README.md).
 apiVersion: apps/v1
 kind: Deployment
@@ -45,6 +49,19 @@ spec:
           envFrom:
             - configMapRef:
                 name: nervcenter-config
+          env:
+            - name: NERVE_MCP_API_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-internal-mcp
+                  key: api-token
+                  optional: true
+            - name: NERVE_MCP_SERVER_TOKENS
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-internal-mcp
+                  key: server-tokens
+                  optional: true
           readinessProbe:
             httpGet:
               path: /mcp/health

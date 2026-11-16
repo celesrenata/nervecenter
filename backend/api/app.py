@@ -18,13 +18,14 @@ from contextlib import asynccontextmanager
 
 import structlog
 
-from fastapi import APIRouter, FastAPI, Request
+from fastapi import APIRouter, Depends, FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 log = structlog.get_logger(__name__)
 
 from backend.api.auth import approvals_router as auth_approvals_router
+from backend.api.auth import require_person
 from backend.api.auth import router as auth_router
 from backend.api.docs import custom_openapi, get_version_info
 from backend.attention import get_attention_service
@@ -433,6 +434,11 @@ def _configure(target: FastAPI) -> None:
         target.include_router(router)
     target.include_router(canonical_aliases())
 
+    @target.get("/api/openapi.json", include_in_schema=False)
+    async def openapi_schema():
+        """The API schema (login required; Swagger UI is off)."""
+        return target.openapi()
+
     @target.get("/version")
     async def version():
         """Get API version information"""
@@ -493,9 +499,14 @@ def create_app() -> FastAPI:
         title="NerveCenter API",
         description="HTTP/gRPC interface for the NerveCenter core",
         version="0.1.0",
-        docs_url="/docs",
+        # Default-deny gate (NS-ADR-122): every route needs a signed-in person
+        # unless it is on the allowlist in backend/api/public_routes.py. The
+        # built-in docs/schema routes sit outside any dependency, so they are
+        # off; the schema is served, gated, at GET /api/openapi.json.
+        dependencies=[Depends(require_person)],
+        docs_url=None,
         redoc_url=None,
-        openapi_url="/openapi.json",
+        openapi_url=None,
     )
 
     # D-10: structured 500 for unhandled exceptions. Starlette dispatches

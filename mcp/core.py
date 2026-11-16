@@ -13,6 +13,10 @@ Implements the wave-2 JSON-RPC 2.0 wire subset (spec §45) against the
   ``{"status": "healthy"}``
   (``uvicorn mcp.core:app``, used by the k8s deployment).
 
+The HTTP JSON-RPC endpoints require ``Authorization: Bearer <token>`` with a
+token from ``NERVE_MCP_SERVER_TOKENS``; ``GET /mcp/health`` stays open for the
+probe. stdio is unaffected.
+
 Unknown methods answer with the ``protocol.METHOD_NOT_FOUND`` envelope via
 ``protocol.make_error``; notifications (no ``id``) produce no response.
 """
@@ -20,13 +24,15 @@ Unknown methods answer with the ``protocol.METHOD_NOT_FOUND`` envelope via
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import os
 import threading
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from mcp.api import DEFAULT_BASE_URL, NerveAPI
@@ -45,6 +51,40 @@ from mcp.tools import ToolError, ToolRegistry
 from mcp.tools_module import build_tools
 
 TRANSPORTS = ("stdio", "http")
+
+#: Comma-separated bearer tokens (each >= 32 chars) accepted on ``/mcp`` and
+#: ``/mcp/`` (NS-ADR-122). Unset or empty means every request is refused.
+SERVER_TOKENS_ENV = "NERVE_MCP_SERVER_TOKENS"
+MIN_SERVER_TOKEN_CHARS = 32
+
+
+def _digest(value: str) -> bytes:
+    return hashlib.sha256(value.encode("utf-8")).digest()
+
+
+def _bearer_allowed(header: str | None) -> bool:
+    """Constant-time check of the bearer token against the configured digests."""
+    scheme, _, token = (header or "").partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        return False
+    digest = _digest(token)
+    allowed = False
+    for candidate in os.environ.get(SERVER_TOKENS_ENV, "").split(","):
+        candidate = candidate.strip()
+        if len(candidate) < MIN_SERVER_TOKEN_CHARS:
+            continue
+        if hmac.compare_digest(digest, _digest(candidate)):
+            allowed = True
+    return allowed
+
+
+async def require_mcp_bearer(request: Request) -> None:
+    """Dependency for the JSON-RPC endpoints; a generic 401 reveals nothing."""
+    if not _bearer_allowed(request.headers.get("authorization")):
+        raise HTTPException(
+            status_code=401, detail="unauthorized", headers={"WWW-Authenticate": "Bearer"}
+        )
 
 
 async def dispatch_message(
@@ -267,8 +307,9 @@ def create_app(
 
     # Register the JSON-RPC endpoint on BOTH spellings; the handler logic is
     # identical for each — a redirect must never be needed to reach it.
-    app.add_api_route("/mcp", mcp_endpoint, methods=["POST"])
-    app.add_api_route("/mcp/", mcp_endpoint, methods=["POST"])
+    gate = [Depends(require_mcp_bearer)]
+    app.add_api_route("/mcp", mcp_endpoint, methods=["POST"], dependencies=gate)
+    app.add_api_route("/mcp/", mcp_endpoint, methods=["POST"], dependencies=gate)
 
     @app.get("/mcp/health")
     async def health() -> dict[str, str]:

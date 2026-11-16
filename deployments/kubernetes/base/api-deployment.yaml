@@ -188,6 +188,22 @@ spec:
                   name: nervecenter-openai-tunnel
                   key: mcp_token
                   optional: true
+            # Internal service credential for the mcp pod (NS-ADR-122). Out-of-band
+            # Secret nervecenter-internal-mcp, key `api-token`; the SAME value is
+            # sent by the mcp pod as NERVE_MCP_API_TOKEN. The api accepts it only on
+            # the paths in SERVICE_ROUTE_SCOPES["mcp"], never as a person.
+            # DEPLOY TOGETHER with mcp bearer enforcement (mcp-deployment.yaml):
+            # the api now refuses anonymous calls, and /mcp refuses anonymous callers.
+            # Kubernetes expands $(VAR) from an earlier env entry. Optional: without
+            # the Secret the token stays unexpanded, is ignored, and mcp calls get 401.
+            - name: NERVE_INTERNAL_MCP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-internal-mcp
+                  key: api-token
+                  optional: true
+            - name: NERVE_INTERNAL_SERVICE_TOKENS
+              value: "mcp:$(NERVE_INTERNAL_MCP_TOKEN)"
             # Central opencode for coding handoffs (NS-ADR-106). The server lives in
             # namespace `opencode` (manifests: ~/sources/kube/opencode on the kube
             # host, mirrored in docs/central-opencode). api egress is not restricted

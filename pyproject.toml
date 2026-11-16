@@ -114,4 +114,5 @@ asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
 markers = [
     "integration: needs external infrastructure (e.g. NERVE_TEST_POSTGRES_URL scratch Postgres); skipped when absent",
+    "route_auth: exercises the real default-deny gate (the fake-person fixture is skipped)",
 ]
