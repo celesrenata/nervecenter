@@ -53,6 +53,14 @@ spec:
             matchLabels: {app.kubernetes.io/name: omniroute}
       ports:
         - {protocol: TCP, port: 20128}
+    # NerveCenter api: the infra MCP endpoint (NS-ADR-120).
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nervecenter}
+          podSelector:
+            matchLabels: {app: api}
+      ports:
+        - {protocol: TCP, port: 8000}
     - to:
         - ipBlock:
             cidr: 0.0.0.0/0

@@ -5,6 +5,9 @@
 # capped at tier 1, so only the local models are reachable. opencode cannot run
 # NerveCenter's route guard itself; the combo's server-side secure flag applies. No secret values here: the OmniRoute key is read
 # from the env var OMNIROUTE_API_KEY (Secret opencode-server).
+# nervecenter-infra (NS-ADR-120): opencode ACTS on owner-approved infra plans
+# through NerveCenter's MCP tools; credentials stay in NerveCenter. Token from
+# env NERVECENTER_MCP_TOKEN (Secret opencode-server key nervecenter_mcp_token).
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -31,6 +34,16 @@ data:
             "secure/coder": {"name": "Secure coder (local vllm qwen3.8-27b, no memory)"},
             "secure/planner": {"name": "Secure planner (local llama-cpp deepseek-v41, no memory)"},
             "secure/reader": {"name": "Secure reader (local vllm granite-4.2-8b, no memory)"}
+          }
+        }
+      },
+      "mcp": {
+        "servers": {
+          "nervecenter-infra": {
+            "type": "remote",
+            "url": "http://api.nervecenter.svc.cluster.local:8000/api/mcp/infra",
+            "headers": {"Authorization": "Bearer {env:NERVECENTER_MCP_TOKEN}"},
+            "oauth": false
           }
         }
       },

@@ -70,6 +70,9 @@ spec:
             - name: OMNIROUTE_API_KEY
               valueFrom:
                 secretKeyRef: {name: opencode-server, key: omniroute_api_key}
+            - name: NERVECENTER_MCP_TOKEN
+              valueFrom:
+                secretKeyRef: {name: opencode-server, key: nervecenter_mcp_token, optional: true}
           ports:
             - {name: http, containerPort: 4096}
           # tcpSocket: every HTTP path needs the password.
