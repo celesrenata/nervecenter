@@ -42,7 +42,10 @@ Claims = Annotated[dict[str, Any], Depends(current_access)]
 def _human(claims: dict[str, Any]) -> str:
     if not _eligible_for_server_scopes(claims):
         raise HTTPException(status_code=403, detail="A signed-in person is required.")
-    return str(claims.get("preferred_username") or claims.get("sub"))
+    return str(
+        claims.get("preferred_username") or claims.get("email") or claims.get("sub")
+        or (f"sso-session:{str(claims.get('sid'))[:12]}" if claims.get("sid") else "sso-user")
+    )
 
 
 def _kind(kind: str) -> str:

@@ -201,14 +201,27 @@ def scope_mode() -> str:
 
 
 def _eligible_for_server_scopes(claims: dict[str, Any]) -> bool:
-    """Humans only: no device credential and a non-empty ``sub`` (NS-ADR-025)."""
+    """Humans only: no device credential (NS-ADR-025).
+
+    Two kinds of human token qualify: a NerveCenter access token with a
+    non-empty ``sub``, and a verified SSO (issuer-minted) token. Keycloak's
+    access token may carry no ``sub`` and no NerveCenter ``typ``, so an SSO
+    token only needs some identity (sub, username, email or session id).
+    """
+    from backend.api.auth_service import SSO_SOURCE_CLAIM
+
     sub = claims.get("sub")
-    if not isinstance(sub, str) or not sub.strip():
-        return False
-    if sub.startswith("device:") or claims.get("typ") == "device":
+    if (isinstance(sub, str) and sub.startswith("device:")) or claims.get("typ") == "device":
         return False
     roles = claims.get("roles")
     if isinstance(roles, (list, tuple, set)) and "device" in roles:
+        return False
+    if claims.get(SSO_SOURCE_CLAIM) == "sso":
+        return any(
+            isinstance(claims.get(k), str) and claims[k].strip()
+            for k in ("sub", "preferred_username", "email", "sid")
+        )
+    if not isinstance(sub, str) or not sub.strip():
         return False
     return claims.get("typ") == "access"
 
@@ -592,6 +605,7 @@ async def get_ops_dashboard(
 
     from backend.attention.policy import get_attention_policy
     from backend.mail_security import observability as obs
+
     # The one allowed runtime use of the classifier package: service status
     # (ready/models/metrics) for display; never a classification (I-08).
     from backend.mail_security.classifier.arcforge_status import cached_status

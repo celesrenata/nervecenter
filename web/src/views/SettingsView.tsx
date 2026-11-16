@@ -13,7 +13,6 @@ import {
 } from '../theme/SettingsContext'
 import { Link } from 'react-router-dom'
 import { inferenceApi, type AvailableInference } from '../api/inference'
-import { OmniRouteKeysPanel } from './OmniRouteKeysPanel'
 
 /**
  * Settings — browser-local preferences grouped by feature set. The categories
@@ -53,7 +52,6 @@ export type SettingsCategory =
   | 'data'
   | 'connections'
   | 'inference'
-  | 'omniroute'
 
 const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: string }> = [
   { id: 'appearance', label: 'Appearance', hint: 'Theme, color, type, and motion' },
@@ -61,13 +59,12 @@ const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: strin
   { id: 'data', label: 'Data & privacy', hint: 'Wellness and local data boundaries' },
   { id: 'connections', label: 'Connections & apps', hint: 'Connectors and device builds' },
   { id: 'inference', label: 'Inference', hint: 'Default model & provider for Ask' },
-  { id: 'omniroute', label: 'OmniRoute', hint: 'Write-only OmniRoute keys' },
 ]
 
 export function SettingsView() {
   const { theme, setTheme } = useTheme()
   const { settings, update, reset } = useSettings()
-  // `?tab=<id>` opens a category directly (e.g. /settings?tab=omniroute).
+  // `?tab=<id>` opens a category directly (e.g. /settings?tab=inference).
   const [category, setCategory] = useState<SettingsCategory>(() => {
     const tab = new URLSearchParams(window.location.search).get('tab')
     return CATEGORY_OPTIONS.some((c) => c.id === tab) ? (tab as SettingsCategory) : 'appearance'
@@ -420,7 +417,6 @@ export function SettingsView() {
       </section>
       </section>}
 
-      {category === 'omniroute' && <OmniRouteKeysPanel />}
       {category === 'inference' && (
         <section
           id="settings-panel-inference"

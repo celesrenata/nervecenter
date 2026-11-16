@@ -20,6 +20,7 @@ import {
   type DurableProviderType,
 } from '../api/inferenceDurable'
 import { ApiError } from '../api/client'
+import { OmniRouteKeysPanel } from './OmniRouteKeysPanel'
 
 /**
  * Inference Providers view — the durable provider + combo registry.
@@ -650,6 +651,11 @@ const ProvidersView = () => {
           Failed to load registry: {fetchError.status} — {fetchError.detail}
         </div>
       )}
+
+      {/* ── OmniRoute keys (regular + privileged/management), write-only ──── */}
+      <div id="omniroute-keys" data-testid="providers-omniroute-keys">
+        <OmniRouteKeysPanel />
+      </div>
 
       {/* ── Providers section ─────────────────────────────────────────────── */}
       <div className="bg-elevated rounded-lg shadow-lg p-6" data-testid="providers-section">

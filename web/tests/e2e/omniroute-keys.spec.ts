@@ -54,8 +54,7 @@ test('OmniRoute keys: set, test, clear; the value is never shown', async ({ page
   })
 
   await seedBreakGlassSession(page)
-  await page.goto('/settings', { waitUntil: 'domcontentloaded' })
-  await page.getByRole('tab', { name: 'OmniRoute' }).click()
+  await page.goto('/providers', { waitUntil: 'domcontentloaded' })
 
   await expect(page.getByTestId('omniroute-status-regular')).toContainText('Not set')
   await expect(page.getByTestId('omniroute-status-privileged')).toContainText('from the cluster Secret')
@@ -107,27 +106,25 @@ test('OmniRoute keys: a failed save shows the error without the value', async ({
     r.fulfill(json({ detail: 'The key must be 8-512 printable characters.' }, 422)),
   )
   await seedBreakGlassSession(page)
-  await page.goto('/settings', { waitUntil: 'domcontentloaded' })
-  await page.getByRole('tab', { name: 'OmniRoute' }).click()
+  await page.goto('/providers', { waitUntil: 'domcontentloaded' })
   await page.getByTestId('omniroute-input-regular').fill(REGULAR)
   await page.getByTestId('omniroute-save-regular').click()
   await expect(page.getByTestId('omniroute-error-regular')).toContainText('422')
   expect(await page.getByTestId('omniroute-error-regular').innerText()).not.toContain(REGULAR)
 })
 
-test('the OmniRoute tab is reachable by deep link and stays visible on a narrow window', async ({ page }) => {
-  await page.route('**/api/settings/omniroute/keys', (r) =>
-    r.fulfill({ json: {
+test('the OmniRoute keys live on the Providers page', async ({ page }) => {
+  await page.route('**/api/settings/omniroute', (r) =>
+    r.fulfill({ json: { keys: {
       regular: { configured: true, source: 'env', vault_set: false, changed_at: null },
       privileged: { configured: true, source: 'env', vault_set: false, changed_at: null },
-      audit: [],
+      }, audit: [],
     } }),
   )
   await seedBreakGlassSession(page)
-  await page.setViewportSize({ width: 640, height: 900 })
+  await page.goto('/providers', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByTestId('providers-omniroute-keys')).toBeVisible()
+  await expect(page.getByTestId('omniroute-input-privileged')).toBeVisible()
   await page.goto('/settings', { waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('tab', { name: 'OmniRoute' })).toBeInViewport()
-  await page.goto('/settings?tab=omniroute', { waitUntil: 'domcontentloaded' })
-  await expect(page.getByRole('tab', { name: 'OmniRoute' })).toHaveAttribute('aria-selected', 'true')
-  await expect(page.getByTestId('omniroute-status-privileged')).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'OmniRoute' })).toHaveCount(0)
 })

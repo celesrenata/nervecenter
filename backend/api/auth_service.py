@@ -49,8 +49,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from urllib.parse import urlparse
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import jwt
@@ -90,6 +90,8 @@ APPROVAL_TTL = timedelta(minutes=5)
 
 #: The ``typ`` claim values minted by NerveCenter.
 TYP_ACCESS = "access"
+#: Server-side marker added to verified issuer (SSO) token claims.
+SSO_SOURCE_CLAIM = "nc_token_source"
 TYP_REFRESH = "refresh"
 TYP_DEVICE = "device"
 
@@ -575,6 +577,9 @@ class AuthContext:
                 raise TokenError("token has expired") from exc
             except jwt.PyJWTError as exc:
                 raise TokenError(f"token rejected: {exc}") from exc
+            # The SSO marker is only ever set by verification below; never
+            # honour one carried inside a locally-minted token.
+            claims.pop(SSO_SOURCE_CLAIM, None)
             # Locally-minted tokens: enforce issuer + audience so a token from
             # another NerveCenter instance is not silently accepted.
             if claims.get("iss") != self.issuer_base:
@@ -618,6 +623,10 @@ class AuthContext:
             # Tolerate a trailing slash on either side.
             if str(claims.get("iss") or "").rstrip("/") != self.issuer_base.rstrip("/"):
                 raise TokenError("token issuer mismatch")
+            # Mark the claims as a verified SSO (issuer-minted) token. Set here,
+            # after verification, never read from the token: callers use it to
+            # tell a signed-in SSO person from a NerveCenter-minted token.
+            claims[SSO_SOURCE_CLAIM] = "sso"
         else:
             raise TokenError(f"unsupported token algorithm: {alg!r}")
 

@@ -467,3 +467,42 @@ def test_sso_token_exchange_missing_code_422():
     client = _sso_client(ctx)
     r = client.post("/api/auth/sso/token", json={"code_verifier": "v"})
     assert r.status_code == 422
+
+
+# ─── SSO tokens count as a signed-in person (owner: "keeps asking for a login") ──
+
+
+async def test_verified_sso_token_without_sub_is_a_signed_in_person(jwks):
+    """The live realm's access token has no ``sub`` and no NerveCenter ``typ``.
+    After verification it is tagged as SSO and passes the human-only check that
+    guards owner settings (OmniRoute keys) and mail-security server scopes."""
+    from backend.api.auth_service import SSO_SOURCE_CLAIM
+    from backend.api.endpoints.mail_security import _eligible_for_server_scopes
+
+    ctx = _ctx()
+    token = _keycloak_access_token(jwks, aud=None, sub=None, preferred_username="admin")
+    claims = await ctx.verify_token(token, expected_typ=TYP_ACCESS)
+    assert claims[SSO_SOURCE_CLAIM] == "sso"
+    assert _eligible_for_server_scopes(claims) is True
+
+
+async def test_sso_tag_cannot_be_forged_in_a_local_token(jwks):
+    """A NerveCenter-minted token that claims the SSO marker is not trusted as
+    SSO: the marker is set by verification, so a forged one is overwritten or
+    absent, and a device token is never a person."""
+    from backend.api.auth_service import SSO_SOURCE_CLAIM
+    from backend.api.endpoints.mail_security import _eligible_for_server_scopes
+
+    device = {SSO_SOURCE_CLAIM: "sso", "typ": "device", "sid": "x"}
+    assert _eligible_for_server_scopes(device) is False
+    assert _eligible_for_server_scopes(
+        {SSO_SOURCE_CLAIM: "sso", "roles": ["device"], "sub": "device:mac"}) is False
+    assert _eligible_for_server_scopes({SSO_SOURCE_CLAIM: "sso"}) is False  # no identity at all
+    ctx = _ctx()
+    good, _exp = ctx.issue_access_token("owner", ["owner"])
+    forged_claims = jwt.decode(good, options={"verify_signature": False})
+    forged_claims[SSO_SOURCE_CLAIM] = "sso"
+    forged = jwt.encode(forged_claims, ctx.secret, algorithm="HS256")
+    claims = await ctx.verify_token(forged, expected_typ=TYP_ACCESS, require_session=False)
+    assert SSO_SOURCE_CLAIM not in claims
+    assert _eligible_for_server_scopes(claims) is True  # still a person via typ=access + sub
