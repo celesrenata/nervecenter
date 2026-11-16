@@ -24,6 +24,10 @@ import structlog
 log = structlog.get_logger(__name__)
 
 TOKENS_ENV = "NERVE_MCP_PROJECTS_TOKENS"
+#: mcp_token of the owner-created Secret nervecenter-openai-tunnel (NS-ADR-105);
+#: the OpenAI tunnel-client sends it, notes it writes are tagged "openai".
+TUNNEL_TOKEN_ENV = "NERVE_MCP_TUNNEL_TOKEN"
+TUNNEL_CLIENT = "openai"
 MIN_TOKEN_CHARS = 32
 _CLIENT_RE = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
 
@@ -71,13 +75,16 @@ class BearerTokenVerifier:
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> BearerTokenVerifier:
-        """Parse ``client:token,client2:token2``; short or malformed entries are skipped."""
-        raw = (env if env is not None else os.environ).get(TOKENS_ENV, "")
+        """Parse ``client:token,client2:token2`` plus the tunnel token; bad entries are skipped."""
+        e = env if env is not None else os.environ
         tokens: dict[str, str] = {}
-        for item in raw.split(","):
+        for item in e.get(TOKENS_ENV, "").split(","):
             client, sep, token = item.strip().partition(":")
             if sep:
                 tokens[client.strip()] = token.strip()
+        tunnel = (e.get(TUNNEL_TOKEN_ENV) or "").strip()
+        if tunnel:
+            tokens[TUNNEL_CLIENT] = tunnel
         return cls(tokens)
 
     async def verify(self, token: str) -> Principal | None:

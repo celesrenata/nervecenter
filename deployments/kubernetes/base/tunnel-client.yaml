@@ -17,8 +17,8 @@
 #   kubectl -n nervecenter create secret generic nervecenter-openai-tunnel \
 #     --from-literal=runtime_api_key=... --from-literal=mcp_token=...
 #   runtime_api_key: runtime API key with Tunnels Read + Use for this tunnel
-#   mcp_token:       the same token that appears for the matching client in the
-#                    `nervecenter-mcp-projects` Secret (`tokens`: client:token)
+#   mcp_token:       high-entropy token (>= 32 chars); the api reads the same key
+#                    (NERVE_MCP_TUNNEL_TOKEN) and accepts it as client "openai"
 # Without that Secret this pod stays in CreateContainerConfigError. That is the
 # honest "not configured" state: it does not restart-loop and no other pod, nor
 # deploy.sh (which waits only on api, web, nats), is affected.

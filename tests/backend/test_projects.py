@@ -469,3 +469,9 @@ def test_routers_are_in_the_app_router_list():
 
     paths = {getattr(r, "path", "") for router in ALL_ROUTERS for r in router.routes}
     assert "/api/mcp/projects" in paths and "/api/projects/{slug}" in paths
+
+
+def test_tunnel_token_is_accepted_as_the_openai_client():
+    v = BearerTokenVerifier.from_env({"NERVE_MCP_TUNNEL_TOKEN": OTHER})
+    assert [c for c, _ in v._entries] == ["openai"]
+    assert BearerTokenVerifier.from_env({"NERVE_MCP_TUNNEL_TOKEN": "short"}).configured is False

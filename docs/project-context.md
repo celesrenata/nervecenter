@@ -49,11 +49,11 @@ the token itself.
 
 Owner steps (never put values in the repo or in chat):
 
-1. Create a token for the tunnel client: `openssl rand -hex 32`. Add it to the
-   `tokens` value of Secret `nervecenter-mcp-projects` as `openai:<token>` (comma
-   separated with any existing entries; the client name `openai` tags its notes).
-2. Create Secret `nervecenter-openai-tunnel` with keys `runtime_api_key` (runtime key
-   with Tunnels Read + Use) and `mcp_token` (the same token as step 1).
+1. Secret `nervecenter-openai-tunnel` (created by the owner) holds `runtime_api_key`
+   (runtime key with Tunnels Read + Use) and `mcp_token` (at least 32 characters). The
+   tunnel-client sends `mcp_token`; the api reads the same key as
+   `NERVE_MCP_TUNNEL_TOKEN` and accepts it as client `openai`, so the two cannot drift.
+2. No entry in `nervecenter-mcp-projects` is needed for the tunnel.
 3. Deploy; the pod becomes Ready. Check `kubectl -n nervecenter logs deploy/tunnel-client`
    and `/readyz` on port 8080. Until the Secret exists the pod shows
    `CreateContainerConfigError` and nothing else is affected.

@@ -156,6 +156,15 @@ spec:
                   name: nervecenter-mcp-projects
                   key: tokens
                   optional: true
+            # The OpenAI tunnel-client's token (NS-ADR-105), read from the same
+            # owner-created Secret the tunnel-client uses, so the two always match.
+            # Accepted as client "openai". Optional.
+            - name: NERVE_MCP_TUNNEL_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-openai-tunnel
+                  key: mcp_token
+                  optional: true
             # Central opencode for coding handoffs (NS-ADR-106). The server lives in
             # namespace `opencode` (manifests: ~/sources/kube/opencode on the kube
             # host, mirrored in docs/central-opencode). api egress is not restricted
