@@ -10,8 +10,9 @@ Every agent ``fetch`` passes :meth:`FetchGuard.check` before the hub sees it:
 - redirects are walked here with ``HEAD`` and no automatic following, and every
   hop is checked the same way; the hub receives the final URL only;
 - URLs carrying personal data (emails, phone numbers, long digit runs, key-like
-  strings) or values taken from the run's own context (personal tokens and
-  numbers on lines about health, finance, mental health, contacts) are refused;
+  strings, opaque 32+ character letter-and-digit segments) or values taken from
+  the run's own context (personal tokens and numbers on lines about health,
+  finance, mental health, contacts) are refused;
 - runs marked sensitive (agent in a sensitive class or flagged ``sensitive``)
   may fetch only hosts on ``NERVE_AGENT_FETCH_SENSITIVE_ALLOWLIST``;
 - the response length is capped through ``max_length`` (the gateway also
@@ -67,6 +68,15 @@ _SENSITIVE_LINE = re.compile(
     re.IGNORECASE,
 )
 _NUMBER = re.compile(r"\d[\d.,:/-]*\d")
+#: The NS-ADR-113 personal patterns without the long-opaque-string rule, which
+#: would match any long URL path; opaque tokens are checked per segment instead.
+_URL_PERSONAL = re.compile(
+    r"[\w.+-]+@[\w-]+\.[\w.-]+"
+    r"|\+?\d[\d\s().-]{7,}\d"
+    r"|\d{9,}"
+    r"|\b(?:sk|pk|ghp|xox[bp])[-_][A-Za-z0-9_-]{16,}"
+)
+_SEGMENT_SPLIT = re.compile(r"[/?&=#.,;:~!*'()\s-]+")
 
 Resolver = Callable[[str], Awaitable[list[str]]]
 
@@ -100,6 +110,21 @@ def _url_has_context_value(url: str, values: set[str]) -> bool:
         if len(value_digits) >= 6 and value_digits in digits:
             return True
     return False
+
+
+def url_has_personal_data(text: str) -> bool:
+    """Emails, phone numbers, long digit runs, key-like strings or opaque tokens.
+
+    An opaque token is one path/query segment of 32+ characters mixing letters
+    and digits (base64, hex, JWT parts); ordinary word slugs are split on
+    ``-``/``/`` and never reach that length.
+    """
+    if _URL_PERSONAL.search(text):
+        return True
+    return any(
+        len(seg) >= 32 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
+        for seg in _SEGMENT_SPLIT.split(text)
+    )
 
 
 def _host_is_internal(host: str) -> bool:
@@ -165,7 +190,7 @@ class FetchGuard:
             return "url_credentials"
         if len(parts.query) > MAX_QUERY_CHARS:
             return "query_too_large"
-        if policy.has_personal_data(unquote(f"{parts.path}?{parts.query}#{parts.fragment}")):
+        if url_has_personal_data(unquote(f"{parts.path}?{parts.query}#{parts.fragment}")):
             return "url_personal_data"
         if values and _url_has_context_value(url, values):
             return "url_context_data"

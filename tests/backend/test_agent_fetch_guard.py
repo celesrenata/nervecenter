@@ -85,6 +85,11 @@ async def reason(url: str, **kw: Any) -> str | None:
         ("https://example.org/?to=someone%40example.com", "url_personal_data"),
         ("https://example.org/p/+1%20555%20123%204567", "url_personal_data"),
         ("https://example.org/?acct=123456789012", "url_personal_data"),
+        (
+            "https://example.org/t/eyJhbGciOiJIUzI1NiJ9eyJzdWIiOiIxMjM0NTY3ODkwIn0",
+            "url_personal_data",
+        ),
+        ("https://example.org/?k=sk-abcdefghijklmnopqrstuv", "url_personal_data"),
         ("not a url", "scheme_not_allowed"),
     ],
 )
@@ -96,6 +101,14 @@ async def test_public_https_url_is_allowed_with_capped_response() -> None:
     out, safe = await guard().check(AGENT, {"url": "https://example.org/a", "max_length": 10**9})
     assert out is None
     assert safe == {"url": "https://example.org/a", "max_length": MAX_RESPONSE_CHARS}
+
+
+async def test_long_word_paths_are_not_mistaken_for_personal_data() -> None:
+    url = "https://example.org/docs/concepts/services-networking/network-policies/"
+    assert await reason(url) is None
+    assert (
+        await reason("https://example.org/a/very-long-slug-made-of-many-plain-words-only") is None
+    )
 
 
 async def test_unknown_arguments_are_refused() -> None:
