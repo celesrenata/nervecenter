@@ -1,7 +1,9 @@
 # opencode server config and the workspace clone list (NS-ADR-106).
-# Models come from OmniRoute (in-cluster, namespace omniroute), local combos
-# only (NS-ADR-107: "we have 3 models locally to use first"); `local/*` combos
-# are capped at tier 1, so no cloud model is reachable from here. No secret values here: the OmniRoute key is read
+# Models come from OmniRoute (in-cluster, namespace omniroute): `secure/*`
+# combos only, with the no-memory headers (NS-ADR-108: "secure means it doesn't
+# hit conversation history"). secure/* are OmniRoute-isolated (no memory) and
+# capped at tier 1, so only the local models are reachable. opencode cannot run
+# NerveCenter's route guard itself; the combo's server-side secure flag applies. No secret values here: the OmniRoute key is read
 # from the env var OMNIROUTE_API_KEY (Secret opencode-server).
 apiVersion: v1
 kind: ConfigMap
@@ -19,17 +21,21 @@ data:
           "name": "OmniRoute",
           "options": {
             "baseURL": "http://omniroute.omniroute.svc.cluster.local:20128/v1",
-            "apiKey": "{env:OMNIROUTE_API_KEY}"
+            "apiKey": "{env:OMNIROUTE_API_KEY}",
+            "headers": {
+              "x-omniroute-no-memory": "true",
+              "x-omniroute-compression": "off"
+            }
           },
           "models": {
-            "local/code": {"name": "Local code (vllm qwen3.8-27b, tier 1 only)"},
-            "local/fast": {"name": "Local fast (tier 1 only)"},
-            "local/planner": {"name": "Local planner (llama-cpp deepseek-v41)"}
+            "secure/coder": {"name": "Secure coder (local vllm qwen3.8-27b, no memory)"},
+            "secure/planner": {"name": "Secure planner (local llama-cpp deepseek-v41, no memory)"},
+            "secure/reader": {"name": "Secure reader (local vllm granite-4.2-8b, no memory)"}
           }
         }
       },
-      "model": "omniroute/local/code",
-      "small_model": "omniroute/local/fast",
+      "model": "omniroute/secure/coder",
+      "small_model": "omniroute/secure/reader",
       "permissions": [
         {"action": "shell", "resource": "git push *", "effect": "deny"},
         {"action": "shell", "resource": "git remote *", "effect": "deny"}

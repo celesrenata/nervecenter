@@ -259,8 +259,12 @@ class OmniRouteTransport:
         prompt: str,
         parameters: dict[str, Any] | None = None,
         timeout: int | None = None,
+        headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Run one inference call against the configured deployment.
+
+        ``headers`` are extra request headers (e.g. the NS-ADR-108 secure
+        ``x-omniroute-no-memory`` / ``x-omniroute-compression`` opt-outs).
 
         The network path POSTs an OpenAI-compatible chat-completions body
         (``{"model", "messages": [{"role": "user", "content": prompt}]}``) to
@@ -348,6 +352,7 @@ class OmniRouteTransport:
                 path="/v1/chat/completions",
                 body=request_body,
                 timeout_s=timeout_ms / 1000.0,
+                extra_headers=headers,
             )
         except OmniRouteUnavailableError:
             raise
@@ -469,12 +474,15 @@ class OmniRouteTransport:
         path: str,
         body: dict[str, Any] | None,
         timeout_s: float,
+        extra_headers: dict[str, str] | None = None,
     ) -> Any:
         """Perform one HTTP request, injecting the auth header (never logged)."""
         client = self._client if self._client is not None else httpx.Client(
             timeout=timeout_s
         )
         headers: dict[str, str] = {}
+        if extra_headers:
+            headers.update(extra_headers)
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
         assert self.base_url is not None

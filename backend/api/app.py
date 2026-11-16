@@ -442,13 +442,13 @@ def _install_ask_wiring(target: FastAPI) -> None:
     try:
         from backend.context.ask import AskService
         from backend.inference import OmniRouteTransport
-        from backend.inference.local_first import LocalFirstTransport
         from backend.inference.providers import default_inference
+        from backend.inference.secure_client import secure_transport
 
         default = default_inference()
         target.state.ask_service = AskService(
-            # NS-ADR-107: local models first; cloud defaults are swapped and logged.
-            transport=LocalFirstTransport(OmniRouteTransport.from_env(), "ask"),
+            # NS-ADR-108: ask carries messages/mail/contacts context -> secure.
+            transport=secure_transport("ask", OmniRouteTransport.from_env()),
             remote_provider_allowed=True,
             provider=default.get("provider", "omniroute"),
             model=default.get("model", "nerve-ask"),

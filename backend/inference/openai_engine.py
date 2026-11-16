@@ -24,6 +24,8 @@ MODEL_ENV = "NERVE_OPENAI_MODEL"
 BASE_URL_ENV = "NERVE_OPENAI_BASE_URL"
 DEFAULT_MODEL = "gpt-4o-mini"
 DEFAULT_BASE_URL = "https://api.openai.com/v1"
+#: Data classes that must never be sent to the OpenAI API (NS-ADR-108).
+NEVER_TO_OPENAI = frozenset({"mental_health"})
 BASE_SYSTEM = "You are an assistant working for the owner of NerveCenter. Be direct and concise."
 
 
@@ -85,8 +87,18 @@ class OpenAIEngine:
         *,
         caller: str = "openai",
         reason: str = "owner_requested",
+        data_classes: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
-        """One chat completion. ``reason`` is the NS-ADR-107 escalation code."""
+        """One chat completion. ``reason`` is the NS-ADR-107 escalation code.
+
+        NS-ADR-108: ``data_classes`` names the personal data in the prompt; any
+        class in :data:`NEVER_TO_OPENAI` (mental health) is refused before
+        anything is sent. Logs carry caller and reason codes only.
+        """
+        blocked = data_classes & NEVER_TO_OPENAI
+        if blocked:
+            log.warning("openai.refused_data_class", caller=caller, reason=reason)
+            raise OpenAIError("this data never goes to OpenAI")
         if not self._key:
             raise OpenAINotConfigured(f"OpenAI is not configured (set {KEY_ENV})")
         messages = await self.build_messages(prompt, project_slug)

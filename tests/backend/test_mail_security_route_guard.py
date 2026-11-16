@@ -637,6 +637,8 @@ def test_module_has_no_network_or_subprocess_imports_and_is_not_wired() -> None:
         root / "api" / "wiring.py",
         root / "mail_security" / "observer_wiring.py",
         root / "owner_tools" / "observe_existing.py",
+        # NS-ADR-108: the shared secure model client (route guard on every call).
+        root / "inference" / "secure_client.py",
     }
     for path in root.rglob("*.py"):
         if path.name in (

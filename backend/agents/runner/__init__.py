@@ -35,21 +35,24 @@ __all__ = [
 def build_runner(engine: Any, app: Any = None) -> AgentRunner:
     """Wire a runner to the DB engine and the OmniRoute transport.
 
-    NS-ADR-107: agents run on local models (``LocalFirstTransport``). An agent
+    NS-ADR-107/108: agents run on local secure combos (``secure_transport``). An agent
     reaches the OpenAI API only with an owner grant: ``owner_requested`` goes
     straight to OpenAI, ``high_stakes`` retries locally ``max_local_failures``
     times first. Every OpenAI call goes through the shared limiter.
     """
-    from backend.inference.local_first import LocalFirstTransport, background_call
+    from backend.inference.local_first import background_call
     from backend.inference.omniroute import OmniRouteTransport
     from backend.inference.providers import default_inference
+    from backend.inference.secure_client import secure_transport
     from backend.persistence.connection import make_session_factory
     from backend.services.incident_agent import AgentService
 
     factory = make_session_factory(engine)
     service = AgentService(engine, session_factory=factory)
     raw_transport = OmniRouteTransport.from_env()
-    transport = LocalFirstTransport(raw_transport, "agent_runner")
+    # NS-ADR-108: every agent run is sensitive by default (secure combo,
+    # no-memory headers, route guard). No agent is marked non-sensitive today.
+    transport = secure_transport("agent_runner", raw_transport)
 
     async def grant_for(agent_id: str) -> str | None:
         if app is None:

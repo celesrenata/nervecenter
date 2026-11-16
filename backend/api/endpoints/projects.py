@@ -20,6 +20,7 @@ from backend.inference.openai_engine import (
     get_engine,
 )
 from backend.inference.openai_limiter import OpenAIQueueTimeout, OpenAIThrottled
+from backend.inference.secure_client import secure_model
 from backend.projects import get_service
 from backend.projects.service import (
     ProjectExistsError,
@@ -108,10 +109,9 @@ async def add_note(slug: str, body: NoteIn, request: Request) -> dict[str, Any]:
 def _local_transport(request: Request):
     existing = getattr(request.app.state, "projects_local_transport", None)
     if existing is None:
-        from backend.inference.local_first import LocalFirstTransport
-        from backend.inference.omniroute import OmniRouteTransport
+        from backend.inference.secure_client import secure_transport
 
-        existing = LocalFirstTransport(OmniRouteTransport.from_env(), "projects_ask")
+        existing = secure_transport("projects_ask")
         request.app.state.projects_local_transport = existing
     return existing
 
@@ -149,7 +149,7 @@ async def ask(slug: str, body: AskIn, request: Request) -> dict[str, Any]:
             out = await asyncio.to_thread(transport.generate, first.model, text)
             return {
                 "content": out.get("content", ""),
-                "model": first.model,
+                "model": secure_model(first.model),
                 "project": slug,
                 "input_tokens": out.get("input_tokens"),
                 "output_tokens": out.get("output_tokens"),

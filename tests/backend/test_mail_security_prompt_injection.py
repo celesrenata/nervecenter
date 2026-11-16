@@ -1097,6 +1097,10 @@ def test_no_pipeline_module_imports_the_phase4_model_modules() -> None:
         "api/wiring.py",
         "mail_security/observer_wiring.py",
         "owner_tools/observe_existing.py",
+        # NS-ADR-108 (owner: "secure means it doesn't hit conversation
+        # history"): the shared secure model client reuses the route guard
+        # on every personal-data call. It imports only route_guard.
+        "inference/secure_client.py",
     }
     assert sorted(set(offenders) - approved) == []
     unwired = re.compile(r"\b(?:qwen_challenger|backend\.mail_security\.escalation)\b")
