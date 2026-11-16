@@ -8,9 +8,9 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.inference.escalation import GrantInputError, get_grants
+from backend.inference.local_first import local_default, max_local_failures
 from backend.inference.openai_engine import get_engine
 from backend.inference.openai_limiter import get_limiter
-from backend.inference.local_first import local_default, max_local_failures
 
 router = APIRouter(prefix="/api/model-policy", tags=["model-policy"])
 

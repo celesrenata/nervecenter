@@ -227,7 +227,7 @@ def test_build_server_stdio_and_http() -> None:
     stdio_server = build_server("stdio")
     assert stdio_server.name == SERVER_INFO["name"]
     assert stdio_server.transport == "stdio"
-    assert len(stdio_server.registry.list_tools()) == len(SPEC_TOOLS) + len(PERSONAL_TOOLS) + len(HANDOFF_TOOLS)
+    assert len(stdio_server.registry.list_tools()) == len(SPEC_TOOLS) + len(PERSONAL_TOOLS) + len(HANDOFF_TOOLS)  # noqa: E501
 
     http_server = build_server("http")
     assert http_server.app is not None

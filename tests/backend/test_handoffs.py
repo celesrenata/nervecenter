@@ -300,7 +300,7 @@ def test_handoff_ingress_is_exact_paths_with_limits():
 
     path = Path(__file__).resolve().parents[2] / "deployments/kubernetes/base/relay-ingress.yaml"
     docs = [d for d in yaml.safe_load_all(path.read_text()) if d]
-    ing = next(d for d in docs if d["kind"] == "Ingress" and d["metadata"]["name"] == "nervcenter-handoff")
+    ing = next(d for d in docs if d["kind"] == "Ingress" and d["metadata"]["name"] == "nervcenter-handoff")  # noqa: E501
     paths = ing["spec"]["rules"][0]["http"]["paths"]
     assert {(p["path"], p["pathType"]) for p in paths} == {
         ("/api/handoffs/device/claim", "Exact"),

@@ -86,7 +86,7 @@ def test_form_saves_and_same_day_resubmit_updates(client):
 def test_invalid_answers_rejected(client):
     assert client.post("/api/mental-health/forms", json=_form(answers=[1] * 8)).status_code == 422
     assert client.post("/api/mental-health/forms", json=_form(answers=[4] * 9)).status_code == 422
-    assert client.post("/api/mental-health/forms", json=_form("gad7", answers=[1] * 9)).status_code == 422
+    assert client.post("/api/mental-health/forms", json=_form("gad7", answers=[1] * 9)).status_code == 422  # noqa: E501
     assert client.post("/api/mental-health/forms",
                        json=_form(comment="x" * 4001)).status_code == 422
     future = (datetime.now(UTC).date() + timedelta(days=5)).isoformat()
@@ -96,7 +96,7 @@ def test_invalid_answers_rejected(client):
 async def test_stored_values_are_not_plaintext(client, engine):
     secret = "write-in marker 7f3a"
     assert client.post("/api/mental-health/forms",
-                       json=_form(answers=[0, 1, 2, 3, 0, 1, 2, 3, 0], comment=secret)).status_code == 200
+                       json=_form(answers=[0, 1, 2, 3, 0, 1, 2, 3, 0], comment=secret)).status_code == 200  # noqa: E501
     async with engine.connect() as conn:
         rows = (await conn.execute(text("select answers_enc, comment_enc from mh_forms"))).all()
     assert len(rows) == 1
@@ -180,7 +180,7 @@ async def test_endpoint_correlations_and_trends(client, engine):
             s.add(MhFormRow(form_date=d, instrument="phq9", total_score=i % 10,
                             answers_enc="x", comment_enc=None))
             at = datetime(d.year, d.month, d.day, 23, tzinfo=UTC)
-            s.add(HealthSampleRow(device_id="d", kind="step_count", start_at=at - timedelta(hours=1),
+            s.add(HealthSampleRow(device_id="d", kind="step_count", start_at=at - timedelta(hours=1),  # noqa: E501
                                   end_at=at, value=1000.0 + 100 * (i % 10), unit="count",
                                   source="apple_health", dedupe_key=f"k{i}"))
         await s.commit()
@@ -188,7 +188,7 @@ async def test_endpoint_correlations_and_trends(client, engine):
     assert "cause" in body["note"]
     steps = next(r for r in body["rows"] if r["instrument"] == "phq9" and r["factor"] == "steps")
     assert steps["state"] == "ok" and steps["n"] >= 14 and steps["lag"] is not None
-    spend = next(r for r in body["rows"] if r["instrument"] == "phq9" and r["factor"] == "spend_dollars")
+    spend = next(r for r in body["rows"] if r["instrument"] == "phq9" and r["factor"] == "spend_dollars")  # noqa: E501
     assert spend["state"] == "too_few_samples"
     trends = client.get("/api/mental-health/trends?days=60").json()
     assert trends["instruments"]["phq9"]["count"] == 30
@@ -198,7 +198,7 @@ async def test_endpoint_correlations_and_trends(client, engine):
 # ---- hard rules ----------------------------------------------------------
 
 FORBIDDEN = re.compile(
-    r"crisis|hotline|helpline|lifeline|\b988\b|seek (professional )?help|call (someone|a friend|your doctor)"
+    r"crisis|hotline|helpline|lifeline|\b988\b|seek (professional )?help|call (someone|a friend|your doctor)"  # noqa: E501
     r"|reach out to|get help|you are not alone|emergency (services|room)|suicide prevention",
     re.IGNORECASE,
 )
@@ -216,7 +216,7 @@ def test_no_crisis_wording_in_code_or_fixtures():
 
 
 def test_package_imports_no_inference():
-    banned = re.compile(r"^\s*(from|import)\s+[\w.]*(inference|omniroute|openai|anthropic|httpx|requests)",
+    banned = re.compile(r"^\s*(from|import)\s+[\w.]*(inference|omniroute|openai|anthropic|httpx|requests)",  # noqa: E501
                         re.MULTILINE)
     for f in PKG.glob("*.py"):
         assert not banned.search(f.read_text()), f"inference/network import in {f.name}"
