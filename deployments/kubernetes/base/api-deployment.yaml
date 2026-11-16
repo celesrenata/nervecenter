@@ -138,6 +138,16 @@ spec:
                   name: nervecenter-skillhub
                   key: key
                   optional: true
+            # OmniRoute PRIVILEGED mode key (NS-ADR-110). Regular mode is
+            # NERVE_OMNIROUTE_API_KEY (inference). Privileged = a key with the
+            # `manage` scope, which OmniRoute requires for MCP from outside
+            # localhost; used only for the Skill Hub read-only tools. Optional.
+            - name: NERVE_OMNIROUTE_PRIVILEGED_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-omniroute-privileged
+                  key: key
+                  optional: true
             # OpenAI API key for the project-aware OpenAI engine (NS-ADR-104).
             # Out-of-band Secret; optional: without it the engine answers
             # "not configured".

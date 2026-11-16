@@ -332,14 +332,18 @@ async def test_skillhub_reads_catalog_and_never_calls_unlisted_tools():
 
 
 def test_skillhub_key_falls_back_to_the_omniroute_key(monkeypatch) -> None:
-    """Owner decision: Skill Hub reuses NerveCenter's OmniRoute key."""
+    """Skill Hub key order: dedicated, then privileged, then regular (NS-ADR-110)."""
     from backend.agents.runner.skillhub import SkillHubClient
 
     monkeypatch.delenv("NERVE_SKILLHUB_KEY", raising=False)
+    monkeypatch.delenv("NERVE_OMNIROUTE_PRIVILEGED_KEY", raising=False)
     monkeypatch.setenv("NERVE_OMNIROUTE_API_KEY", "omni-key")
     assert SkillHubClient()._key == "omni-key"
+    monkeypatch.setenv("NERVE_OMNIROUTE_PRIVILEGED_KEY", "priv-key")
+    assert SkillHubClient()._key == "priv-key"  # privileged beats regular
     monkeypatch.setenv("NERVE_SKILLHUB_KEY", "hub-key")
     assert SkillHubClient()._key == "hub-key"
     monkeypatch.delenv("NERVE_SKILLHUB_KEY")
+    monkeypatch.delenv("NERVE_OMNIROUTE_PRIVILEGED_KEY")
     monkeypatch.delenv("NERVE_OMNIROUTE_API_KEY")
     assert SkillHubClient()._key is None

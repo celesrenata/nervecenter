@@ -2,9 +2,11 @@
 
 Talks to the streamable-HTTP MCP endpoint (initialize, then ``tools/call``)
 and uses only the read-only catalog tools. The key comes from
-``NERVE_SKILLHUB_KEY`` when set, else NerveCenter's existing OmniRoute key
-``NERVE_OMNIROUTE_API_KEY`` (owner decision: one key; it needs the scopes
-``read:skills`` + ``read:catalog``), and is never logged. Without a key
+``NERVE_SKILLHUB_KEY`` when set, else the OmniRoute PRIVILEGED key
+``NERVE_OMNIROUTE_PRIVILEGED_KEY`` (NS-ADR-110: OmniRoute allows MCP from
+outside localhost only for keys with ``manage``), else the regular
+``NERVE_OMNIROUTE_API_KEY``. Needs ``read:skills`` + ``read:catalog``. Only the
+read-only tools below are ever called, and the key is never logged. Without a key
 every call returns nothing, so agent runs degrade honestly to "no skills".
 """
 
@@ -22,6 +24,7 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_URL = "https://omniroute.celestium.life/api/mcp/stream"
 KEY_ENV = "NERVE_SKILLHUB_KEY"
+PRIVILEGED_KEY_ENV = "NERVE_OMNIROUTE_PRIVILEGED_KEY"
 FALLBACK_KEY_ENV = "NERVE_OMNIROUTE_API_KEY"
 URL_ENV = "NERVE_SKILLHUB_URL"
 
@@ -65,7 +68,11 @@ class SkillHubClient:
         timeout_s: float = 10.0,
     ) -> None:
         if key is None:
-            key = os.environ.get(KEY_ENV, "").strip() or os.environ.get(FALLBACK_KEY_ENV, "")
+            key = next(
+                (v for v in (os.environ.get(e, "").strip()
+                             for e in (KEY_ENV, PRIVILEGED_KEY_ENV, FALLBACK_KEY_ENV)) if v),
+                "",
+            )
         self._key = key.strip() or None
         self._url = (url or os.environ.get(URL_ENV, "") or DEFAULT_URL).strip()
         self._transport = transport
