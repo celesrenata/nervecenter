@@ -80,13 +80,14 @@ def _api(handler: Any) -> NerveAPI:
 
 def test_all_tools_exactly_nine_twenty_nine() -> None:
     """_SPEC / ALL_TOOLS / build_tools / registry all report exactly 29 tools."""
-    assert len(ALL_TOOLS) == 29
-    assert len(build_tools("http://unit:8000")) == 29
+    # 29 + the NS-ADR-106 enqueue_coding_handoff tool
+    assert len(ALL_TOOLS) == 30
+    assert len(build_tools("http://unit:8000")) == 30
     registry = build_registry()
-    assert len(registry.list_tools()) == 29
+    assert len(registry.list_tools()) == 30
     names = {t["name"] for t in ALL_TOOLS}
-    assert names == ORIGINAL_18 | set(PERSONAL_TOOLS)
-    assert len(names) == 29
+    assert names == ORIGINAL_18 | set(PERSONAL_TOOLS) | {"enqueue_coding_handoff"}
+    assert len(names) == 30
 
 
 def test_new_descriptor_metadata() -> None:

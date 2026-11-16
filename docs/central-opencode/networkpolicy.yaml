@@ -1,0 +1,62 @@
+# Default deny for the opencode namespace, then only:
+#  ingress :4096 from NerveCenter api pods and the WireGuard subnet 192.168.133.0/28
+#  egress  DNS, OmniRoute pods :20128, TCP 443/22 to public addresses (git remotes)
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: opencode
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opencode-ingress
+  namespace: opencode
+spec:
+  podSelector:
+    matchLabels: {app: opencode}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nervecenter}
+          podSelector:
+            matchLabels: {app: api}
+        - ipBlock:
+            cidr: 192.168.133.0/28
+      ports:
+        - {protocol: TCP, port: 4096}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: opencode-egress
+  namespace: opencode
+spec:
+  podSelector:
+    matchLabels: {app: opencode}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: omniroute}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: omniroute}
+      ports:
+        - {protocol: TCP, port: 20128}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16]
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 22}

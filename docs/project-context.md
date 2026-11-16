@@ -78,3 +78,10 @@ Do not set `server_url` for it. Because headers an app forwards override
 field) as well. Keep `allowed_tools` to `list_projects`, `get_project_context`,
 `add_project_note`. The existing `POST /api/projects/{slug}/ask` path injects context
 directly and does not need the tunnel; the tunnel is for model-driven tool use.
+
+## Coding handoffs (NS-ADR-106)
+
+See `docs/central-opencode/README.md` for the central opencode server (namespace
+`opencode`, live manifests on the kube host). Queue: web Handoffs view, `/api/handoffs`,
+MCP tool `enqueue_coding_handoff`. Mac agent: `apple/HandoffAgent` (needs the
+SSO-free device paths, pending owner approval).

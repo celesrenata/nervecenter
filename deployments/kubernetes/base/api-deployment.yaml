@@ -156,6 +156,20 @@ spec:
                   name: nervecenter-mcp-projects
                   key: tokens
                   optional: true
+            # Central opencode for coding handoffs (NS-ADR-106). The server lives in
+            # namespace `opencode` (manifests: ~/sources/kube/opencode on the kube
+            # host, mirrored in docs/central-opencode). api egress is not restricted
+            # (NS-ADR-083), and the opencode NetworkPolicy admits only api pods
+            # from this namespace plus the WireGuard subnet. Without the optional
+            # Secret the executor stays off and central handoffs stay queued.
+            - name: NERVE_OPENCODE_URL
+              value: http://opencode.opencode.svc.cluster.local:4096
+            - name: NERVE_OPENCODE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-opencode
+                  key: password
+                  optional: true
           readinessProbe:
             httpGet:
               path: /api/health

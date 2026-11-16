@@ -55,6 +55,8 @@ PERSONAL_TOOLS: set[str] = {
     "resolve_attention",
     "draft_reply",
 }
+#: NS-ADR-106 coding handoff tool, appended after the personal tools.
+HANDOFF_TOOLS = {"enqueue_coding_handoff"}
 
 
 def _call(
@@ -74,8 +76,8 @@ def _api(handler: Any) -> NerveAPI:
 def test_all_tools_catalogue_matches_spec() -> None:
     """ALL_TOOLS is the §45 list followed by the R112 personal tools (29)."""
     assert [t["name"] for t in ALL_TOOLS[: len(TOOL_ROUTES)]] == list(TOOL_ROUTES)
-    assert len(ALL_TOOLS) == 18 + len(PERSONAL_TOOLS)
-    assert {t["name"] for t in ALL_TOOLS[len(TOOL_ROUTES):]} == PERSONAL_TOOLS
+    assert len(ALL_TOOLS) == 18 + len(PERSONAL_TOOLS) + len(HANDOFF_TOOLS)
+    assert {t["name"] for t in ALL_TOOLS[len(TOOL_ROUTES):]} == PERSONAL_TOOLS | HANDOFF_TOOLS
     for entry in ALL_TOOLS:
         assert entry["method"] in ("GET", "POST")
         assert entry["path"].startswith("/api/")
@@ -93,10 +95,10 @@ def test_resolve_base_url_env_override(monkeypatch: Any) -> None:
 def test_build_tools_returns_twenty_nine_bound_tools() -> None:
     """build_tools() yields 29 Tool instances (18 §45 + 11 R112 personal)."""
     tools = build_tools("http://unit:8000")
-    assert len(tools) == 18 + len(PERSONAL_TOOLS)
-    assert {t.name for t in tools} == set(TOOL_ROUTES) | PERSONAL_TOOLS
+    assert len(tools) == 18 + len(PERSONAL_TOOLS) + len(HANDOFF_TOOLS)
+    assert {t.name for t in tools} == set(TOOL_ROUTES) | PERSONAL_TOOLS | HANDOFF_TOOLS
     registry = build_registry()
-    assert len(registry.list_tools()) == 18 + len(PERSONAL_TOOLS)
+    assert len(registry.list_tools()) == 18 + len(PERSONAL_TOOLS) + len(HANDOFF_TOOLS)
 
 
 def test_get_tools_proxy_paths() -> None:

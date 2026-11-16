@@ -1,0 +1,55 @@
+# opencode server config and the workspace clone list (NS-ADR-106).
+# Models come from OmniRoute (in-cluster, namespace omniroute); OmniRoute picks
+# the real model per route. No secret values here: the OmniRoute key is read
+# from the env var OMNIROUTE_API_KEY (Secret opencode-server).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: opencode-config
+  namespace: opencode
+data:
+  opencode.json: |
+    {
+      "$schema": "https://opencode.ai/config.json",
+      "autoupdate": false,
+      "provider": {
+        "omniroute": {
+          "npm": "@ai-sdk/openai-compatible",
+          "name": "OmniRoute",
+          "options": {
+            "baseURL": "http://omniroute.omniroute.svc.cluster.local:20128/v1",
+            "apiKey": "{env:OMNIROUTE_API_KEY}"
+          },
+          "models": {
+            "auto/best-coding": {"name": "OmniRoute best coding"},
+            "auto/fast": {"name": "OmniRoute fast"}
+          }
+        }
+      },
+      "model": "omniroute/auto/best-coding",
+      "small_model": "omniroute/auto/fast",
+      "permissions": [
+        {"action": "shell", "resource": "git push *", "effect": "deny"},
+        {"action": "shell", "resource": "git remote *", "effect": "deny"}
+      ]
+    }
+  # One "name url" per line; cloned into /workspaces/<name> if missing.
+  # Linux-buildable repos only (Mac-only work goes to the Mac runner).
+  repos.txt: |
+    nervcenter https://github.com/celesrenata/nervecenter.git
+  clone.sh: |
+    #!/bin/sh
+    # Clone missing workspaces. Never pulls over local work and never pushes.
+    set -eu
+    mkdir -p /workspaces /data/home
+    if [ -f /git/credentials ]; then
+      git config --global credential.helper "store --file=/git/credentials"
+    fi
+    git config --global --add safe.directory '*'
+    while read -r name url; do
+      [ -z "${name:-}" ] && continue
+      case "$name" in \#*) continue ;; esac
+      if [ ! -d "/workspaces/$name/.git" ]; then
+        git clone --filter=blob:none "$url" "/workspaces/$name" || echo "clone failed: $name"
+      fi
+    done < /config/repos.txt

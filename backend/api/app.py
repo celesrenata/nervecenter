@@ -49,6 +49,7 @@ from backend.api.endpoints import (
     research,
     projects,
     mcp_projects,
+    handoffs,
     calendar,
     communications,
     contact_photos,
@@ -169,6 +170,7 @@ ALL_ROUTERS = (
     research.router,
     projects.router,
     mcp_projects.router,
+    handoffs.router,
     health_samples.router,
     mental_health.router,
     obligations.router,
@@ -307,6 +309,12 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                         log.debug("api.agent_runner_started")
                         from backend.research import get_engine
                         researcher = get_engine(app)
+                        try:
+                            from backend.handoffs.central import attach as attach_handoffs
+
+                            attach_handoffs(app)
+                        except Exception as exc:  # noqa: BLE001 - startup must not crash
+                            log.warning("api.handoff_executor_failed", error=type(exc).__name__)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.agent_runner_start_failed", error=str(exc))
             try:

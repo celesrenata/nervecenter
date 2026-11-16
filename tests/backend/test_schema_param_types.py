@@ -96,6 +96,7 @@ import backend.persistence.models.wellness  # noqa: F401
 import backend.persistence.models.obligations  # noqa: F401
 import backend.persistence.models.mail_security  # noqa: F401
 import backend.persistence.models.projects  # noqa: F401
+import backend.persistence.models.handoffs  # noqa: F401
 from schemas.relationships import TemporalWindow
 from schemas.tasks import Task as TaskSchema
 
@@ -122,6 +123,7 @@ TABLES_WITH_ID = frozenset(
         "research_checkpoints",
         "project_contexts",
         "project_context_notes",
+        "coding_handoffs",
         "statement_imports",
         "ledger_entries",
         "entities",

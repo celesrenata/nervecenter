@@ -474,6 +474,30 @@ _SPEC: list[tuple[str, str, dict[str, Any], list[str], str, str, str]] = [
         "/api/drafts",
         "plain",
     ),
+    (
+        "enqueue_coding_handoff",
+        "Queue a coding handoff for opencode or Menagerie (NS-ADR-106). NerveCenter "
+        "runs no code itself: central opencode (Linux repos) or the owner's Mac (Swift, "
+        "apple/, Menagerie) picks it up. Runs never push to a git remote unless the "
+        "owner approves it. Proxies POST /api/handoffs.",
+        {
+            "target": _string_arg("opencode or menagerie"),
+            "title": _string_arg("Short title"),
+            "brief": _string_arg("What to do, acceptance criteria, how to verify"),
+            "repo": _string_arg("Optional repository name (workspace directory)"),
+            "project_slug": _string_arg("Optional NerveCenter project whose context to include"),
+            "capabilities": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Optional needs, e.g. swift, xcode (routes to the Mac)",
+            },
+            "requested_by": _string_arg("agent or agent:<name>"),
+        },
+        ["target", "title", "brief"],
+        "POST",
+        "/api/handoffs",
+        "plain",
+    ),
 ]
 
 
@@ -490,7 +514,7 @@ ALL_TOOLS: list[dict[str, Any]] = [
 
 
 def build_tools(base_url: str | None = None) -> list[Tool]:
-    """Build the 29 :class:`Tool` instances (18 §45 + 11 R112 personal) bound to a §46 API base URL."""
+    """Build the 30 :class:`Tool` instances (18 §45 + 11 R112 personal + 1 handoff) bound to a §46 API base URL."""
     resolved = resolve_base_url(base_url)
     tools: list[Tool] = []
     for name, description, properties, required, method, path, kind in _SPEC:

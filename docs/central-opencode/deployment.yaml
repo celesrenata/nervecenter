@@ -1,0 +1,101 @@
+# Central opencode server (NS-ADR-106). `opencode serve` on :4096 with HTTP
+# Basic auth (user `opencode`, password from the owner-created Secret).
+#
+# Owner-created Secrets (never in files; do not print values):
+#   kubectl -n opencode create secret generic opencode-server \
+#     --from-literal=password=... --from-literal=omniroute_api_key=...
+#   optional, read-only git credentials for private clones:
+#   kubectl -n opencode create secret generic opencode-git \
+#     --from-file=credentials=./git-credentials   # https://user:token@github.com
+# Without opencode-server the pod stays in CreateContainerConfigError.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: opencode
+  namespace: opencode
+  labels:
+    app: opencode
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate          # one writer on the RWO workspace volume
+  selector:
+    matchLabels:
+      app: opencode
+  template:
+    metadata:
+      labels:
+        app: opencode
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: {type: RuntimeDefault}
+      imagePullSecrets:
+        - name: harbor-pull
+      initContainers:
+        - name: clone-workspaces
+          image: registry.celestium.life/nervecenter/opencode:2.3.0-1
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "/config/clone.sh"]
+          env:
+            - {name: HOME, value: /data/home}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: data, mountPath: /workspaces, subPath: workspaces}
+            - {name: config, mountPath: /config}
+            - {name: git, mountPath: /git, readOnly: true}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          resources:
+            requests: {cpu: "50m", memory: "64Mi"}
+            limits: {cpu: "1", memory: "512Mi"}
+      containers:
+        - name: opencode
+          image: registry.celestium.life/nervecenter/opencode:2.3.0-1
+          imagePullPolicy: IfNotPresent
+          args: ["serve", "--hostname", "0.0.0.0", "--port", "4096"]
+          workingDir: /workspaces
+          env:
+            - {name: HOME, value: /data/home}
+            - {name: OPENCODE_CONFIG, value: /config/opencode.json}
+            - {name: OPENCODE_DISABLE_AUTOUPDATE, value: "true"}
+            - name: OPENCODE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: opencode-server, key: password}
+            - name: OMNIROUTE_API_KEY
+              valueFrom:
+                secretKeyRef: {name: opencode-server, key: omniroute_api_key}
+          ports:
+            - {name: http, containerPort: 4096}
+          # tcpSocket: every HTTP path needs the password.
+          readinessProbe:
+            tcpSocket: {port: http}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: {port: http}
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          resources:
+            requests: {cpu: "250m", memory: "512Mi"}
+            limits: {cpu: "4", memory: "8Gi"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: {drop: ["ALL"]}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+            - {name: data, mountPath: /workspaces, subPath: workspaces}
+            - {name: config, mountPath: /config, readOnly: true}
+            - {name: git, mountPath: /git, readOnly: true}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: opencode-data}
+        - name: config
+          configMap: {name: opencode-config}
+        - name: git
+          secret: {secretName: opencode-git, optional: true}

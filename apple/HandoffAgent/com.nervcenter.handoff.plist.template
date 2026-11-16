@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  com.nervcenter.handoff: Mac handoff agent (NS-ADR-106, pull model).
+  Install (after the owner approved the SSO-free device paths):
+    sed "s#{{SCRIPT}}#$PWD/nerve_handoff_agent.py#; s#{{LOGS}}#$HOME/Library/Logs#g" \
+      com.nervcenter.handoff.plist.template > ~/Library/LaunchAgents/com.nervcenter.handoff.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.nervcenter.handoff.plist
+  User session only; no root, no inbound port.
+-->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.nervcenter.handoff</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/bin/python3</string>
+		<string>{{SCRIPT}}</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/run/current-system/sw/bin:/etc/profiles/per-user/celes/bin</string>
+	</dict>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ThrottleInterval</key>
+	<integer>60</integer>
+	<key>StandardOutPath</key>
+	<string>{{LOGS}}/nervcenter-handoff.log</string>
+	<key>StandardErrorPath</key>
+	<string>{{LOGS}}/nervcenter-handoff.err</string>
+</dict>
+</plist>
