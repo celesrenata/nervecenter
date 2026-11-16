@@ -42,6 +42,11 @@ interface Agent {
   inference?: { provider?: string | null; model?: string | null } | null
   /** Durable combo binding (`null`/absent = no combo; shadows per-agent inference). */
   combo_id?: string | null
+  /** Defined in code; edited as an override on top of the manifest (NS-ADR-116). */
+  builtin?: boolean
+  has_override?: boolean
+  prompt_addition?: string
+  skills?: string[]
 }
 
 // The 14 native agent types (spec §26), from backend/agents/registry.py.
@@ -83,6 +88,10 @@ const AgentsView = () => {
   const [editAgentPrompt, setEditAgentPrompt] = useState('')
   const [editAgentTools, setEditAgentTools] = useState('')
   const [editAgentSkills, setEditAgentSkills] = useState('')
+  const [editBuiltin, setEditBuiltin] = useState(false)
+  const [editAgentAddition, setEditAgentAddition] = useState('')
+  const [editAgentEnabled, setEditAgentEnabled] = useState(true)
+  const [editBasePrompt, setEditBasePrompt] = useState('')
   const [editBusy, setEditBusy] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editError, setEditError] = useState<{ status: number; detail: string } | null>(null)
@@ -173,7 +182,14 @@ const AgentsView = () => {
           model: inferModel || null,
         }
       }
-      if (inferCombo) {
+      const target = agents.find((a) => a.id === inferenceAgentId)
+      if (target && isBuiltin(target)) {
+        // Built-ins have no combo binding; a blank choice clears the override.
+        payload.inference = {
+          provider: inferProvider || null,
+          model: inferModel || null,
+        }
+      } else if (inferCombo) {
         payload.combo_id = inferCombo
       } else if (inferComboInitial) {
         payload.combo_id = ''
@@ -286,9 +302,11 @@ const AgentsView = () => {
     }
   }
 
-  // Only persisted instances (ids that are not native agent-type strings) are
-  // editable; native types are read-only manifests.
-  const isPersisted = (id: string) => !(NATIVE_AGENT_TYPES as readonly string[]).includes(id)
+  // Built-in agents are defined in code; the owner edits an override on top of
+  // the manifest (NS-ADR-116). The backend flags them; the id list is the
+  // fallback for older payloads.
+  const isBuiltin = (agent: Agent) =>
+    agent.builtin ?? (NATIVE_AGENT_TYPES as readonly string[]).includes(agent.id)
 
   const openEdit = async (agentId: string) => {
     setEditingAgentId(agentId)
@@ -304,6 +322,10 @@ const AgentsView = () => {
       setEditAgentPrompt(agent.prompt_template ?? '')
       setEditAgentTools((agent.tools ?? []).join(', '))
       setEditAgentSkills((agent.skills ?? []).join(', '))
+      setEditBuiltin(Boolean(agent.builtin))
+      setEditAgentAddition(agent.prompt_addition ?? '')
+      setEditAgentEnabled(agent.status !== 'disabled')
+      setEditBasePrompt(agent.prompt_template ?? '')
     } catch (error) {
       if (error instanceof ApiError) {
         setEditError({ status: error.status, detail: error.detail })
@@ -317,6 +339,7 @@ const AgentsView = () => {
 
   const [runnerStatus, setRunnerStatus] = useState<RunnerStatus | null>(null)
   const [runnerOpenId, setRunnerOpenId] = useState<string | null>(null)
+  const [runnerKey, setRunnerKey] = useState(0)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   useEffect(() => {
     agentsApi.runnerStatus().then(setRunnerStatus).catch(() => setRunnerStatus(null))
@@ -343,6 +366,39 @@ const AgentsView = () => {
       )
     }
   }
+  const resetAgent = async (agent: Agent) => {
+    if (
+      !window.confirm(
+        `Reset "${agent.name}" to its defaults? Your prompt additions, pinned skills, model choice and schedule are removed. Run history is kept.`,
+      )
+    ) {
+      return
+    }
+    setDeleteError(null)
+    try {
+      await agentsApi.reset(agent.id)
+      if (runnerOpenId === agent.id) setRunnerKey((k) => k + 1)
+      if (editingAgentId === agent.id) closeEdit()
+      await refreshAgents()
+    } catch (error) {
+      setDeleteError(
+        error instanceof ApiError ? `${error.status} — ${error.detail}` : 'Request failed (network error)',
+      )
+    }
+  }
+  const runAgentNow = async (agent: Agent) => {
+    setDeleteError(null)
+    try {
+      await agentsApi.run(agent.id)
+    } catch (error) {
+      setDeleteError(
+        error instanceof ApiError ? `${error.status} — ${error.detail}` : 'Request failed (network error)',
+      )
+    }
+    setRunnerOpenId(agent.id)
+    setRunnerKey((k) => k + 1)
+    await refreshAgents()
+  }
   const closeEdit = () => {
     setEditingAgentId(null)
     setEditAgentName('')
@@ -357,7 +413,7 @@ const AgentsView = () => {
   const submitEdit = async (e: FormEvent) => {
     e.preventDefault()
     if (!editingAgentId) return
-    if (!editAgentName.trim()) {
+    if (!editBuiltin && !editAgentName.trim()) {
       setEditError({ status: 0, detail: 'Name is required.' })
       return
     }
@@ -367,19 +423,27 @@ const AgentsView = () => {
     try {
       // PATCH /api/agents/{id}: partial update. A 409 (duplicate name) is
       // surfaced verbatim, not faked as success.
-      const payload: AgentUpdatePayload = {
-        name: editAgentName.trim(),
-        description: editAgentDescription.trim() || null,
-        prompt_template: editAgentPrompt.trim() || null,
-        tools: editAgentTools
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean),
-        skills: editAgentSkills
-          .split(',')
-          .map((t) => t.trim())
-          .filter(Boolean),
-      }
+      const skills = editAgentSkills
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean)
+      const payload: AgentUpdatePayload = editBuiltin
+        ? {
+            // Built-ins: only the override fields are accepted (the rest is code).
+            prompt_addition: editAgentAddition.trim(),
+            skills,
+            enabled: editAgentEnabled,
+          }
+        : {
+            name: editAgentName.trim(),
+            description: editAgentDescription.trim() || null,
+            prompt_template: editAgentPrompt.trim() || null,
+            tools: editAgentTools
+              .split(',')
+              .map((t) => t.trim())
+              .filter(Boolean),
+            skills,
+          }
       await agentsApi.update(editingAgentId, payload)
       setEditSuccess(true)
       // Refresh the list so the edited row renders its updated values.
@@ -426,7 +490,7 @@ const AgentsView = () => {
       )}
       {deleteError && (
         <div role="alert" data-testid="agent-delete-error" className="text-sm text-red-600">
-          Delete failed: {deleteError}
+          Action failed: {deleteError}
         </div>
       )}
       <div className="flex justify-between items-center">
@@ -566,11 +630,9 @@ const AgentsView = () => {
             Edit agent
           </h3>
           <p className="text-sm text-muted">
-            Updates a durable agent instance via the write route (PATCH{' '}
-            <code className="text-xs">/api/agents/{'{'}</code>
-            <code className="text-xs">id</code>
-            <code className="text-xs">{'}'}</code>). A 409 (duplicate name) is
-            shown verbatim.
+            {editBuiltin
+              ? 'Change what this built-in agent adds to its prompt, which skills it pins and whether it runs. The model is set with Inference; the schedule with Schedule & runs.'
+              : 'Update this agent. A duplicate name is reported as-is.'}
           </p>
 
           {editLoading && (
@@ -579,6 +641,48 @@ const AgentsView = () => {
 
           {!editLoading && (
             <>
+              {editBuiltin && (
+                <div className="space-y-3" data-testid="agent-edit-builtin">
+                  <p className="text-sm text-gray-700 dark:text-gray-300">
+                    Built-in agent. Its name, description, tools and base prompt
+                    are defined in code and cannot be changed. Your changes are
+                    saved as an override on top of them.
+                  </p>
+                  <details className="text-sm text-muted">
+                    <summary className="cursor-pointer">Base prompt (read-only)</summary>
+                    <pre className="mt-2 whitespace-pre-wrap text-xs">{editBasePrompt}</pre>
+                  </details>
+                  <div>
+                    <label
+                      htmlFor="agent-edit-addition"
+                      className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                    >
+                      Prompt additions
+                    </label>
+                    <textarea
+                      id="agent-edit-addition"
+                      data-testid="agent-edit-addition"
+                      rows={3}
+                      maxLength={4000}
+                      value={editAgentAddition}
+                      onChange={(e) => setEditAgentAddition(e.target.value)}
+                      placeholder="Extra instructions appended to the base prompt"
+                      className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                    />
+                  </div>
+                  <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-gray-300">
+                    <input
+                      type="checkbox"
+                      data-testid="agent-edit-enabled"
+                      checked={editAgentEnabled}
+                      onChange={(e) => setEditAgentEnabled(e.target.checked)}
+                    />
+                    Enabled (when off, runs are skipped)
+                  </label>
+                </div>
+              )}
+              {!editBuiltin && (
+                <>
               <div>
                 <label
                   htmlFor="agent-edit-name"
@@ -648,6 +752,8 @@ const AgentsView = () => {
                   className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
                 />
               </div>
+                </>
+              )}
 
               <div>
                 <label
@@ -876,9 +982,11 @@ const AgentsView = () => {
           {agents.map((agent) => (
             <div
               key={agent.id}
+              data-testid="agent-card"
+              data-agent-id={agent.id}
               className="bg-elevated p-6 rounded-lg shadow-lg"
             >
-              <div className="flex items-start justify-between mb-4">
+              <div className="flex items-start justify-between gap-3 mb-4">
                 <div>
                   <h3 className="text-xl font-semibold text-primary">
                     {agent.name}
@@ -888,9 +996,16 @@ const AgentsView = () => {
                   </p>
                 </div>
                 {/* AG-2: text + aria-label, never a bare dot. */}
-                <div className="flex items-center gap-3">
-                  {isPersisted(agent.id) && (
-                    <>
+                <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 min-w-0">
+                  {isBuiltin(agent) && (
+                    <span
+                      data-testid="agent-builtin-badge"
+                      className="text-xs font-medium px-1.5 py-0.5 rounded bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300"
+                    >
+                      Built-in{agent.has_override ? ' · edited' : ''}
+                    </span>
+                  )}
+                  <>
                       <button
                         type="button"
                         data-testid="agent-edit"
@@ -931,12 +1046,31 @@ const AgentsView = () => {
                       </button>
                       <button
                         type="button"
-                        data-testid="agent-delete"
-                        onClick={() => deleteAgent(agent)}
-                        className="text-sm font-medium text-red-600 hover:underline"
+                        data-testid="agent-card-run"
+                        onClick={() => void runAgentNow(agent)}
+                        className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
                       >
-                        Delete
+                        Run now
                       </button>
+                      {isBuiltin(agent) ? (
+                        <button
+                          type="button"
+                          data-testid="agent-reset"
+                          onClick={() => void resetAgent(agent)}
+                          className="text-sm font-medium text-amber-700 dark:text-amber-400 hover:underline"
+                        >
+                          Reset to defaults
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid="agent-delete"
+                          onClick={() => deleteAgent(agent)}
+                          className="text-sm font-medium text-red-600 hover:underline"
+                        >
+                          Delete
+                        </button>
+                      )}
                       <button
                         type="button"
                         data-testid="agent-inference"
@@ -946,7 +1080,6 @@ const AgentsView = () => {
                         Inference
                       </button>
                     </>
-                  )}
                   <div
                     role="status"
                     aria-label={`Agent ${agent.name} status: ${agent.status}`}
@@ -1040,8 +1173,9 @@ const AgentsView = () => {
                   Last heartbeat: {agent.lastHeartbeat ?? 'none'}
                 </div>
               </div>
-              {runnerOpenId === agent.id && isPersisted(agent.id) && (
+              {runnerOpenId === agent.id && (
                 <AgentRunnerPanel
+                  key={`${agent.id}-${runnerKey}`}
                   agentId={agent.id}
                   agentName={agent.name}
                   onChanged={refreshAgents}

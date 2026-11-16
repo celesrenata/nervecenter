@@ -94,6 +94,21 @@ class McpClient:
         except httpx.HTTPError:
             pass
 
+    async def ping(self) -> None:
+        """Open a fresh MCP session (``initialize``); raises :class:`McpToolError` with a code."""
+        try:
+            async with httpx.AsyncClient(
+                transport=self._transport, timeout=self._timeout
+            ) as client:
+                async with self._lock:
+                    await self._initialize(client)
+        except httpx.TimeoutException:
+            raise McpToolError("timeout") from None
+        except httpx.HTTPStatusError as exc:
+            raise McpToolError(f"http_{exc.response.status_code}") from None
+        except httpx.HTTPError:
+            raise McpToolError("unreachable") from None
+
     async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
         body = {
             "jsonrpc": "2.0",

@@ -283,7 +283,9 @@ def omniroute_default_info() -> dict[str, Any] | None:
     fixture = _truthy(os.environ.get("NERVE_OMNIROUTE_FIXTURE"))
     if not url and not fixture:
         return None
-    key = (os.environ.get("NERVE_OMNIROUTE_API_KEY") or "").strip()
+    from backend.inference import key_resolver
+
+    key = key_resolver.regular_key() or ""
     model = (os.environ.get("NERVE_OMNIROUTE_MODEL") or "").strip()
     return {
         "provider": "omniroute",

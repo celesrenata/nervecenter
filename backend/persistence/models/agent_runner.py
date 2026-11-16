@@ -67,3 +67,27 @@ class AgentRun(Base):
     skills_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (Index("ix_agent_runs_agent_started", "agent_id", "started_at"),)
+
+
+class AgentOverride(Base):
+    """Owner edits layered over a built-in agent's code manifest (NS-ADR-116).
+
+    The manifest stays read-only; this row is the durable override. ``skills``
+    and ``inference`` are ``NULL`` when not overridden. Removing the row (and the
+    agent's schedule) resets the agent to its defaults.
+    """
+
+    __tablename__ = "agent_overrides"
+
+    id: Mapped[UUIDv4]
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    agent_id: Mapped[str] = mapped_column(String, nullable=False, unique=True, index=True)
+    prompt_addition: Mapped[str | None] = mapped_column(String, nullable=True)
+    skills: Mapped[list[str] | None] = mapped_column(Jsonb, nullable=True)
+    inference: Mapped[dict[str, Any] | None] = mapped_column(Jsonb, nullable=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)

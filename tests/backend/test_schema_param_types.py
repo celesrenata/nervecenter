@@ -107,6 +107,7 @@ NOW = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
 #: ``character varying`` for every one of them; the ORM must agree.
 TABLES_WITH_ID = frozenset(
     {
+        "agent_overrides",
         "agent_results",
         "agent_runs",
         "agent_schedules",
@@ -126,6 +127,7 @@ TABLES_WITH_ID = frozenset(
         "project_context_notes",
         "coding_handoffs",
         "openai_calls",
+        "omniroute_key_audit",
         "escalation_grants",
         "statement_imports",
         "ledger_entries",

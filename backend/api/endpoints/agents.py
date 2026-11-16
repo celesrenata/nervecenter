@@ -34,6 +34,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
+from backend.agents.overrides import MAX_PROMPT_ADDITION, override_to_dict
 from backend.agents.registry import AgentRegistry
 from backend.api.models import ListResponse
 from backend.api.endpoints._helpers import list_response
@@ -61,7 +62,15 @@ _REGISTRY = AgentRegistry()
 router = APIRouter(tags=["agents"])
 
 
-def _manifest_to_row(manifest) -> dict[str, Any]:
+BUILTIN_RUNS_WHEN = (
+    "Built-in. The system invokes it when an incident, goal or question needs "
+    "this kind of work. You can also run it now, give it a schedule, or change "
+    "its prompt additions, skills, model and on/off. Reset to defaults undoes "
+    "your edits."
+)
+
+
+def _manifest_to_row(manifest, override=None) -> dict[str, Any]:
     """Map a real :class:`AgentManifest` to the web ``Agent`` row shape.
 
     Telemetry fields have no backing store, so they are ``None`` (honest)
@@ -72,15 +81,14 @@ def _manifest_to_row(manifest) -> dict[str, Any]:
         "id": manifest.agent_type,
         "name": manifest.name,
         "type": manifest.agent_type,
-        "status": "active",
+        "status": "active" if override is None or override.enabled else "disabled",
+        "builtin": True,
         "description": manifest.description,
         "tools": list(manifest.tools),
         "prompt_template": manifest.prompt_template,
-        "runs_when": (
-            "Built-in. It is invoked by the system when an incident, goal or "
-            "question needs this kind of work. It has no schedule and cannot "
-            "be edited or deleted."
-        ),
+        "skills": list(override.skills or []) if override is not None else [],
+        "runs_when": BUILTIN_RUNS_WHEN,
+        **override_to_dict(override),
         "capabilities": (
             {
                 "tools": list(capabilities.tools),
@@ -92,7 +100,10 @@ def _manifest_to_row(manifest) -> dict[str, Any]:
         ),
         # Per-agent inference binding (contract §3); native types carry it on
         # the manifest (set via ``AgentRegistry.set_inference``), else ``None``.
-        "inference": _sanitize_binding(getattr(manifest, "inference", None)),
+        "inference": _sanitize_binding(
+            (override.inference if override is not None and override.inference else None)
+            or getattr(manifest, "inference", None)
+        ),
         # No backing store yet — do not fabricate live telemetry.
         "lastHeartbeat": None,
         "cpuUsage": None,
@@ -100,6 +111,16 @@ def _manifest_to_row(manifest) -> dict[str, Any]:
         "tasksCompleted": None,
         "tasksFailed": None,
     }
+
+
+async def _builtin_row(svc: AgentService | None, manifest) -> dict[str, Any]:
+    """One built-in agent row with its override and run counts applied."""
+    store = getattr(svc, "override_store", None)
+    override = await store().get(manifest.agent_type) if store is not None else None
+    row = _manifest_to_row(manifest, override)
+    if hasattr(svc, "apply_counts"):
+        await svc.apply_counts([row])
+    return row
 
 
 @router.get("/agents/", response_model=ListResponse)
@@ -111,9 +132,13 @@ async def list_agents(request: Request):
     ``POST /api/agents``) follow. Without a DB the list is the native
     registry only (honest degradation, not a fabricated merge).
     """
-    agents = [_manifest_to_row(m) for m in _REGISTRY.list_all()]
     svc = _agent_service(request)
+    store = getattr(svc, "override_store", None)
+    overrides = await store().all() if store is not None else {}
+    agents = [_manifest_to_row(m, overrides.get(m.agent_type)) for m in _REGISTRY.list_all()]
     if svc is not None:
+        if hasattr(svc, "apply_counts"):
+            await svc.apply_counts(agents)
         agents.extend(await svc.list_persisted())
     return list_response(agents)
 
@@ -128,9 +153,9 @@ async def get_agent(agent_id: str, request: Request = None):
     fallback); with no DB available a non-native id is an honest 404.
     """
     manifest = _REGISTRY.get(agent_id)
-    if manifest is not None:
-        return _manifest_to_row(manifest)
     svc = _agent_service(request) if request is not None else None
+    if manifest is not None:
+        return await _builtin_row(svc, manifest)
     if svc is not None:
         try:
             return await svc.get(agent_id)
@@ -270,6 +295,42 @@ class AgentUpdateRequest(BaseModel):
             "by passing an empty string.)"
         ),
     )
+    prompt_addition: str | None = Field(
+        default=None,
+        max_length=MAX_PROMPT_ADDITION,
+        description="Built-in agents only: text appended to the manifest prompt.",
+    )
+    enabled: bool | None = Field(
+        default=None, description="Built-in agents only: false stops runs from executing."
+    )
+
+
+#: What the owner may change on a built-in agent (the rest is the read-only manifest).
+BUILTIN_EDITABLE = frozenset({"prompt_addition", "skills", "inference", "enabled"})
+
+
+async def _patch_builtin(svc: AgentService, agent_id: str, payload: AgentUpdateRequest):
+    sent = set(payload.model_fields_set)
+    locked = sorted(sent - BUILTIN_EDITABLE)
+    if locked:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Built-in agents are defined in code. You can change only: "
+                "prompt_addition, skills, inference, enabled. Not: " + ", ".join(locked)
+            ),
+        )
+    changes: dict[str, Any] = {}
+    if "prompt_addition" in sent:
+        changes["prompt_addition"] = (payload.prompt_addition or "").strip() or None
+    if "skills" in sent and payload.skills is not None:
+        changes["skills"] = list(payload.skills)
+    if "inference" in sent:
+        changes["inference"] = _sanitize_binding(payload.inference) if payload.inference else None
+    if "enabled" in sent and payload.enabled is not None:
+        changes["enabled"] = payload.enabled
+    await svc.override_store().save(agent_id, changes)
+    return await _builtin_row(svc, _REGISTRY.get(agent_id))
 
 
 @router.patch("/api/agents/{agent_id}")
@@ -286,6 +347,13 @@ async def update_agent(
         raise HTTPException(
             status_code=503,
             detail="Agent persistence is not configured; set NERVE_DB_URL.",
+        )
+    if _REGISTRY.get(agent_id) is not None:
+        return await _patch_builtin(svc, agent_id, payload)
+    if payload.prompt_addition is not None or payload.enabled is not None:
+        raise HTTPException(
+            status_code=422,
+            detail="prompt_addition and enabled apply to built-in agents only.",
         )
     try:
         return await svc.update(
@@ -319,7 +387,10 @@ async def delete_agent(request: Request, agent_id: str) -> Response:
     if _REGISTRY.get(agent_id) is not None:
         raise HTTPException(
             status_code=405,
-            detail="Built-in agents cannot be deleted; only agents you added can.",
+            detail=(
+                "Built-in agents cannot be deleted. Use Reset to defaults "
+                "(POST /api/agents/{id}/reset) to undo your edits."
+            ),
         )
     svc = _agent_service(request)
     if svc is None:
@@ -332,6 +403,26 @@ async def delete_agent(request: Request, agent_id: str) -> Response:
     except AgentNotFoundError:
         raise HTTPException(status_code=404, detail="Agent not found") from None
     return Response(status_code=204)
+
+
+@router.post("/api/agents/{agent_id}/reset")
+async def reset_builtin_agent(request: Request, agent_id: str) -> dict[str, Any]:
+    """Reset a built-in agent to its code defaults.
+
+    Removes the owner override and the agent's schedule; run history stays.
+    Agents you created have no defaults to return to (``404``); delete them
+    instead.
+    """
+    if _REGISTRY.get(agent_id) is None:
+        raise HTTPException(status_code=404, detail="Only built-in agents can be reset.")
+    svc = _agent_service(request)
+    if svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent persistence is not configured; set NERVE_DB_URL.",
+        )
+    await svc.override_store().reset(agent_id)
+    return await _builtin_row(svc, _REGISTRY.get(agent_id))
 
 
 @router.post("/api/agents/pause", status_code=501)

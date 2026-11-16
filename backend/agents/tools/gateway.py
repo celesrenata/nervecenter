@@ -18,6 +18,7 @@ import structlog
 from backend.agents.tools import policy
 from backend.agents.tools.fetch_guard import MAX_RESPONSE_CHARS, FetchGuard, host_of
 from backend.agents.tools.mcp_client import McpClient, McpToolError
+from backend.inference import key_resolver
 
 log = structlog.get_logger(__name__)
 
@@ -48,13 +49,19 @@ class ToolGateway:
         self._omni_url = (
             omniroute_url or os.environ.get(OMNIROUTE_URL_ENV, "") or DEFAULT_OMNIROUTE_URL
         )
-        self._omni_key = (
-            omniroute_key if omniroute_key is not None else os.environ.get(OMNIROUTE_KEY_ENV, "")
-        ).strip() or None
+        # NS-ADR-117: without an explicit key, follow the resolver (vault value,
+        # else NERVE_OMNIROUTE_PRIVILEGED_KEY) so a key changed in Settings applies live.
+        self._omni_explicit = (omniroute_key or "").strip() or None
+        self._omni_follow = omniroute_key is None
         self._transport = transport
         self._timeout = timeout_s
         self._clients: dict[str, McpClient] = {}
+        self._omni_client_key: str | None = None
         self._fetch_guard = fetch_guard or FetchGuard()
+
+    @property
+    def _omni_key(self) -> str | None:
+        return key_resolver.privileged_key() if self._omni_follow else self._omni_explicit
 
     @property
     def hub_configured(self) -> bool:
@@ -86,6 +93,12 @@ class ToolGateway:
 
     def _client(self, server: str) -> McpClient:
         client = self._clients.get(server)
+        if (
+            client is not None
+            and server == policy.OMNIROUTE_SERVER
+            and self._omni_client_key != self._omni_key
+        ):
+            client = None  # the key changed: new client, new MCP session
         if client is None:
             if server == policy.OMNIROUTE_SERVER:
                 client = McpClient(
@@ -94,6 +107,7 @@ class ToolGateway:
                     transport=self._transport,
                     timeout_s=self._timeout,
                 )
+                self._omni_client_key = self._omni_key
             else:
                 client = McpClient(
                     f"{self._hub_url}/{server}",

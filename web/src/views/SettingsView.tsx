@@ -13,6 +13,7 @@ import {
 } from '../theme/SettingsContext'
 import { Link } from 'react-router-dom'
 import { inferenceApi, type AvailableInference } from '../api/inference'
+import { OmniRouteKeysPanel } from './OmniRouteKeysPanel'
 
 /**
  * Settings — browser-local preferences grouped by feature set. The categories
@@ -52,6 +53,7 @@ export type SettingsCategory =
   | 'data'
   | 'connections'
   | 'inference'
+  | 'omniroute'
 
 const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: string }> = [
   { id: 'appearance', label: 'Appearance', hint: 'Theme, color, type, and motion' },
@@ -59,6 +61,7 @@ const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: strin
   { id: 'data', label: 'Data & privacy', hint: 'Wellness and local data boundaries' },
   { id: 'connections', label: 'Connections & apps', hint: 'Connectors and device builds' },
   { id: 'inference', label: 'Inference', hint: 'Default model & provider for Ask' },
+  { id: 'omniroute', label: 'OmniRoute', hint: 'Write-only OmniRoute keys' },
 ]
 
 export function SettingsView() {
@@ -412,6 +415,7 @@ export function SettingsView() {
       </section>
       </section>}
 
+      {category === 'omniroute' && <OmniRouteKeysPanel />}
       {category === 'inference' && (
         <section
           id="settings-panel-inference"

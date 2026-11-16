@@ -197,7 +197,9 @@ def _bind_semantic_observer(target: Any) -> None:
 
     scopes = observer_scopes()
     url = (os.environ.get("NERVE_OMNIROUTE_URL") or "").strip()
-    key = (os.environ.get("NERVE_OMNIROUTE_API_KEY") or "").strip()
+    from backend.inference import key_resolver
+
+    key = key_resolver.regular_key() or ""
     engine = getattr(target.state, "db_engine", None)
     if (scopes is not None and not scopes) or not url or not key or engine is None:
         set_observer_runtime(None)
@@ -383,6 +385,14 @@ async def wire_dependencies(target: FastAPI) -> None:
                 make_session_factory(target.state.db_engine),
                 secret_codec=target.state.secret_vault,
             )
+            # NS-ADR-117: OmniRoute keys set in Settings live in the vault and
+            # override the k8s Secret env. Load them before anything reads a key.
+            from backend.inference.key_store import OmniRouteKeyStore
+
+            target.state.omniroute_key_store = OmniRouteKeyStore(
+                target.state.repository_registry, target.state.secret_vault
+            )
+            await target.state.omniroute_key_store.refresh()
             # Extend-only durability seam: bind the durable commitment sink
             # onto the live CommunicationPipeline so detected commitments are
             # mirrored to Postgres. ``set_commitment_store`` is a no-op when no

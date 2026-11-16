@@ -74,7 +74,10 @@ def build_runner(engine: Any, app: Any = None) -> AgentRunner:
         return await get_engine(app).generate(prompt, caller="agent_runner", reason=str(reason))
 
     async def infer(agent: Any, prompt: str) -> dict[str, Any]:
-        binding = await service.get_inference(str(agent.id)) or {}
+        if getattr(agent, "builtin", False):
+            binding = agent.inference or {}
+        else:
+            binding = await service.get_inference(str(agent.id)) or {}
         requested = binding.get("model") or default_inference()["model"]
         return await background_call(
             requested,

@@ -15,7 +15,7 @@ network-free (only the clamd client is exempt, enforced by a test).
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import httpx
@@ -30,10 +30,12 @@ from backend.inference.omniroute_registry import (  # noqa: E402 - moved, re-exp
 class HttpObserverTransport:
     """Sends the observer's fixed request through OmniRoute; returns raw text."""
 
-    def __init__(self, base_url: str, api_key: str, *, timeout: float = 60.0) -> None:
+    def __init__(
+        self, base_url: str, api_key: str | Callable[[], str | None], *, timeout: float = 60.0
+    ) -> None:
         base = base_url.rstrip("/")
         self._url = base + ("/chat/completions" if base.endswith("/v1") else "/v1/chat/completions")
-        self._key = api_key
+        self._key = api_key  # a live callable follows key changes (NS-ADR-117)
         self._timeout = timeout
 
     async def complete(self, request: Mapping[str, Any], route: Any) -> str:
@@ -44,7 +46,8 @@ class HttpObserverTransport:
                     self._url,
                     json=dict(request),
                     headers={
-                        "Authorization": f"Bearer {self._key}",
+                        "Authorization": "Bearer "
+                        + ((self._key() if callable(self._key) else self._key) or ""),
                         # Stricter-only opt-outs; the secure combo enforces
                         # this server-side regardless (NS-ADR-034).
                         "x-omniroute-no-memory": "true",

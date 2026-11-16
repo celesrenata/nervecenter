@@ -27,6 +27,8 @@ from typing import Any
 import httpx
 import structlog
 
+from backend.inference import key_resolver
+
 log = structlog.get_logger(__name__)
 
 DEFAULT_API_URL = "https://omniroute.celestium.life"
@@ -98,19 +100,11 @@ class SkillHubClient:
         max_skills: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        if key is None:
-            key = next(
-                (
-                    v
-                    for v in (
-                        os.environ.get(e, "").strip()
-                        for e in (KEY_ENV, PRIVILEGED_KEY_ENV, FALLBACK_KEY_ENV)
-                    )
-                    if v
-                ),
-                "",
-            )
-        self._key = key.strip() or None
+        # NS-ADR-117: without an explicit key, follow the resolver on every
+        # request (NERVE_SKILLHUB_KEY, then privileged, then regular; vault
+        # values override the env Secrets) so a key changed in Settings applies live.
+        self._explicit_key = key.strip() or None if key is not None else None
+        self._follow_resolver = key is None
         self._url = (url or os.environ.get(URL_ENV, "") or DEFAULT_API_URL).strip().rstrip("/")
         self._transport = transport
         self._timeout = timeout_s
@@ -120,6 +114,10 @@ class SkillHubClient:
         self._clock = clock
         self._searches: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
         self._loads: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
+
+    @property
+    def _key(self) -> str | None:
+        return key_resolver.skillhub_key() if self._follow_resolver else self._explicit_key
 
     @property
     def configured(self) -> bool:

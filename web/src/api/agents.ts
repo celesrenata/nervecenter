@@ -59,6 +59,14 @@ export interface Agent {
    * per-agent `inference` jsonb. `null`/absent = no combo binding.
    */
   combo_id?: string | null
+  /** True for the agents defined in code; they are edited as overrides (NS-ADR-116). */
+  builtin?: boolean
+  /** Built-ins: an owner override exists (Reset to defaults removes it). */
+  has_override?: boolean
+  /** Built-ins: owner text appended to the manifest prompt. */
+  prompt_addition?: string
+  skills_overridden?: boolean
+  inference_overridden?: boolean
 }
 
 /**
@@ -95,6 +103,10 @@ export interface AgentUpdatePayload {
    * combo; an empty string ``""`` clears it; omitted leaves it unchanged.
    */
   combo_id?: string | null
+  /** Built-in agents only: text appended to the manifest prompt. */
+  prompt_addition?: string | null
+  /** Built-in agents only: false stops runs from executing. */
+  enabled?: boolean | null
 }
 
 export { ApiError }
@@ -203,6 +215,12 @@ export const agentsApi = {
     if (!res.ok) throw await apiErrorFromResponse(res)
   },
 
+  /** `POST /api/agents/{id}/reset` — built-ins only: drop the override and schedule. */
+  reset: async (agentId: string): Promise<Agent> => {
+    const res = await apiFetch(`/api/agents/${agentId}/reset`, { method: 'POST' })
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as Agent
+  },
   /** `POST /api/agents/{id}/run` — run now; returns the recorded run. */
   run: async (agentId: string): Promise<AgentRun> => {
     const res = await apiFetch(`/api/agents/${agentId}/run`, { method: 'POST' })

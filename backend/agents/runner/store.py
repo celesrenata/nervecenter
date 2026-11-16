@@ -8,6 +8,11 @@ from typing import Any
 from sqlalchemy import case, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from backend.agents.overrides import (
+    OverrideStore,
+    builtin_manifest,
+    effective_builtin,
+)
 from backend.persistence.models import Agent as AgentORM
 from backend.persistence.models import AgentRun, AgentSchedule
 
@@ -77,7 +82,11 @@ class RunnerStore:
     def __init__(self, session_factory: async_sessionmaker[AsyncSession]) -> None:
         self._factory = session_factory
 
-    async def get_agent(self, agent_id: str) -> AgentORM | None:
+    async def get_agent(self, agent_id: str) -> Any:
+        """A persisted instance, or a built-in agent with its override applied (NS-ADR-116)."""
+        manifest = builtin_manifest(agent_id)
+        if manifest is not None:
+            return effective_builtin(manifest, await OverrideStore(self._factory).get(agent_id))
         async with self._factory() as session:
             return await session.get(AgentORM, agent_id)
 

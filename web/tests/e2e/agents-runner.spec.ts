@@ -64,10 +64,11 @@ test('agents: explain, schedule, run now, history, delete, back-off banner', asy
   await expect(page.getByTestId('runner-backoff-banner')).toBeVisible()
   await expect(page.getByText('Watches bills').first()).toBeVisible()
   await expect(page.getByText('Built-in. Invoked by the system.')).toBeVisible()
-  // Built-ins have no Delete control.
+  // Built-ins have no Delete control (they get Reset to defaults instead).
   await expect(page.getByTestId('agent-delete')).toHaveCount(1)
 
-  await page.getByTestId('agent-runner-toggle').click()
+  const own = page.locator('[data-agent-id="inst-1"]')
+  await own.getByTestId('agent-runner-toggle').click()
   await page.getByTestId('schedule-mode').selectOption('interval')
   await page.getByTestId('schedule-minutes').fill('30')
   await page.getByRole('button', { name: 'Save schedule' }).click()
@@ -77,6 +78,6 @@ test('agents: explain, schedule, run now, history, delete, back-off banner', asy
   await expect(page.getByTestId('agent-run-history')).toContainText('all quiet')
   await expect(page.getByTestId('agent-run-history')).toContainText('1 completed')
 
-  await page.getByTestId('agent-delete').click()
+  await own.getByTestId('agent-delete').click()
   await expect(page.getByText('bill-watcher')).toHaveCount(0)
 })

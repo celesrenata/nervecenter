@@ -8,6 +8,7 @@ package. GET only, exactly ``/v1/models``, ``/api/combos`` and
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -32,12 +33,17 @@ async def _bounded_json(resp: httpx.Response) -> Any:
 class HttpRegistryTransport:
     """Read-only OmniRoute registry access for the route guard."""
 
-    def __init__(self, base_url: str, api_key: str, *, timeout: float = 12.0) -> None:
+    def __init__(
+        self, base_url: str, api_key: str | Callable[[], str | None], *, timeout: float = 12.0
+    ) -> None:
         # Live /api/combos occasionally takes >3 s; the resolver's overall
         # budget (15 s) still bounds the three GETs together.
         self._base = base_url.rstrip("/").removesuffix("/v1")
-        self._key = api_key
+        self._key = api_key  # a live callable follows key changes (NS-ADR-117)
         self._timeout = timeout
+
+    def _current_key(self) -> str:
+        return (self._key() if callable(self._key) else self._key) or ""
 
     async def get_json(self, path: str) -> Any:
         # Exactly the three read-only paths the route guard uses.
@@ -45,9 +51,8 @@ class HttpRegistryTransport:
             raise ValueError("registry path not allowed")
         try:
             async with httpx.AsyncClient(timeout=self._timeout, follow_redirects=False) as c:
-                async with c.stream(
-                    "GET", self._base + path, headers={"Authorization": f"Bearer {self._key}"}
-                ) as resp:
+                auth = {"Authorization": f"Bearer {self._current_key()}"}
+                async with c.stream("GET", self._base + path, headers=auth) as resp:
                     if resp.status_code != 200:
                         raise ValueError(f"registry status {resp.status_code}")
                     return await _bounded_json(resp)

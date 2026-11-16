@@ -41,6 +41,7 @@ from backend.waiting_on import get_waiting_on_service
 from backend.api.endpoints import (
     agent_runner,
     agents,
+    omniroute_keys,
     attention,
     briefing,
     approvals,
@@ -111,6 +112,7 @@ from backend.api.wiring import install_dependency_wiring
 ALL_ROUTERS = (
     agent_runner.router,
     agents.router,
+    omniroute_keys.router,
     attention.router,
     briefing.router,
     email.router,
@@ -307,6 +309,9 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                 if not runner_disabled():
                     runner = get_runner(app)
                     if runner is not None:
+                        key_store = getattr(app.state, "omniroute_key_store", None)
+                        if key_store is not None:  # NS-ADR-117: pick up key changes made elsewhere
+                            runner.add_tick_hook(key_store.refresh)
                         runner.start()
                         log.debug("api.agent_runner_started")
                         from backend.research import get_engine

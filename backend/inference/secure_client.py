@@ -191,13 +191,13 @@ def secure_model(
     return raw if is_secure(raw) else DEFAULT_SECURE_MODEL
 
 
-def build_guard(base_url: str | None, api_key: str | None) -> Guard:
+def build_guard(base_url: str | None, api_key: str | Callable[[], str | None] | None) -> Guard:
     """The NS-ADR-073 route guard bound to the OmniRoute registry."""
     from backend.inference.omniroute_registry import HttpRegistryTransport
     from backend.mail_security.route_guard import LocalOnlyRouteResolver
 
     resolver = LocalOnlyRouteResolver(
-        HttpRegistryTransport(base_url or "", api_key or ""),
+        HttpRegistryTransport(base_url or "", api_key or ""),  # str or live callable
         omniroute_base_url=base_url or "",
         require_secure_combo=True,
     )
@@ -244,7 +244,11 @@ class SecureTransport:
         self._guard = (
             guard
             if guard is not None
-            else build_guard(getattr(inner, "base_url", None), getattr(inner, "api_key", None))
+            else build_guard(
+                getattr(inner, "base_url", None),
+                # A live key source (NS-ADR-117) when the inner transport has one.
+                getattr(inner, "current_key", None) or getattr(inner, "api_key", None),
+            )
         )
         self.on_throttle = on_throttle
         self._routes = routes if routes is not None else load_routes()

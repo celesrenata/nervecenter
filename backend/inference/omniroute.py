@@ -35,6 +35,7 @@ import httpx
 import structlog
 from pydantic import BaseModel, Field
 
+from backend.inference import key_resolver
 from schemas.routes import InferenceRoute, OmniRouteTelemetry
 
 log = structlog.get_logger(__name__)
@@ -230,14 +231,22 @@ class OmniRouteTransport:
     def __post_init__(self) -> None:
         if self.base_url is None:
             self.base_url = os.environ.get("NERVE_OMNIROUTE_URL", "").strip() or None
-        if self.api_key is None:
-            key = os.environ.get("NERVE_OMNIROUTE_API_KEY", "").strip()
-            self.api_key = key or None
+        # NS-ADR-117: with no explicit key the transport follows the resolver
+        # (vault value, else env), so a key changed in Settings applies live.
+        self._follow_resolver = self.api_key is None
+        if self._follow_resolver:
+            self.api_key = key_resolver.regular_key()
         if self.fixture_dir is None and _truthy(os.environ.get("NERVE_OMNIROUTE_FIXTURE")):
             self.fixture_dir = os.environ.get(
                 "NERVE_OMNIROUTE_FIXTURE_DIR",
                 "tests/fixtures/omniroute",
             ).strip() or "tests/fixtures/omniroute"
+
+    def current_key(self) -> str | None:
+        """The key to send now (resolver-driven unless one was passed in)."""
+        if self._follow_resolver:
+            self.api_key = key_resolver.regular_key()
+        return self.api_key
 
     @classmethod
     def from_env(cls) -> OmniRouteTransport:
@@ -493,8 +502,9 @@ class OmniRouteTransport:
         headers: dict[str, str] = {}
         if extra_headers:
             headers.update(extra_headers)
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
+        key = self.current_key()
+        if key:
+            headers["Authorization"] = f"Bearer {key}"
         assert self.base_url is not None
         url = self.base_url.rstrip("/") + path
         request = client.build_request(method, url, json=body, headers=headers)

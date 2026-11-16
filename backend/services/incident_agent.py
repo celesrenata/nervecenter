@@ -282,6 +282,7 @@ def _agent_to_row(orm: AgentORM) -> dict[str, Any]:
         "tasksFailed": None,
         "inference": orm.inference,
         "combo_id": orm.combo_id,
+        "builtin": False,
     }
 
 
@@ -327,6 +328,16 @@ class AgentService:
             out = [_agent_to_row(r) for r in rows]
         await self._apply_counts(out)
         return out
+
+    def override_store(self) -> Any:
+        """Durable owner overrides for the built-in agents (NS-ADR-116)."""
+        from backend.agents.overrides import OverrideStore
+
+        return OverrideStore(self._factory())
+
+    async def apply_counts(self, rows: list[dict[str, Any]]) -> None:
+        """Public wrapper: fill run counts for any agent rows (built-in or not)."""
+        await self._apply_counts(rows)
 
     async def _apply_counts(self, rows: list[dict[str, Any]]) -> None:
         """Fill tasksCompleted/tasksFailed from ``agent_runs`` (None if unavailable)."""

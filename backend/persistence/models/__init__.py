@@ -23,7 +23,7 @@ Usage::
     from backend.persistence.models import Event, Entity, Goal, Task
 """
 
-from .agent_runner import AgentRun, AgentSchedule
+from .agent_runner import AgentOverride, AgentRun, AgentSchedule
 from .auth import ApprovalRecord, AuthDevice, AuthSession, PairingChallenge
 from .base import Base, Jsonb, RootRecord, TimedRecord, UUIDv4, Vector
 from .claims import Claim, Decision
@@ -43,6 +43,7 @@ from .obligations import (
     OBLIGATION_TYPES,
     ObligationRow,
 )
+from .omniroute_keys import OmniRouteKeyAudit
 from .openai_usage import EscalationGrant, OpenAICall
 from .planned_changes import PlannedChange
 from .projects import ProjectContext, ProjectContextNote
@@ -72,6 +73,8 @@ __all__ = [
     "Agent",
     "AgentSchedule",
     "AgentRun",
+    "AgentOverride",
+    "OmniRouteKeyAudit",
     "HealthSampleRow",
     "DebtAccountRow",
     "LedgerEntryRow",
