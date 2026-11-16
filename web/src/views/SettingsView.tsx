@@ -67,7 +67,11 @@ const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: strin
 export function SettingsView() {
   const { theme, setTheme } = useTheme()
   const { settings, update, reset } = useSettings()
-  const [category, setCategory] = useState<SettingsCategory>('appearance')
+  // `?tab=<id>` opens a category directly (e.g. /settings?tab=omniroute).
+  const [category, setCategory] = useState<SettingsCategory>(() => {
+    const tab = new URLSearchParams(window.location.search).get('tab')
+    return CATEGORY_OPTIONS.some((c) => c.id === tab) ? (tab as SettingsCategory) : 'appearance'
+  })
   const tabStripRef = useRef<HTMLElement>(null)
 
   // Inference tab — lazy fetch of the selectable surface. Only fires when the
@@ -132,8 +136,9 @@ export function SettingsView() {
         apply immediately and are not synced to the server.
       </p>
 
-      <nav ref={tabStripRef} aria-label="Settings categories" className="flex justify-center overflow-x-auto border-b border-line">
-        <div className="flex min-w-max gap-1" role="tablist">
+      <nav ref={tabStripRef} aria-label="Settings categories" className="flex justify-center border-b border-line">
+        {/* Wraps instead of scrolling so every tab (including OmniRoute) stays visible. */}
+        <div className="flex flex-wrap justify-center gap-1" role="tablist">
           {CATEGORY_OPTIONS.map((item) => (
             <button
               key={item.id}

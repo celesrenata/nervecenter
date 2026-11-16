@@ -114,3 +114,20 @@ test('OmniRoute keys: a failed save shows the error without the value', async ({
   await expect(page.getByTestId('omniroute-error-regular')).toContainText('422')
   expect(await page.getByTestId('omniroute-error-regular').innerText()).not.toContain(REGULAR)
 })
+
+test('the OmniRoute tab is reachable by deep link and stays visible on a narrow window', async ({ page }) => {
+  await page.route('**/api/settings/omniroute/keys', (r) =>
+    r.fulfill({ json: {
+      regular: { configured: true, source: 'env', vault_set: false, changed_at: null },
+      privileged: { configured: true, source: 'env', vault_set: false, changed_at: null },
+      audit: [],
+    } }),
+  )
+  await seedBreakGlassSession(page)
+  await page.setViewportSize({ width: 640, height: 900 })
+  await page.goto('/settings', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('tab', { name: 'OmniRoute' })).toBeInViewport()
+  await page.goto('/settings?tab=omniroute', { waitUntil: 'domcontentloaded' })
+  await expect(page.getByRole('tab', { name: 'OmniRoute' })).toHaveAttribute('aria-selected', 'true')
+  await expect(page.getByTestId('omniroute-status-privileged')).toBeVisible()
+})
