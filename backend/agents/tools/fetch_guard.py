@@ -93,7 +93,12 @@ def _digits(text: str) -> str:
 
 def context_values(context: str) -> set[str]:
     """Personal values in a run's context that must never appear in a URL."""
-    values = {m.group(0).strip().lower() for m in policy._PERSONAL.finditer(context)}
+    values = {m.group(0).strip().lower() for m in _URL_PERSONAL.finditer(context)}
+    values.update(
+        seg.lower()
+        for seg in _SEGMENT_SPLIT.split(context)
+        if len(seg) >= 32 and re.search(r"\d", seg) and re.search(r"[A-Za-z]", seg)
+    )
     for line in context.splitlines():
         if _SENSITIVE_LINE.search(line):
             values.update(m.group(0) for m in _NUMBER.finditer(line) if len(m.group(0)) >= 3)

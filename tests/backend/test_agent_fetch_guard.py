@@ -154,6 +154,16 @@ async def test_values_from_the_run_context_cannot_leave_in_a_url() -> None:
     assert await reason("https://example.org/k8s/1.31", context=context) is None
 
 
+async def test_a_url_named_in_the_prompt_can_be_fetched() -> None:
+    url = "https://kubernetes.io/docs/concepts/services-networking/network-policies/"
+    context = f"If useful, fetch {url} and check health with omniroute_get_health."
+    assert await reason(url.replace("kubernetes.io", "example.org"), context=context) is None
+    token = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8"
+    assert await reason(f"https://example.org/?t={token}", context=f"key {token}") == (
+        "url_personal_data"
+    )
+
+
 async def test_sensitive_runs_fetch_only_allowlisted_hosts() -> None:
     allow = frozenset({"docs.example.org"})
     out, _ = await guard(allow=allow).check(FINANCE, {"url": "https://example.org/"})
