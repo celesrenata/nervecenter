@@ -44,6 +44,7 @@ from .obligations import (
 )
 from .planned_changes import PlannedChange
 from .relationships import Relationship
+from .research import ResearchCheckpoint, ResearchProject, ResearchStep
 from .tasks import Task, TaskRun
 
 __all__ = [
@@ -73,6 +74,9 @@ __all__ = [
     "LedgerEntryRow",
     "StatementImportRow",
     "MhFormRow",
+    "ResearchProject",
+    "ResearchStep",
+    "ResearchCheckpoint",
     "InferenceProvider",
     "InferenceCombo",
     "AuthSession",

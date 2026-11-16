@@ -46,6 +46,7 @@ from backend.api.endpoints import (
     approvals,
     bills,
     finance,
+    research,
     calendar,
     communications,
     contact_photos,
@@ -163,6 +164,7 @@ ALL_ROUTERS = (
     wellness.router,
     bills.router,
     finance.router,
+    research.router,
     health_samples.router,
     mental_health.router,
     obligations.router,
@@ -291,6 +293,7 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                 log.warning("api.email_rehydrate_failed", error=str(exc))
             # Agent runner loop (NS-ADR-099): durable cadence + back-off.
             runner = None
+            researcher = None
             try:
                 from backend.agents.runner import get_runner, runner_disabled
                 if not runner_disabled():
@@ -298,11 +301,18 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                     if runner is not None:
                         runner.start()
                         log.debug("api.agent_runner_started")
+                        from backend.research import get_engine
+                        researcher = get_engine(app)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.agent_runner_start_failed", error=str(exc))
             try:
                 yield
             finally:
+                if researcher is not None:
+                    try:
+                        await researcher.stop()
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("api.research_stop_failed", error=str(exc))
                 if runner is not None:
                     try:
                         await runner.stop()

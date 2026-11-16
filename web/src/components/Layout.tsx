@@ -57,6 +57,7 @@ const navItems: NavItem[] = [
   { path: '/mental-health', label: 'Mental Health', Icon: ShieldCheckIcon },
   { path: '/bills', label: 'Bills', Icon: WaitingOnIcon },
   { path: '/finance', label: 'Finance', Icon: WaitingOnIcon },
+  { path: '/research', label: 'Research', Icon: SearchIcon },
   { path: '/routines', label: 'Routines', Icon: TimelineIcon },
   { path: '/systems', label: 'Systems', Icon: SystemsIcon },
   { path: '/logs', label: 'Logs', Icon: LogsIcon },

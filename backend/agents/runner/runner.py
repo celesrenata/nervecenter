@@ -141,6 +141,7 @@ class AgentRunner:
         self._tick_seconds = tick_seconds
         self._startup_delay = startup_delay_seconds
         self._inflight: set[str] = set()
+        self._tick_hooks: list[Callable[[], Awaitable[Any]]] = []
         self._task: asyncio.Task[None] | None = None
         self._stopping = False
 
@@ -213,6 +214,11 @@ class AgentRunner:
             )
         finally:
             self._inflight.discard(agent_id)
+
+    def add_tick_hook(self, hook: Callable[[], Awaitable[Any]]) -> None:
+        """Register work that rides this loop and shares its back-off (NS-ADR-103)."""
+        if hook not in self._tick_hooks:
+            self._tick_hooks.append(hook)
 
     # -- schedule ------------------------------------------------------------------
 
@@ -293,6 +299,11 @@ class AgentRunner:
                 await self.tick()
             except Exception as exc:  # noqa: BLE001 - the loop must survive
                 log.warning("agent_runner.tick_failed", error=type(exc).__name__)
+            for hook in list(self._tick_hooks):
+                try:
+                    await hook()
+                except Exception as exc:  # noqa: BLE001 - a hook must not stop the loop
+                    log.warning("agent_runner.hook_failed", error=type(exc).__name__)
             await self._sleep(self._tick_seconds)
 
     def start(self) -> None:
