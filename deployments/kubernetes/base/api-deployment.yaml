@@ -113,6 +113,8 @@ spec:
           ports:
             - name: http
               containerPort: 8000
+            - name: infra-mcp
+              containerPort: 8001
           envFrom:
             - secretRef:
                 name: nervecenter-env
@@ -195,6 +197,9 @@ spec:
             # Short-lived kubeconfig / SSH key files live only in this memory volume (NS-ADR-120).
             - name: NERVE_INFRA_TMP
               value: /run/nerve-infra
+            # Infra MCP for the central opencode, on its own port (NS-ADR-121).
+            - name: NERVE_INFRA_MCP_PORT
+              value: "8001"
             - name: NERVE_OPENCODE_URL
               value: http://opencode.opencode.svc.cluster.local:4096
             - name: NERVE_OPENCODE_PASSWORD

@@ -56,7 +56,6 @@ from backend.api.endpoints import (
     communications,
     contact_photos,
     infra,
-    infra_mcp,
     conversations,
     connections,
     contacts,
@@ -130,7 +129,6 @@ ALL_ROUTERS = (
     contacts.router,
     contact_photos.router,
     infra.router,
-    infra_mcp.router,
     people.router,
     communications.router,
     conversations.router,
@@ -328,9 +326,21 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                             log.warning("api.handoff_executor_failed", error=type(exc).__name__)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.agent_runner_start_failed", error=str(exc))
+            # Infra MCP on its own port, the only thing opencode may reach (NS-ADR-121).
+            infra_mcp = None
+            try:
+                from backend.infra import mcp_listener
+
+                infra_mcp = await mcp_listener.start(app)
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.infra_mcp_listener_failed", error=type(exc).__name__)
             try:
                 yield
             finally:
+                if infra_mcp is not None:
+                    from backend.infra import mcp_listener
+
+                    await mcp_listener.stop(infra_mcp)
                 if researcher is not None:
                     try:
                         await researcher.stop()

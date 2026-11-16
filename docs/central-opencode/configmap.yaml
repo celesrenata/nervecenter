@@ -41,7 +41,7 @@ data:
         "servers": {
           "nervecenter-infra": {
             "type": "remote",
-            "url": "http://api.nervecenter.svc.cluster.local:8000/api/mcp/infra",
+            "url": "http://api.nervecenter.svc.cluster.local:8001/api/mcp/infra",
             "headers": {"Authorization": "Bearer {env:NERVECENTER_MCP_TOKEN}"},
             "oauth": false
           }

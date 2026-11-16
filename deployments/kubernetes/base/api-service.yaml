@@ -16,3 +16,8 @@ spec:
       port: 8000
       targetPort: http
       protocol: TCP
+    # Infra MCP only (NS-ADR-121); the one port the central opencode may reach.
+    - name: infra-mcp
+      port: 8001
+      targetPort: infra-mcp
+      protocol: TCP

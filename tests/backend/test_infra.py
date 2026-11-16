@@ -344,3 +344,21 @@ async def test_gateway_grants_infra_to_infrastructure_agents_only(svc) -> None:
 
 def test_no_stray_temp_dirs_left(tmp_path) -> None:
     assert os.path.isdir(tmp_path)
+
+
+async def test_dedicated_listener_serves_only_the_infra_mcp_route(monkeypatch) -> None:
+    """opencode may reach this port only; it must not expose any other API route."""
+    from backend.infra import mcp_listener
+
+    main = FastAPI()
+    main.state.marker = "shared"
+    sub = mcp_listener.build_app(main)
+    assert sub.state.marker == "shared"
+    with TestClient(sub) as c:
+        assert c.get("/api/messages").status_code == 404
+        assert c.get("/docs").status_code == 404
+        assert c.get("/openapi.json").status_code == 404
+        assert c.get("/api/infra/connectors").status_code == 404
+        assert c.post("/api/mcp/infra", json={}).status_code == 401
+    monkeypatch.delenv(mcp_listener.PORT_ENV, raising=False)
+    assert await mcp_listener.start(main) is None  # off unless the deployment sets a port

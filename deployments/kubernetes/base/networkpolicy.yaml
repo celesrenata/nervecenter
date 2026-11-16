@@ -87,9 +87,9 @@ spec:
         - {protocol: TCP, port: 8000}
 ---
 # Central opencode (namespace opencode) ACTS on approved infra plans through
-# POST /api/mcp/infra (NS-ADR-120). Reaching the port is not enough: every
-# route still needs its token, and /api/mcp/infra accepts only the client
-# named "opencode".
+# POST /api/mcp/infra on the dedicated port 8001, which serves nothing else
+# (NS-ADR-121). Port 8000 is NOT reachable from opencode: many main-API reads
+# rely on the SSO ingress. /api/mcp/infra accepts only the client "opencode".
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -106,7 +106,7 @@ spec:
           podSelector:
             matchLabels: {app: opencode}
       ports:
-        - {protocol: TCP, port: 8000}
+        - {protocol: TCP, port: 8001}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
