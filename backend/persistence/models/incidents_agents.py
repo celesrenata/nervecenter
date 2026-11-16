@@ -117,6 +117,8 @@ class Agent(Base):
     #: the ask pipeline by mirroring the combo's ``(provider, model)`` into the
     #: ``inference`` column before the standard resolution order.
     combo_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    #: Skill Hub catalog ids pinned to this agent (NS-ADR-111); loaded first on every run.
+    skills: Mapped[list[str]] = mapped_column(Jsonb, default=list, nullable=False)
 
     def __repr__(self) -> str:
         return f"<Agent id={self.id!r} name={self.name!r} status={self.status!r}>"

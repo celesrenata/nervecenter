@@ -1,0 +1,57 @@
+# Uploads the NerveCenter agent skill pack to the OmniRoute Skill Hub share (NS-ADR-112).
+# NOT part of the base kustomization: deploy.sh never applies it. It is rendered and
+# applied only by `python -m backend.owner_tools.skillhub_upload apply --approved`.
+# Placeholders (__IMAGE__, __UID__, __GID__) are filled in by that tool.
+# The share is mounted read-write ONLY at the subPath "nervecenter"; no other domain
+# folder is reachable from this pod.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: nervecenter-skillpack-upload
+  namespace: nervecenter
+  labels:
+    app: nervecenter-skillpack-upload
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 120
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app: nervecenter-skillpack-upload
+    spec:
+      restartPolicy: Never
+      automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: harbor-pull
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: __UID__
+        runAsGroup: __GID__
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: upload
+          image: "__IMAGE__"
+          command: ["sh", "/pack/upload.sh"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: pack
+              mountPath: /pack
+              readOnly: true
+            - name: skills
+              mountPath: /skills/nervecenter
+              subPath: nervecenter
+      volumes:
+        - name: pack
+          configMap:
+            name: nervecenter-skillpack
+            defaultMode: 0444
+        - name: skills
+          nfs:
+            server: 192.168.42.8
+            path: /volume1/Kubernetes/omniroute/skills

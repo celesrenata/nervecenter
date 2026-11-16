@@ -205,6 +205,13 @@ export function AgentRunnerPanel({
                     {r.latency_ms != null ? ` · ${r.latency_ms} ms` : ''}
                   </span>
                 </div>
+                {r.skills_status && r.skills_status !== 'unconfigured' && (
+                  <div className="text-xs text-muted mt-1" data-testid="agent-run-skills">
+                    Skills: {r.skills_status}
+                    {(r.skills ?? []).length > 0 &&
+                      ` · ${(r.skills ?? []).map((s) => `${s.id}@${s.revision}`).join(', ')}`}
+                  </div>
+                )}
                 {(r.output || r.error) && (
                   <pre className="whitespace-pre-wrap text-xs mt-1 max-h-40 overflow-auto">
                     {r.error ?? r.output}

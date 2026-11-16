@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import httpx
 import pytest
@@ -300,35 +299,31 @@ async def test_skillhub_without_key_is_inert():
     hub = SkillHubClient(key="")
     assert not hub.configured
     assert await hub.skills_context("billing reminders helper") == ""
-    assert await hub.call_tool("omniroute_agent_skills_list") is None
+    selection = await hub.select("planner", "billing reminders helper")
+    assert selection.status == "unconfigured" and selection.used == []
 
 
-async def test_skillhub_reads_catalog_and_never_calls_unlisted_tools():
-    seen: list[dict[str, Any]] = []
+async def test_skillhub_reads_the_catalog_api():
+    seen: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
-        body = __import__("json").loads(request.content)
-        seen.append({"auth": request.headers.get("authorization"), "method": body["method"]})
-        if body["method"] == "initialize":
-            return httpx.Response(
-                200,
-                json={"jsonrpc": "2.0", "id": 1, "result": {}},
-                headers={"mcp-session-id": "sid"},
-            )
-        skills = [{"id": "omni-bills", "name": "bills", "description": "Track billing reminders"}]
-        text = __import__("json").dumps(skills)
-        payload = __import__("json").dumps(
-            {"jsonrpc": "2.0", "id": 2, "result": {"content": [{"type": "text", "text": text}]}}
+        seen.append(f"{request.method} {request.url.path} {request.headers.get('authorization')}")
+        if request.method == "GET":
+            hit = {"id": "imported:bills/x", "name": "bills", "reviewStatus": "approved",
+                   "revision": "1.0.0"}
+            return httpx.Response(200, json={"results": [hit]})
+        return httpx.Response(
+            200,
+            json={"found": True, "id": "imported:bills/x", "name": "bills", "revision": "1.0.0",
+                  "content": "Track billing reminders"},
         )
-        return httpx.Response(200, text=f"event: message\ndata: {payload}\n\n")
 
     hub = SkillHubClient(
-        key="secret-test-key", url="https://hub.test/mcp", transport=httpx.MockTransport(handler)
+        key="secret-test-key", url="https://hub.test", transport=httpx.MockTransport(handler)
     )
     block = await hub.skills_context("billing reminders helper")
-    assert "omni-bills" in block
-    assert await hub.call_tool("omniroute_delete_everything") is None
-    assert seen[0]["method"] == "initialize" and seen[0]["auth"] == "Bearer secret-test-key"
+    assert "imported:bills/x" in block and "Track billing reminders" in block
+    assert seen[0] == "GET /api/skills/catalog Bearer secret-test-key"
 
 
 def test_skillhub_key_falls_back_to_the_omniroute_key(monkeypatch) -> None:
@@ -347,3 +342,43 @@ def test_skillhub_key_falls_back_to_the_omniroute_key(monkeypatch) -> None:
     monkeypatch.delenv("NERVE_OMNIROUTE_PRIVILEGED_KEY")
     monkeypatch.delenv("NERVE_OMNIROUTE_API_KEY")
     assert SkillHubClient()._key is None
+
+
+async def test_run_records_skill_ids_and_revisions(engine):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            hit = {"id": "imported:ops/k", "reviewStatus": "approved", "revision": "1.2.0"}
+            return httpx.Response(200, json={"results": [hit]})
+        return httpx.Response(
+            200, json={"found": True, "name": "k", "revision": "1.2.0", "content": "guidance"}
+        )
+
+    async def infer(agent, prompt):
+        assert "guidance" in prompt
+        return {"content": "ok", "input_tokens": 1, "output_tokens": 1, "e2e_latency_ms": 5}
+
+    hub = SkillHubClient(key="k", url="https://hub.test", transport=httpx.MockTransport(handler))
+    agent_id = await _make_agent(engine)
+    runner = _runner(engine, infer, FakeClock())
+    runner.skillhub = hub
+    run = await runner.run_agent(agent_id, "manual")
+    assert run["skills_status"] == "loaded"
+    assert run["skills"][0]["id"] == "imported:ops/k" and run["skills"][0]["revision"] == "1.2.0"
+    assert (await runner.store.runs(agent_id))[0]["skills"] == run["skills"]
+
+
+async def test_unavailable_skill_hub_still_completes_the_run(engine):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503)
+
+    async def infer(agent, prompt):
+        return {"content": "ok", "input_tokens": 1, "output_tokens": 1, "e2e_latency_ms": 5}
+
+    agent_id = await _make_agent(engine)
+    runner = _runner(engine, infer, FakeClock())
+    runner.skillhub = SkillHubClient(
+        key="k", url="https://hub.test", transport=httpx.MockTransport(handler)
+    )
+    run = await runner.run_agent(agent_id, "manual")
+    assert run["status"] == "completed"
+    assert run["skills_status"] == "unavailable" and run["skills"] == []

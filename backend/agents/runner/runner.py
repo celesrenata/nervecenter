@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import structlog
 
 from backend.agents.runner.backoff import BACKED_OFF, BackoffController
-from backend.agents.runner.skillhub import SkillHubClient
+from backend.agents.runner.skillhub import SkillHubClient, SkillSelection
 from backend.agents.runner.store import (
     MIN_INTERVAL_SECONDS,
     MODES,
@@ -27,6 +27,7 @@ from backend.agents.runner.store import (
     RunnerStore,
     schedule_to_dict,
 )
+from backend.agents.tools.protocol import run_with_tools
 
 log = structlog.get_logger(__name__)
 
@@ -125,6 +126,7 @@ class AgentRunner:
         *,
         backoff: BackoffController | None = None,
         skillhub: SkillHubClient | None = None,
+        tools: Any = None,
         clock: Callable[[], datetime] = utcnow,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         health_probe: HealthProbe | None = None,
@@ -135,6 +137,7 @@ class AgentRunner:
         self.infer = infer
         self.backoff = backoff or BackoffController()
         self.skillhub = skillhub or SkillHubClient()
+        self.tools = tools  # ToolGateway or None (NS-ADR-113)
         self._clock = clock
         self._sleep = sleep
         self._health_probe = health_probe
@@ -147,18 +150,19 @@ class AgentRunner:
 
     # -- running one agent -----------------------------------------------------
 
-    async def _build_prompt(self, agent: Any, now: datetime) -> str:
+    async def _build_prompt(self, agent: Any, now: datetime) -> tuple[str, SkillSelection]:
         base = (agent.prompt_template or "").strip() or (
             f"You are the {agent.type} agent named {agent.name}. {agent.description or ''}".strip()
         )
         parts = [base]
-        skills = await self.skillhub.skills_context(
-            f"{agent.name} {agent.description or ''} {base}"
+        role = f"{agent.type} {agent.name} {agent.description or ''}"
+        selection = await self.skillhub.select(
+            role, base, pinned=list(getattr(agent, "skills", None) or [])
         )
-        if skills:
-            parts.append(skills)
+        if selection.block:
+            parts.append(selection.block)
         parts.append(f"Current time: {now.isoformat()}. Produce your report for this run.")
-        return "\n\n".join(parts)
+        return "\n\n".join(parts), selection
 
     async def run_agent(self, agent_id: str, trigger: str = "schedule") -> dict[str, Any]:
         agent = await self.store.get_agent(agent_id)
@@ -178,9 +182,12 @@ class AgentRunner:
                     trigger=trigger,
                     error=f"agent status is {agent.status}",
                 )
+            selection = SkillSelection(status="none")
             try:
-                prompt = await self._build_prompt(agent, started)
-                result = await self.infer(agent, prompt)
+                prompt, selection = await self._build_prompt(agent, started)
+                result = await run_with_tools(
+                    lambda text: self.infer(agent, text), prompt, self.tools, agent
+                )
             except Exception as exc:  # noqa: BLE001 - recorded, never raised
                 finished = self._clock()
                 if _is_throttle(exc):
@@ -195,6 +202,8 @@ class AgentRunner:
                     trigger=trigger,
                     error=f"{type(exc).__name__}: {str(exc)[:300]}",
                     latency_ms=int((finished - started).total_seconds() * 1000),
+                    skills=selection.used,
+                    skills_status=selection.status,
                 )
             finished = self._clock()
             latency = result.get("e2e_latency_ms")
@@ -211,6 +220,8 @@ class AgentRunner:
                 input_tokens=result.get("input_tokens"),
                 output_tokens=result.get("output_tokens"),
                 latency_ms=int(latency),
+                skills=selection.used,
+                skills_status=selection.status,
             )
         finally:
             self._inflight.discard(agent_id)
@@ -327,6 +338,7 @@ class AgentRunner:
             {
                 "running": self._task is not None and not self._task.done(),
                 "skillhub_configured": self.skillhub.configured,
+                "tools_configured": bool(self.tools and self.tools.configured),
                 "backed_off": snap["state"] == BACKED_OFF,
                 "tick_seconds": self._tick_seconds,
             }

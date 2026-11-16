@@ -29,7 +29,7 @@ Implemented`` rather than a fake ``202 accepted``.
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
 from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
@@ -139,6 +139,10 @@ async def get_agent(agent_id: str, request: Request = None):
     raise HTTPException(status_code=404, detail="Agent not found")
 
 
+# Pinned Skill Hub ids (NS-ADR-111): non-empty, at most 200 characters.
+SkillId = Annotated[str, Field(min_length=1, max_length=200)]
+
+
 # §47 `nerve pause-agents` → POST /api/agents/pause (canonical path).
 class AgentCreateRequest(BaseModel):
     """Payload for ``POST /api/agents``.
@@ -154,6 +158,9 @@ class AgentCreateRequest(BaseModel):
         default=None, description="Optional system prompt template"
     )
     tools: list[str] = Field(default_factory=list, description="Tool names")
+    skills: list[SkillId] = Field(
+        default_factory=list, max_length=20, description="Pinned Skill Hub ids"
+    )
     inference: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -217,6 +224,7 @@ async def create_agent(
             description=payload.description,
             prompt_template=payload.prompt_template,
             tools=payload.tools,
+            skills=payload.skills,
             inference=payload.inference,
             combo_id=payload.combo_id or None,
         )
@@ -243,6 +251,9 @@ class AgentUpdateRequest(BaseModel):
         default=None, description="Optional system prompt template"
     )
     tools: list[str] | None = Field(default=None, description="Tool names")
+    skills: list[SkillId] | None = Field(
+        default=None, max_length=20, description="Pinned Skill Hub ids"
+    )
     inference: dict[str, Any] | None = Field(
         default=None,
         description=(
@@ -283,6 +294,7 @@ async def update_agent(
             description=payload.description,
             prompt_template=payload.prompt_template,
             tools=payload.tools,
+            skills=payload.skills,
             inference=payload.inference,
             combo_id=payload.combo_id,
         )

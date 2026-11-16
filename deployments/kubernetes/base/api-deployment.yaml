@@ -148,6 +148,17 @@ spec:
                   name: nervecenter-omniroute-privileged
                   key: key
                   optional: true
+            # Gremlin hub Bearer token for the agent tool layer (NS-ADR-113). NerveCenter
+            # keeps its OWN copy (owner decision), copied from Secret
+            # mcp-hub/mcp-hub-token key `token` without printing it. Optional: without it
+            # hub tools answer "unconfigured". The hub is reached in-cluster at
+            # NERVE_MCP_HUB_URL (default http://mcp-hub.mcp-hub.svc:8080).
+            - name: NERVE_MCP_HUB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-mcp-hub
+                  key: token
+                  optional: true
             # OpenAI API key for the project-aware OpenAI engine (NS-ADR-104).
             # Out-of-band Secret; optional: without it the engine answers
             # "not configured".

@@ -41,6 +41,8 @@ export interface Agent {
   description: string | null
   prompt_template: string | null
   tools: string[]
+  /** Pinned Skill Hub catalog ids (NS-ADR-111). */
+  skills?: string[]
   capabilities: Record<string, unknown> | null
   lastHeartbeat: string | null
   cpuUsage: number | null
@@ -69,6 +71,7 @@ export interface AgentCreatePayload {
   description?: string | null
   prompt_template?: string | null
   tools?: string[] | null
+  skills?: string[] | null
   inference?: InferenceBinding | null
   /** Optional durable combo binding (id of an inference combo). */
   combo_id?: string | null
@@ -84,6 +87,8 @@ export interface AgentUpdatePayload {
   description?: string | null
   prompt_template?: string | null
   tools?: string[] | null
+  /** Pinned Skill Hub ids; replaces the list when supplied. */
+  skills?: string[] | null
   inference?: InferenceBinding | null
   /**
    * Durable combo binding. A non-empty string rebinds the agent to that
@@ -120,6 +125,10 @@ export interface AgentRun {
   input_tokens: number | null
   output_tokens: number | null
   latency_ms: number | null
+  /** Skill Hub skills injected into the run (NS-ADR-111). */
+  skills?: { id: string; revision: string; review_status: string; chars: number }[]
+  /** loaded | none | unavailable | unconfigured */
+  skills_status?: string | null
 }
 
 /** `GET /api/agents/runner/status` — adaptive back-off state. */

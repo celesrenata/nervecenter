@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.agents.runner import AgentBusyError, AgentMissingError, get_runner
+from backend.agents.tools import ToolGateway
 
 router = APIRouter(tags=["agent-runner"])
 
@@ -92,3 +93,40 @@ async def put_schedule(request: Request, agent_id: str, payload: ScheduleRequest
         raise HTTPException(status_code=404, detail="Agent not found") from None
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from None
+
+
+class ToolCallRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    server: str = Field(
+        ..., min_length=1, description="fetch | sequential-thinking | memory | omniroute"
+    )
+    tool: str = Field(..., min_length=1)
+    args: dict[str, Any] = Field(default_factory=dict)
+    non_sensitive: bool = Field(
+        default=False,
+        description="Owner marker required for memory tools (NS-ADR-113); never set by agents.",
+    )
+
+
+def _gateway(request: Request) -> ToolGateway:
+    runner = get_runner(request.app)
+    gateway = getattr(runner, "tools", None) if runner is not None else None
+    return gateway if gateway is not None else ToolGateway()
+
+
+@router.get("/api/agents/tools")
+async def list_tools(request: Request) -> dict[str, Any]:
+    """The frozen tool allowlist and whether each server is reachable-configured."""
+    return _gateway(request).describe()
+
+
+@router.post("/api/agents/{agent_id}/tools/call")
+async def call_tool(request: Request, agent_id: str, payload: ToolCallRequest) -> dict[str, Any]:
+    """Call one allowlisted tool as this agent, through the same gateway the runner uses."""
+    runner = _runner(request)
+    agent = await runner.store.get_agent(agent_id)
+    if agent is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return await _gateway(request).call(
+        agent, payload.server, payload.tool, payload.args, non_sensitive=payload.non_sensitive
+    )

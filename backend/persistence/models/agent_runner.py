@@ -9,11 +9,12 @@ failed counts shown on the Agents screen are derived from it.
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import BigInteger, Boolean, DateTime, Index, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, UUIDv4
+from .base import Base, Jsonb, UUIDv4
 
 
 class AgentSchedule(Base):
@@ -60,5 +61,9 @@ class AgentRun(Base):
     input_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     output_tokens: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     latency_ms: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    #: Skill Hub skills injected into this run: ``[{id, revision, review_status, chars}]``.
+    skills: Mapped[list[dict[str, Any]]] = mapped_column(Jsonb, default=list, nullable=False)
+    #: ``loaded`` | ``none`` | ``unavailable`` | ``unconfigured``.
+    skills_status: Mapped[str | None] = mapped_column(String(16), nullable=True)
 
     __table_args__ = (Index("ix_agent_runs_agent_started", "agent_id", "started_at"),)

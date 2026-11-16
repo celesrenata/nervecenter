@@ -40,6 +40,10 @@ nginx:1.27-alpine SPA + `/api/` + `/mcp/` reverse proxy, [`web/Dockerfile`](../w
    [`backend/events/nats_client.py`](../backend/events/nats_client.py)).
    `envFrom` injects every key into the api & migrate containers.
 
+   Optional agent secrets (NS-ADR-111/113): `nervecenter-omniroute-privileged` (key
+   `key`, Skill Hub catalog and read-only OmniRoute tools) and `nervecenter-mcp-hub`
+   (key `token`, a copy of the mcp-hub token made without printing it; see
+   `secrets.yaml.example`). Without them agents run with no skills and no tools.
 2. **Run the deploy** (builds, pushes, ensures ns + pulls the harbor-pull
    secret, re-runs the alembic migration Job, applies the kustomize base
    retagged with the build, waits for readiness):
@@ -238,3 +242,10 @@ full kustomization prematurely would send every visitor to a Keycloak
 - ingress 404 — confirm the DNS A record points at the Traefik load-balancer
   IPs (compare `kubectl get ingress -n beeflow-service` addresses) and the
   cert is Ready: `kubectl -n nervecenter get certificates
+
+## Skill Hub upload (NS-ADR-112, owner action only)
+
+`optional/skillhub-upload/` holds the Job that writes the NerveCenter agent skills to
+the `nervecenter/` folder of the Skill Hub NFS share. It is not in the base kustomization,
+so `deploy.sh` never runs it. Use `python -m backend.owner_tools.skillhub_upload`
+(`plan`, then `apply --approved`, `refresh`, `verify`); see that folder's README.

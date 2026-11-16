@@ -82,6 +82,7 @@ const AgentsView = () => {
   const [editAgentDescription, setEditAgentDescription] = useState('')
   const [editAgentPrompt, setEditAgentPrompt] = useState('')
   const [editAgentTools, setEditAgentTools] = useState('')
+  const [editAgentSkills, setEditAgentSkills] = useState('')
   const [editBusy, setEditBusy] = useState(false)
   const [editLoading, setEditLoading] = useState(false)
   const [editError, setEditError] = useState<{ status: number; detail: string } | null>(null)
@@ -302,6 +303,7 @@ const AgentsView = () => {
       setEditAgentDescription(agent.description ?? '')
       setEditAgentPrompt(agent.prompt_template ?? '')
       setEditAgentTools((agent.tools ?? []).join(', '))
+      setEditAgentSkills((agent.skills ?? []).join(', '))
     } catch (error) {
       if (error instanceof ApiError) {
         setEditError({ status: error.status, detail: error.detail })
@@ -370,6 +372,10 @@ const AgentsView = () => {
         description: editAgentDescription.trim() || null,
         prompt_template: editAgentPrompt.trim() || null,
         tools: editAgentTools
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean),
+        skills: editAgentSkills
           .split(',')
           .map((t) => t.trim())
           .filter(Boolean),
@@ -643,6 +649,23 @@ const AgentsView = () => {
                 />
               </div>
 
+              <div>
+                <label
+                  htmlFor="agent-edit-skills"
+                  className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
+                >
+                  Pinned Skill Hub skills (ids, comma-separated)
+                </label>
+                <input
+                  id="agent-edit-skills"
+                  data-testid="agent-edit-skills"
+                  type="text"
+                  value={editAgentSkills}
+                  onChange={(e) => setEditAgentSkills(e.target.value)}
+                  placeholder="e.g. imported:devops/helm-chart-scaffolding"
+                  className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                />
+              </div>
               {editError && (
                 <div
                   role="alert"

@@ -14,8 +14,9 @@ from backend.agents.runner.runner import (
     AgentRunner,
     runner_disabled,
 )
-from backend.agents.runner.skillhub import SkillHubClient
+from backend.agents.runner.skillhub import SkillHubClient, SkillSelection
 from backend.agents.runner.store import RunnerStore
+from backend.agents.tools import ToolGateway
 
 log = structlog.get_logger(__name__)
 
@@ -26,6 +27,7 @@ __all__ = [
     "BackoffController",
     "RunnerStore",
     "SkillHubClient",
+    "SkillSelection",
     "build_runner",
     "get_runner",
     "runner_disabled",
@@ -83,8 +85,15 @@ def build_runner(engine: Any, app: Any = None) -> AgentRunner:
         )
 
     transport_for_health = raw_transport
+    gateway = ToolGateway()
 
     async def health() -> bool | None:
+        primary = await route_health()
+        if primary is None:  # secondary: real OmniRoute health through the tool layer
+            return await gateway.health_signal()
+        return primary
+
+    async def route_health() -> bool | None:
         if not transport_for_health.base_url and not transport_for_health.fixture_mode:
             return None
         try:
@@ -95,7 +104,9 @@ def build_runner(engine: Any, app: Any = None) -> AgentRunner:
             return None
         return any(r.availability == "ready" for r in routes)
 
-    return AgentRunner(RunnerStore(factory), infer, backoff=backoff, health_probe=health)
+    return AgentRunner(
+        RunnerStore(factory), infer, backoff=backoff, health_probe=health, tools=gateway
+    )
 
 
 def get_runner(app: Any) -> AgentRunner | None:

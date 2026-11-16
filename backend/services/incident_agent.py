@@ -269,6 +269,7 @@ def _agent_to_row(orm: AgentORM) -> dict[str, Any]:
         "description": orm.description,
         "prompt_template": orm.prompt_template,
         "tools": list(orm.tools or []),
+        "skills": list(getattr(orm, "skills", None) or []),
         "runs_when": (
             "Your agent. It runs on the schedule you set, or when you press "
             "Run now. With no schedule it only runs on demand."
@@ -376,6 +377,7 @@ class AgentService:
         tools: list[str] | None = None,
         inference: dict[str, Any] | None = None,
         combo_id: str | None = None,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         """Create and persist a new agent instance. Returns the web row (201).
 
@@ -395,6 +397,7 @@ class AgentService:
                 description=description,
                 prompt_template=prompt_template,
                 tools=list(tools or []),
+                skills=list(skills or []),
                 inference=inference,
                 combo_id=combo_id,
                 updated_at=_utcnow(),
@@ -483,6 +486,7 @@ class AgentService:
         tools: list[str] | None = None,
         inference: dict[str, Any] | None = None,
         combo_id: str | None = None,
+        skills: list[str] | None = None,
     ) -> dict[str, Any]:
         """Partially update a persisted agent instance; returns the web row.
 
@@ -507,6 +511,8 @@ class AgentService:
                 orm.prompt_template = prompt_template
             if tools is not None:
                 orm.tools = list(tools)
+            if skills is not None:
+                orm.skills = list(skills)
             if inference is not None:
                 orm.inference = inference
             if combo_id is not None:

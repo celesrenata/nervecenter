@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import structlog
@@ -24,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from backend.agents.runner.backoff import BACKED_OFF, BackoffController
 from backend.agents.runner.runner import _is_throttle
 from backend.agents.runner.skillhub import SkillHubClient
+from backend.agents.tools.protocol import run_with_tools
 from backend.persistence.models import ResearchCheckpoint, ResearchProject, ResearchStep
 from backend.research import planner
 
@@ -104,12 +106,14 @@ class ResearchEngine:
         *,
         backoff: BackoffController | None = None,
         skillhub: SkillHubClient | None = None,
+        tools: Any = None,
         clock: Callable[[], datetime] = utcnow,
     ) -> None:
         self._factory = session_factory
         self._transport = transport
         self.backoff = backoff or BackoffController()
         self.skillhub = skillhub or SkillHubClient()
+        self.tools = tools  # ToolGateway or None (NS-ADR-113)
         self._clock = clock
         self._inflight: set[str] = set()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -311,8 +315,21 @@ class ResearchEngine:
             notes=notes,
             skills=skills,
         )
+        spent = [0.0]
+
+        async def once(text: str) -> dict[str, Any]:
+            res, secs = await self._call(text)
+            spent[0] += secs
+            return res
+
         try:
-            result, seconds = await self._call(prompt)
+            result = await run_with_tools(
+                once,
+                prompt,
+                self.tools,
+                SimpleNamespace(id="researcher", type="researcher", name="researcher"),
+            )
+            seconds = spent[0]
         except Exception as exc:  # noqa: BLE001 - recorded on the project
             await self._record_failure(project.id, exc, step.id)
             return "failed_step"
@@ -502,6 +519,7 @@ def build_engine(app: Any) -> ResearchEngine | None:
         ),
         backoff=getattr(runner, "backoff", None),
         skillhub=getattr(runner, "skillhub", None),
+        tools=getattr(runner, "tools", None),
     )
 
 

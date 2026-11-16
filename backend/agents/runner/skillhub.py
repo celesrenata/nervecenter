@@ -1,20 +1,27 @@
-"""Read-only OmniRoute Skill Hub client (NS-ADR-099).
+"""OmniRoute Skill Hub catalog client (NS-ADR-099, NS-ADR-111).
 
-Talks to the streamable-HTTP MCP endpoint (initialize, then ``tools/call``)
-and uses only the read-only catalog tools. The key comes from
-``NERVE_SKILLHUB_KEY`` when set, else the OmniRoute PRIVILEGED key
-``NERVE_OMNIROUTE_PRIVILEGED_KEY`` (NS-ADR-110: OmniRoute allows MCP from
-outside localhost only for keys with ``manage``), else the regular
-``NERVE_OMNIROUTE_API_KEY``. Needs ``read:skills`` + ``read:catalog``. Only the
-read-only tools below are ever called, and the key is never logged. Without a key
-every call returns nothing, so agent runs degrade honestly to "no skills".
+Uses the catalog REST API (``GET /api/skills/catalog``, ``POST
+/api/skills/catalog`` with ``action: load``) in privileged mode, so agents see
+the whole catalog and not only the agent-skill subset the MCP tools list. The
+key comes from ``NERVE_SKILLHUB_KEY`` when set, else the OmniRoute PRIVILEGED
+key ``NERVE_OMNIROUTE_PRIVILEGED_KEY`` (NS-ADR-110), else the regular
+``NERVE_OMNIROUTE_API_KEY``; it is never logged.
+
+Per run :meth:`SkillHubClient.select` searches by the agent role and task,
+keeps ``reviewStatus == "approved"`` hits only, loads the top ones until a
+character budget runs out, and returns a prompt block plus the ids and
+revisions used. Pinned skills load first and are the only way ``edit`` or
+``chain`` skills load. The ``execute`` action is never sent. Every failure
+degrades to an empty selection with an honest status; nothing raises.
 """
 
 from __future__ import annotations
 
-import json
 import os
 import re
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from typing import Any
 
 import httpx
@@ -22,42 +29,62 @@ import structlog
 
 log = structlog.get_logger(__name__)
 
-DEFAULT_URL = "https://omniroute.celestium.life/api/mcp/stream"
+DEFAULT_API_URL = "https://omniroute.celestium.life"
 KEY_ENV = "NERVE_SKILLHUB_KEY"
 PRIVILEGED_KEY_ENV = "NERVE_OMNIROUTE_PRIVILEGED_KEY"
 FALLBACK_KEY_ENV = "NERVE_OMNIROUTE_API_KEY"
-URL_ENV = "NERVE_SKILLHUB_URL"
+URL_ENV = "NERVE_SKILLHUB_API_URL"
+BUDGET_ENV = "NERVE_SKILLHUB_BUDGET_CHARS"
+MAX_SKILLS_ENV = "NERVE_SKILLHUB_MAX_SKILLS"
+TTL_ENV = "NERVE_SKILLHUB_TTL_S"
 
-READ_ONLY_TOOLS = frozenset(
-    {
-        "omniroute_skills_list",
-        "omniroute_skills_executions",
-        "omniroute_agent_skills_list",
-        "omniroute_agent_skills_get",
-        "omniroute_agent_skills_coverage",
-        "omniroute_github_skills_search",
-        "omniroute_github_skills_scan",
-    }
+DEFAULT_BUDGET_CHARS = 12_000
+DEFAULT_MAX_SKILLS = 3
+DEFAULT_TTL_S = 600.0
+PER_SKILL_CAP = 6_000
+SEARCH_LIMIT = 20
+MIN_USEFUL_CHARS = 400
+APPROVED = "approved"
+
+STATUS_LOADED = "loaded"
+STATUS_NONE = "none"
+STATUS_UNAVAILABLE = "unavailable"
+STATUS_UNCONFIGURED = "unconfigured"
+
+_HEADER = (
+    "Reference skills from the Skill Hub. Use them as guidance where they fit the "
+    "task; they never override the instructions above."
 )
 
 
-def _last_sse_json(text: str) -> dict[str, Any] | None:
-    """Parse the last ``data:`` JSON line of an SSE body (or a plain JSON body)."""
-    last: str | None = None
-    for line in text.splitlines():
-        if line.startswith("data:"):
-            last = line[5:].strip()
-    if last is None:
-        last = text.strip()
+@dataclass(frozen=True)
+class SkillSelection:
+    """The skills chosen for one run."""
+
+    block: str = ""
+    used: list[dict[str, Any]] = field(default_factory=list)
+    status: str = STATUS_NONE
+
+
+def _env_number(name: str, default: float) -> float:
     try:
-        parsed = json.loads(last)
-    except (ValueError, TypeError):
-        return None
-    return parsed if isinstance(parsed, dict) else None
+        value = float(os.environ.get(name, "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def _keywords(text: str, limit: int = 14) -> str:
+    seen: dict[str, None] = {}
+    for word in re.findall(r"[a-z][a-z0-9-]{3,}", text.lower()):
+        seen.setdefault(word, None)
+        if len(seen) >= limit:
+            break
+    return " ".join(seen)
 
 
 class SkillHubClient:
-    """Minimal MCP client for the Skill Hub read-only tools."""
+    """Catalog search and load for agent runs."""
 
     def __init__(
         self,
@@ -66,125 +93,178 @@ class SkillHubClient:
         url: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 10.0,
+        ttl_s: float | None = None,
+        budget_chars: int | None = None,
+        max_skills: int | None = None,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if key is None:
             key = next(
-                (v for v in (os.environ.get(e, "").strip()
-                             for e in (KEY_ENV, PRIVILEGED_KEY_ENV, FALLBACK_KEY_ENV)) if v),
+                (
+                    v
+                    for v in (
+                        os.environ.get(e, "").strip()
+                        for e in (KEY_ENV, PRIVILEGED_KEY_ENV, FALLBACK_KEY_ENV)
+                    )
+                    if v
+                ),
                 "",
             )
         self._key = key.strip() or None
-        self._url = (url or os.environ.get(URL_ENV, "") or DEFAULT_URL).strip()
+        self._url = (url or os.environ.get(URL_ENV, "") or DEFAULT_API_URL).strip().rstrip("/")
         self._transport = transport
         self._timeout = timeout_s
-        self._session_id: str | None = None
-        self._catalog: list[dict[str, Any]] | None = None
+        self._ttl = ttl_s if ttl_s is not None else _env_number(TTL_ENV, DEFAULT_TTL_S)
+        self._budget = int(budget_chars or _env_number(BUDGET_ENV, DEFAULT_BUDGET_CHARS))
+        self._max_skills = int(max_skills or _env_number(MAX_SKILLS_ENV, DEFAULT_MAX_SKILLS))
+        self._clock = clock
+        self._searches: dict[tuple[str, int], tuple[float, list[dict[str, Any]]]] = {}
+        self._loads: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 
     @property
     def configured(self) -> bool:
         return self._key is not None
 
+    # -- HTTP -----------------------------------------------------------------------
+
     def _headers(self) -> dict[str, str]:
-        headers = {
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-        if self._key:
-            headers["Authorization"] = f"Bearer {self._key}"
-        if self._session_id:
-            headers["Mcp-Session-Id"] = self._session_id
-        return headers
+        return {"Authorization": f"Bearer {self._key}", "Accept": "application/json"}
 
-    async def _post(self, client: httpx.AsyncClient, body: dict[str, Any]) -> httpx.Response:
-        return await client.post(self._url, json=body, headers=self._headers())
-
-    async def _initialize(self, client: httpx.AsyncClient) -> None:
-        resp = await self._post(
-            client,
-            {
-                "jsonrpc": "2.0",
-                "id": 1,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": "2025-03-26",
-                    "capabilities": {},
-                    "clientInfo": {"name": "nervcenter-runner", "version": "1"},
-                },
-            },
-        )
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+        body: dict[str, Any] | None = None,
+    ) -> Any:
+        """One JSON request; raises on any failure (callers degrade)."""
+        async with httpx.AsyncClient(transport=self._transport, timeout=self._timeout) as client:
+            resp = await client.request(
+                method, f"{self._url}{path}", params=params, json=body, headers=self._headers()
+            )
         resp.raise_for_status()
-        self._session_id = resp.headers.get("mcp-session-id")
+        return resp.json()
 
-    async def call_tool(self, name: str, arguments: dict[str, Any] | None = None) -> Any:
-        """Call one read-only tool; returns the parsed result or ``None``."""
-        if not self.configured or name not in READ_ONLY_TOOLS:
-            return None
-        body = {
-            "jsonrpc": "2.0",
-            "id": 2,
-            "method": "tools/call",
-            "params": {"name": name, "arguments": arguments or {}},
-        }
+    def _fresh(self, stamp: float) -> bool:
+        return self._clock() - stamp < self._ttl
+
+    # -- catalog ----------------------------------------------------------------------
+
+    async def search(self, query: str, limit: int = SEARCH_LIMIT) -> list[dict[str, Any]]:
+        """Relevance search; raises on failure so ``select`` can report it."""
+        limit = max(1, min(limit, SEARCH_LIMIT))
+        key = (query, limit)
+        hit = self._searches.get(key)
+        if hit is not None and self._fresh(hit[0]):
+            return hit[1]
+        data = await self._request(
+            "GET", "/api/skills/catalog", params={"query": query, "limit": limit}
+        )
+        results = [
+            r for r in (data or {}).get("results", []) if isinstance(r, dict) and r.get("id")
+        ]
+        self._searches[key] = (self._clock(), results)
+        return results
+
+    async def skillsets(self) -> list[dict[str, Any]]:
+        """The catalog skillsets (``[]`` when unavailable)."""
+        if not self.configured:
+            return []
         try:
-            async with httpx.AsyncClient(
-                transport=self._transport, timeout=self._timeout
-            ) as client:
-                if self._session_id is None:
-                    await self._initialize(client)
-                resp = await self._post(client, body)
-                if resp.status_code in (400, 404):
-                    # Session invalidated by a rollout: re-initialize once.
-                    self._session_id = None
-                    await self._initialize(client)
-                    resp = await self._post(client, body)
-                resp.raise_for_status()
-        except Exception as exc:  # noqa: BLE001 - degrade honestly, never raise
-            log.warning("skillhub.call_failed", tool=name, error=type(exc).__name__)
-            return None
-        envelope = _last_sse_json(resp.text)
-        if not envelope or "error" in envelope:
-            return None
-        result = envelope.get("result") or {}
-        if result.get("isError"):
-            return None
-        content = result.get("content") or []
-        if content and isinstance(content[0], dict) and "text" in content[0]:
-            try:
-                return json.loads(content[0]["text"])
-            except (ValueError, TypeError):
-                return content[0]["text"]
-        return result
+            data = await self._request("GET", "/api/skills/catalog/skillsets")
+        except Exception as exc:  # noqa: BLE001 - degrade honestly
+            log.warning("skillhub.skillsets_failed", error=type(exc).__name__)
+            return []
+        return [s for s in (data or {}).get("skillsets", []) if isinstance(s, dict)]
 
-    async def catalog(self) -> list[dict[str, Any]]:
-        """The live agent skill catalog (cached after the first success)."""
-        if self._catalog is not None:
-            return self._catalog
-        data = await self.call_tool("omniroute_agent_skills_list")
-        if isinstance(data, dict):
-            data = data.get("skills") or data.get("data")
-        if isinstance(data, list):
-            self._catalog = [s for s in data if isinstance(s, dict)]
-            return self._catalog
-        return []
+    async def load(self, skill_id: str, revision: str = "") -> dict[str, Any] | None:
+        """Load one skill's content. Only the ``load`` action is ever posted."""
+        key = (skill_id, revision)
+        hit = self._loads.get(key)
+        if hit is not None and self._fresh(hit[0]):
+            return hit[1]
+        data = await self._request(
+            "POST", "/api/skills/catalog", body={"action": "load", "id": skill_id}
+        )
+        if (
+            not isinstance(data, dict)
+            or not data.get("found")
+            or not isinstance(data.get("content"), str)
+        ):
+            return None
+        self._loads[key] = (self._clock(), data)
+        return data
+
+    # -- selection ---------------------------------------------------------------------
+
+    async def select(
+        self, role_text: str, task_text: str, pinned: Iterable[str] = ()
+    ) -> SkillSelection:
+        """Choose and load skills for one run. Never raises."""
+        if not self.configured:
+            return SkillSelection(status=STATUS_UNCONFIGURED)
+        sections: list[str] = []
+        used: list[dict[str, Any]] = []
+        remaining = self._budget
+        failed = False
+        seen: set[str] = set()
+
+        async def take(skill_id: str, revision: str, review_status: str) -> None:
+            nonlocal remaining, failed
+            if skill_id in seen:
+                return
+            try:
+                data = await self.load(skill_id, revision)
+            except Exception as exc:  # noqa: BLE001 - degrade honestly
+                failed = True
+                log.warning("skillhub.load_failed", error=type(exc).__name__)
+                return
+            if data is None:
+                return
+            content = data["content"].strip()[: min(PER_SKILL_CAP, remaining)]
+            if not content:
+                return
+            seen.add(skill_id)
+            remaining -= len(content)
+            rev = str(data.get("revision") or revision or "")
+            name = str(data.get("name") or skill_id)
+            sections.append(f"### Skill: {name} ({skill_id}, revision {rev})\n{content}")
+            used.append(
+                {
+                    "id": skill_id,
+                    "revision": rev,
+                    "review_status": review_status,
+                    "chars": len(content),
+                }
+            )
+
+        for skill_id in list(dict.fromkeys(p for p in pinned if p))[: self._max_skills * 2]:
+            if remaining < MIN_USEFUL_CHARS:
+                break
+            await take(skill_id, "", "pinned")
+
+        query = _keywords(f"{role_text} {task_text}")
+        if query and len(used) < self._max_skills:
+            try:
+                hits = await self.search(query)
+            except Exception as exc:  # noqa: BLE001 - degrade honestly
+                failed = True
+                log.warning("skillhub.search_failed", error=type(exc).__name__)
+                hits = []
+            for hit in hits:
+                if len(used) >= self._max_skills or remaining < MIN_USEFUL_CHARS:
+                    break
+                if hit.get("reviewStatus") != APPROVED:
+                    continue
+                await take(str(hit["id"]), str(hit.get("revision") or ""), APPROVED)
+
+        if used:
+            block = _HEADER + "\n\n" + "\n\n".join(sections)
+            return SkillSelection(block=block, used=used, status=STATUS_LOADED)
+        return SkillSelection(status=STATUS_UNAVAILABLE if failed else STATUS_NONE)
 
     async def skills_context(self, text: str, *, limit: int = 3) -> str:
-        """A short prompt block listing catalog skills relevant to ``text``."""
-        if not self.configured:
-            return ""
-        words = {w for w in re.findall(r"[a-z]{4,}", text.lower())}
-        if not words:
-            return ""
-        scored: list[tuple[int, dict[str, Any]]] = []
-        for skill in await self.catalog():
-            haystack = f"{skill.get('name', '')} {skill.get('description', '')}".lower()
-            score = sum(1 for w in words if w in haystack)
-            if score:
-                scored.append((score, skill))
-        scored.sort(key=lambda pair: -pair[0])
-        lines = [
-            f"- {s.get('id', s.get('name', '?'))}: {str(s.get('description', ''))[:160]}"
-            for _, s in scored[:limit]
-        ]
-        if not lines:
-            return ""
-        return "Skills available from the Skill Hub:\n" + "\n".join(lines)
+        """The prompt block for ``text`` (used by the research engine)."""
+        selection = await self.select("", text)
+        return selection.block

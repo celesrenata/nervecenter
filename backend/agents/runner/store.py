@@ -66,6 +66,8 @@ def run_to_dict(row: AgentRun) -> dict[str, Any]:
         "input_tokens": row.input_tokens,
         "output_tokens": row.output_tokens,
         "latency_ms": row.latency_ms,
+        "skills": list(row.skills or []),
+        "skills_status": row.skills_status,
     }
 
 

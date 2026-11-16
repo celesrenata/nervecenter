@@ -17,6 +17,12 @@
 # (postgres, nats: DNS only; web: DNS + api). api, oauth and mcp keep egress
 # (Gmail/Google APIs, SSO, OmniRoute, ArcForge); freshclam has its own policy.
 #
+# Agent tool layer (NS-ADR-113): api egress to mcp-hub.mcp-hub.svc:8080 and to
+# OmniRoute needs no rule here (api egress is open) and the mcp-hub namespace has no
+# NetworkPolicy today, so no ingress rule is needed there either. Adding a default
+# deny to mcp-hub would break its other clients; do not add one without an allow
+# for every client.
+#
 # Rollback: `kubectl -n nervecenter delete networkpolicy -l nervecenter.policy=hardening`.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
