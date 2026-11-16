@@ -12,6 +12,7 @@ import { VoicemailView } from './views/VoicemailView'
 import { WaitingOnView } from './views/WaitingOnView'
 import WellnessView from './views/WellnessView'
 import PhysicalHealthView from './views/PhysicalHealthView'
+import MentalHealthView from './views/MentalHealthView'
 import BillsView from './views/BillsView'
 import RoutinesView from './views/RoutinesView'
 import { ContactsView } from './views/ContactsView'
@@ -91,6 +92,7 @@ function App() {
             <Route path="/waiting-on" element={<WaitingOnView />} />
             <Route path="/wellness" element={<WellnessView />} />
             <Route path="/health" element={<PhysicalHealthView />} />
+            <Route path="/mental-health" element={<MentalHealthView />} />
             <Route path="/bills" element={<BillsView />} />
             <Route path="/routines" element={<RoutinesView />} />
             <Route path="/systems" element={<SystemsView />} />
