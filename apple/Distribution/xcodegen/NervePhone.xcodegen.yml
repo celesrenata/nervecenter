@@ -44,8 +44,11 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.9"
-    # Ad-hoc / personal-team distribution: no App Store validation.
-    CODE_SIGN_STYLE: Manual
+    # Automatic signing with the owner's team: Xcode creates/updates the
+    # development profiles with the HealthKit and App Groups capabilities
+    # (Manual reused an old profile without them, so signing failed).
+    CODE_SIGN_STYLE: Automatic
+    DEVELOPMENT_TEAM: NQV7T36W69
 
 targets:
   # Widget extension embedded in the app (WidgetKit, §62).
