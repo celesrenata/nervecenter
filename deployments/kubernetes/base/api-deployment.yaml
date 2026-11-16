@@ -128,6 +128,16 @@ spec:
             - secretRef:
                 name: nervecenter-ledger-key
                 optional: true
+          env:
+            # Skill Hub read key for the agent runner (NS-ADR-099). Out-of-band
+            # Secret, scopes read:skills + read:catalog. Optional: without it
+            # agent runs simply have no skills.
+            - name: NERVE_SKILLHUB_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-skillhub
+                  key: key
+                  optional: true
           readinessProbe:
             httpGet:
               path: /api/health

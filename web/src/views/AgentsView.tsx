@@ -1,11 +1,12 @@
 import { useState, useEffect, type FormEvent } from 'react'
-import { agentsApi, type AgentUpdatePayload } from '../api/agents'
+import { agentsApi, type AgentUpdatePayload, type RunnerStatus } from '../api/agents'
+import { AgentRunnerPanel } from './AgentRunnerPanel'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import {
   durableInferenceApi,
   type DurableCombo,
 } from '../api/inferenceDurable'
-import { apiFetch, apiErrorFromResponse, ApiError } from '../api/client'
+import { ApiError } from '../api/client'
 
 /**
  * Agents view — round 3 (AG-2, AG-3 resolved).
@@ -35,6 +36,8 @@ interface Agent {
   memoryUsage: number | null
   tasksCompleted: number | null
   tasksFailed: number | null
+  /** Plain-language note on when the agent runs. */
+  runs_when?: string | null
   /** Inference binding (`null`/absent = use service default). */
   inference?: { provider?: string | null; model?: string | null } | null
   /** Durable combo binding (`null`/absent = no combo; shadows per-agent inference). */
@@ -260,18 +263,13 @@ const AgentsView = () => {
       // AG-3 (round 3): create a durable agent instance. 201 -> refresh the
       // list so the new row renders; non-2xx (e.g. 409 duplicate name) is
       // surfaced verbatim, not faked as success.
-      const res = await apiFetch('/agents', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          name: agentName.trim(),
-          type: agentType,
-          description: agentDescription.trim() || null,
-        }),
+      // Writes live under /api/agents (POST /agents has no route and used to
+      // fail silently, so a created agent never persisted).
+      await agentsApi.create({
+        name: agentName.trim(),
+        type: agentType,
+        description: agentDescription.trim() || null,
       })
-      if (!res.ok) {
-        throw await apiErrorFromResponse(res)
-      }
       setFormSuccess(true)
       const response = await agentsApi.list()
       setAgents(response.data as Agent[])
@@ -315,6 +313,34 @@ const AgentsView = () => {
     }
   }
 
+  const [runnerStatus, setRunnerStatus] = useState<RunnerStatus | null>(null)
+  const [runnerOpenId, setRunnerOpenId] = useState<string | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  useEffect(() => {
+    agentsApi.runnerStatus().then(setRunnerStatus).catch(() => setRunnerStatus(null))
+  }, [])
+  const refreshAgents = async () => {
+    try {
+      setAgents((await agentsApi.list()).data as Agent[])
+    } catch {
+      /* keep the current list */
+    }
+  }
+  const deleteAgent = async (agent: Agent) => {
+    if (!window.confirm(`Delete agent "${agent.name}"? Its schedule and run history are removed too.`)) {
+      return
+    }
+    setDeleteError(null)
+    try {
+      await agentsApi.delete(agent.id)
+      if (runnerOpenId === agent.id) setRunnerOpenId(null)
+      await refreshAgents()
+    } catch (error) {
+      setDeleteError(
+        error instanceof ApiError ? `${error.status} — ${error.detail}` : 'Request failed (network error)',
+      )
+    }
+  }
   const closeEdit = () => {
     setEditingAgentId(null)
     setEditAgentName('')
@@ -382,6 +408,21 @@ const AgentsView = () => {
         </div>
       )}
 
+      {runnerStatus && runnerStatus.state !== 'normal' && (
+        <div
+          role="status"
+          data-testid="runner-backoff-banner"
+          className="p-3 rounded-md bg-amber-100 dark:bg-amber-900/40 text-amber-900 dark:text-amber-200 text-sm"
+        >
+          Inference is busy ({runnerStatus.state === 'backed_off' ? 'backed off' : 'slowing down'}).
+          Background agents are running {runnerStatus.stretch.background}× less often until it clears.
+        </div>
+      )}
+      {deleteError && (
+        <div role="alert" data-testid="agent-delete-error" className="text-sm text-red-600">
+          Delete failed: {deleteError}
+        </div>
+      )}
       <div className="flex justify-between items-center">
         <div className="text-muted">
           {agents.length} total agents
@@ -859,6 +900,22 @@ const AgentsView = () => {
                       )}
                       <button
                         type="button"
+                        data-testid="agent-runner-toggle"
+                        onClick={() => setRunnerOpenId(runnerOpenId === agent.id ? null : agent.id)}
+                        className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                      >
+                        Schedule &amp; runs
+                      </button>
+                      <button
+                        type="button"
+                        data-testid="agent-delete"
+                        onClick={() => deleteAgent(agent)}
+                        className="text-sm font-medium text-red-600 hover:underline"
+                      >
+                        Delete
+                      </button>
+                      <button
+                        type="button"
                         data-testid="agent-inference"
                         onClick={() => openInference(agent.id)}
                         className="text-sm font-medium text-blue-600 dark:text-blue-400 hover:underline"
@@ -884,6 +941,16 @@ const AgentsView = () => {
                     </span>
                   </div>
                 </div>
+              </div>
+              <div
+                data-testid="agent-explain"
+                className="mb-4 text-sm text-gray-700 dark:text-gray-300 space-y-1"
+              >
+                {agent.description && <p>{agent.description}</p>}
+                {agent.runs_when && <p className="text-muted">{agent.runs_when}</p>}
+                {(agent.tools ?? []).length > 0 && (
+                  <p className="text-xs text-muted">Tools: {(agent.tools ?? []).join(', ')}</p>
+                )}
               </div>
               <div className="space-y-3">
                 {agent.cpuUsage != null && agent.memoryUsage != null ? (
@@ -950,6 +1017,13 @@ const AgentsView = () => {
                   Last heartbeat: {agent.lastHeartbeat ?? 'none'}
                 </div>
               </div>
+              {runnerOpenId === agent.id && isPersisted(agent.id) && (
+                <AgentRunnerPanel
+                  agentId={agent.id}
+                  agentName={agent.name}
+                  onChanged={refreshAgents}
+                />
+              )}
             </div>
           ))}
         </div>

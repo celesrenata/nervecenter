@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.agents.registry import AgentRegistry
@@ -76,6 +76,11 @@ def _manifest_to_row(manifest) -> dict[str, Any]:
         "description": manifest.description,
         "tools": list(manifest.tools),
         "prompt_template": manifest.prompt_template,
+        "runs_when": (
+            "Built-in. It is invoked by the system when an incident, goal or "
+            "question needs this kind of work. It has no schedule and cannot "
+            "be edited or deleted."
+        ),
         "capabilities": (
             {
                 "tools": list(capabilities.tools),
@@ -290,6 +295,31 @@ async def update_agent(
             status_code=409,
             detail=f"An agent named '{payload.name}' already exists.",
         ) from None
+
+
+@router.delete("/api/agents/{agent_id}", status_code=204)
+async def delete_agent(request: Request, agent_id: str) -> Response:
+    """Delete a persisted agent instance (and its schedule and run history).
+
+    Built-in agent types are read-only manifests: ``405`` with a clear
+    message. ``404`` for an unknown id, ``503`` without a DB engine.
+    """
+    if _REGISTRY.get(agent_id) is not None:
+        raise HTTPException(
+            status_code=405,
+            detail="Built-in agents cannot be deleted; only agents you added can.",
+        )
+    svc = _agent_service(request)
+    if svc is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Agent persistence is not configured; set NERVE_DB_URL.",
+        )
+    try:
+        await svc.delete(agent_id)
+    except AgentNotFoundError:
+        raise HTTPException(status_code=404, detail="Agent not found") from None
+    return Response(status_code=204)
 
 
 @router.post("/api/agents/pause", status_code=501)

@@ -23,6 +23,7 @@ Usage::
     from backend.persistence.models import Event, Entity, Goal, Task
 """
 
+from .agent_runner import AgentRun, AgentSchedule
 from .auth import ApprovalRecord, AuthDevice, AuthSession, PairingChallenge
 from .base import Base, Jsonb, RootRecord, TimedRecord, UUIDv4, Vector
 from .claims import Claim, Decision
@@ -62,6 +63,8 @@ __all__ = [
     "PlannedChange",
     "Incident",
     "Agent",
+    "AgentSchedule",
+    "AgentRun",
     "InferenceProvider",
     "InferenceCombo",
     "AuthSession",

@@ -269,6 +269,10 @@ def _agent_to_row(orm: AgentORM) -> dict[str, Any]:
         "description": orm.description,
         "prompt_template": orm.prompt_template,
         "tools": list(orm.tools or []),
+        "runs_when": (
+            "Your agent. It runs on the schedule you set, or when you press "
+            "Run now. With no schedule it only runs on demand."
+        ),
         "capabilities": None,
         "lastHeartbeat": None,
         "cpuUsage": None,
@@ -319,7 +323,19 @@ class AgentService:
                 select(AgentORM).order_by(AgentORM.created_at.desc())
             )
             rows = result.scalars().all()
-            return [_agent_to_row(r) for r in rows]
+            out = [_agent_to_row(r) for r in rows]
+        await self._apply_counts(out)
+        return out
+
+    async def _apply_counts(self, rows: list[dict[str, Any]]) -> None:
+        """Fill tasksCompleted/tasksFailed from ``agent_runs`` (None if unavailable)."""
+        from backend.agents.runner.store import RunnerStore
+
+        counts = await RunnerStore(self._factory()).counts([r["id"] for r in rows])
+        if counts is None:
+            return
+        for row in rows:
+            row["tasksCompleted"], row["tasksFailed"] = counts.get(row["id"], (0, 0))
 
     async def list_all(self) -> list[dict[str, Any]]:
         """Return native registry rows followed by persisted agent instances.
@@ -399,7 +415,24 @@ class AgentService:
         factory = self._factory()
         async with factory() as session:
             orm = await self._load(session, agent_id)
-            return _agent_to_row(orm)
+            row = _agent_to_row(orm)
+        await self._apply_counts([row])
+        return row
+
+    async def delete(self, agent_id: str) -> None:
+        """Delete a persisted agent plus its schedule and run history."""
+        from backend.agents.runner.store import RunnerStore
+
+        factory = self._factory()
+        async with factory() as session:
+            orm = await self._load(session, agent_id)
+            await session.delete(orm)
+            await session.commit()
+        try:
+            await RunnerStore(factory).delete_agent_data(agent_id)
+        except Exception as exc:  # noqa: BLE001 - runner tables may not exist yet
+            log.warning("agents.delete_runner_data_failed", error=type(exc).__name__)
+        log.info("agents.deleted", agent_id=agent_id)
 
     async def get_inference(self, agent_id: str) -> dict[str, Any] | None:
         """Return a persisted agent's inference binding (or ``None``).

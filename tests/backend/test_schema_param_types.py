@@ -105,6 +105,8 @@ NOW = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
 TABLES_WITH_ID = frozenset(
     {
         "agent_results",
+        "agent_runs",
+        "agent_schedules",
         "agents",
         "approvals",
         "auth_devices",

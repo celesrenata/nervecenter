@@ -39,6 +39,7 @@ from backend.messages import get_messages_service
 from backend.voicemail import get_voicemail_service
 from backend.waiting_on import get_waiting_on_service
 from backend.api.endpoints import (
+    agent_runner,
     agents,
     attention,
     briefing,
@@ -100,6 +101,7 @@ from backend.api.wiring import install_dependency_wiring
 
 
 ALL_ROUTERS = (
+    agent_runner.router,
     agents.router,
     attention.router,
     briefing.router,
@@ -281,7 +283,25 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                         log.info("api.email_rehydrated", **counts)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.email_rehydrate_failed", error=str(exc))
-            yield
+            # Agent runner loop (NS-ADR-099): durable cadence + back-off.
+            runner = None
+            try:
+                from backend.agents.runner import get_runner, runner_disabled
+                if not runner_disabled():
+                    runner = get_runner(app)
+                    if runner is not None:
+                        runner.start()
+                        log.debug("api.agent_runner_started")
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.agent_runner_start_failed", error=str(exc))
+            try:
+                yield
+            finally:
+                if runner is not None:
+                    try:
+                        await runner.stop()
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("api.agent_runner_stop_failed", error=str(exc))
 
     target.router.lifespan_context = _lifespan
 
@@ -303,9 +323,9 @@ def canonical_aliases() -> APIRouter:
         return await agents.list_agents(request)
 
     @alias.get("/api/agents/{agent_id}")
-    async def api_get_agent(agent_id: str):
+    async def api_get_agent(agent_id: str, request: Request):
         """Get an agent by ID under the canonical prefix."""
-        return await agents.get_agent(agent_id)
+        return await agents.get_agent(agent_id, request)
 
     @alias.get("/api/overview")
     async def api_get_overview(request: Request):

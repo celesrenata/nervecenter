@@ -47,6 +47,8 @@ export interface Agent {
   memoryUsage: number | null
   tasksCompleted: number | null
   tasksFailed: number | null
+  /** Plain-language note on when the agent runs (built-ins and instances). */
+  runs_when?: string | null
   /** Inference binding (`null` = use service default). Absent pre-Batch-4 rows. */
   inference?: InferenceBinding | null
   /**
@@ -91,6 +93,43 @@ export interface AgentUpdatePayload {
 }
 
 export { ApiError }
+
+/** Cadence for one agent (`PUT /api/agents/{id}/schedule`). */
+export interface AgentSchedule {
+  agent_id?: string
+  mode: 'interval' | 'daily' | 'on_demand'
+  interval_seconds: number | null
+  daily_time: string | null
+  timezone: string | null
+  priority: 'background' | 'time_critical'
+  enabled: boolean
+  next_run_at?: string | null
+  last_run_at?: string | null
+}
+
+/** One recorded execution of an agent. */
+export interface AgentRun {
+  id: string
+  agent_id: string
+  started_at: string | null
+  finished_at: string | null
+  status: 'completed' | 'failed' | 'skipped'
+  trigger: string
+  output: string | null
+  error: string | null
+  input_tokens: number | null
+  output_tokens: number | null
+  latency_ms: number | null
+}
+
+/** `GET /api/agents/runner/status` — adaptive back-off state. */
+export interface RunnerStatus {
+  state: 'normal' | 'degraded' | 'backed_off'
+  stretch: Record<string, number>
+  throttles_in_window: number
+  running: boolean
+  skillhub_configured: boolean
+}
 
 // ─── Real API implementation ─────────────────────────────────────────────────
 
@@ -146,5 +185,49 @@ export const agentsApi = {
     })
     if (!res.ok) throw await apiErrorFromResponse(res)
     return { data: (await res.json()) as Agent, status: res.status }
+  },
+
+
+  /** `DELETE /api/agents/{id}` — persisted instances only; built-ins are refused (405). */
+  delete: async (agentId: string): Promise<void> => {
+    const res = await apiFetch(`/api/agents/${agentId}`, { method: 'DELETE' })
+    if (!res.ok) throw await apiErrorFromResponse(res)
+  },
+
+  /** `POST /api/agents/{id}/run` — run now; returns the recorded run. */
+  run: async (agentId: string): Promise<AgentRun> => {
+    const res = await apiFetch(`/api/agents/${agentId}/run`, { method: 'POST' })
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as AgentRun
+  },
+
+  /** `GET /api/agents/{id}/runs` — newest first. */
+  runs: async (agentId: string): Promise<AgentRun[]> => {
+    const res = await apiFetch(`/api/agents/${agentId}/runs`)
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    const body = (await res.json()) as { data?: AgentRun[] }
+    return body.data ?? []
+  },
+
+  getSchedule: async (agentId: string): Promise<AgentSchedule> => {
+    const res = await apiFetch(`/api/agents/${agentId}/schedule`)
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as AgentSchedule
+  },
+
+  putSchedule: async (agentId: string, schedule: AgentSchedule): Promise<AgentSchedule> => {
+    const res = await apiFetch(`/api/agents/${agentId}/schedule`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(schedule),
+    })
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as AgentSchedule
+  },
+
+  runnerStatus: async (): Promise<RunnerStatus> => {
+    const res = await apiFetch('/api/agents/runner/status')
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as RunnerStatus
   },
 }
