@@ -2,9 +2,10 @@
 
 Talks to the streamable-HTTP MCP endpoint (initialize, then ``tools/call``)
 and uses only the read-only catalog tools. The key comes from
-``NERVE_SKILLHUB_KEY`` (scopes ``read:skills`` + ``read:catalog``) and is
-never logged. Without a key every call returns nothing, so agent runs
-degrade honestly to "no skills".
+``NERVE_SKILLHUB_KEY`` when set, else NerveCenter's existing OmniRoute key
+``NERVE_OMNIROUTE_API_KEY`` (owner decision: one key; it needs the scopes
+``read:skills`` + ``read:catalog``), and is never logged. Without a key
+every call returns nothing, so agent runs degrade honestly to "no skills".
 """
 
 from __future__ import annotations
@@ -21,6 +22,7 @@ log = structlog.get_logger(__name__)
 
 DEFAULT_URL = "https://omniroute.celestium.life/api/mcp/stream"
 KEY_ENV = "NERVE_SKILLHUB_KEY"
+FALLBACK_KEY_ENV = "NERVE_OMNIROUTE_API_KEY"
 URL_ENV = "NERVE_SKILLHUB_URL"
 
 READ_ONLY_TOOLS = frozenset(
@@ -62,7 +64,9 @@ class SkillHubClient:
         transport: httpx.AsyncBaseTransport | None = None,
         timeout_s: float = 10.0,
     ) -> None:
-        self._key = (key if key is not None else os.environ.get(KEY_ENV, "")).strip() or None
+        if key is None:
+            key = os.environ.get(KEY_ENV, "").strip() or os.environ.get(FALLBACK_KEY_ENV, "")
+        self._key = key.strip() or None
         self._url = (url or os.environ.get(URL_ENV, "") or DEFAULT_URL).strip()
         self._transport = transport
         self._timeout = timeout_s
