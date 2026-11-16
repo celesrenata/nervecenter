@@ -98,6 +98,9 @@ targets:
         CFBundleShortVersionString: "1.0"
         CFBundleVersion: "1"
         UILaunchScreen: {}
+        # Apple Health bridge (NS-ADR-100): read-only; nothing is written to Health.
+        NSHealthShareUsageDescription: "Nerve Center reads your weight, sleep, steps and heart data from Apple Health and sends it to your own NerveCenter server so you can see trends. It never writes to Health."
+        NSHealthUpdateUsageDescription: "Nerve Center does not write to Apple Health."
         UIRequiredDeviceCapabilities:
           - arm64
         UISupportedInterfaceOrientations:
@@ -111,6 +114,9 @@ targets:
     entitlements:
       path: "../Generated/NervePhone.entitlements"
       properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.access: []
+        com.apple.developer.healthkit.background-delivery: true
         com.apple.security.application-groups:
           - group.nerv.center
           - group.com.celestium.nervecenter

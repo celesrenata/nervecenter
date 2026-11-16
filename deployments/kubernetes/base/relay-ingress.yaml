@@ -6,6 +6,10 @@
 #     POST /api/relay/messages      (pathType Exact: nothing else matches)
 #     POST /api/relay/contacts      (NS-ADR-097, owner: "contacts: ok"; same rules)
 #
+# A SECOND Ingress below (nervcenter-health, NS-ADR-100) exposes exactly one more
+# path for the iPhone Apple Health bridge: POST /api/health/ingest. It has its own
+# tighter limits (2 MiB, 5 req/s) and the same per-device bearer token check.
+#
 # Why that is safe enough:
 #  * The endpoint authenticates every call itself with the paired device's
 #    opaque bearer token (`_require_relay_token`): unknown device, wrong token or
@@ -67,6 +71,59 @@ spec:
                 port:
                   number: 8000
           - path: /api/relay/contacts
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+---
+# Apple Health bridge (NS-ADR-100, owner approved). One Exact path, SSO-free; the
+# endpoint checks the paired device's bearer token (X-Nerve-Device + Authorization)
+# before reading the body. GET /api/health/samples|summary stay behind SSO.
+# Rollback: `kubectl -n nervecenter delete ingress nervcenter-health middleware health-body-limit health-rate-limit`.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: health-body-limit
+  labels:
+    app: nervcenter
+spec:
+  buffering:
+    maxRequestBodyBytes: 2097152     # 2 MiB; a 500-sample batch is far smaller
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: health-rate-limit
+  labels:
+    app: nervcenter
+spec:
+  rateLimit:
+    average: 5                       # requests per second per client IP
+    burst: 20
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nervcenter-health
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: ingress-health
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: nervecenter-health-body-limit@kubernetescrd,nervecenter-health-rate-limit@kubernetescrd
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts:
+        - nervecenter.celestium.life
+      secretName: nervecenter-celestium-tls
+  rules:
+    - host: nervecenter.celestium.life
+      http:
+        paths:
+          - path: /api/health/ingest
             pathType: Exact
             backend:
               service:

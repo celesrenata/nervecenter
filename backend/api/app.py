@@ -74,6 +74,7 @@ from backend.api.endpoints import (
     voicemail,
     waiting_on,
     goals,
+    health_samples,
     incidents,
     inference,
     inference_durable,
@@ -159,6 +160,7 @@ ALL_ROUTERS = (
     today.router,
     wellness.router,
     bills.router,
+    health_samples.router,
     obligations.router,
 )
 

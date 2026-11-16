@@ -113,6 +113,7 @@ TABLES_WITH_ID = frozenset(
         "auth_sessions",
         "claims",
         "decisions",
+        "health_samples",
         "entities",
         "events",
         "evidence",

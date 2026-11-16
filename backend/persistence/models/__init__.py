@@ -31,6 +31,7 @@ from .entities import Entity
 from .events import Event
 from .evidence import Evidence
 from .goals import AgentResult, Goal
+from .health import HealthSampleRow
 from .incidents_agents import Agent, Incident
 from .inference import InferenceCombo, InferenceProvider
 from .obligations import (
@@ -65,6 +66,7 @@ __all__ = [
     "Agent",
     "AgentSchedule",
     "AgentRun",
+    "HealthSampleRow",
     "InferenceProvider",
     "InferenceCombo",
     "AuthSession",

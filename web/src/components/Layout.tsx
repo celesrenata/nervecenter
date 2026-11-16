@@ -53,6 +53,7 @@ const navItems: NavItem[] = [
   { path: '/security-ops', label: 'Security ops', Icon: SystemsIcon },
   { path: '/waiting-on', label: 'Waiting On', Icon: WaitingOnIcon },
   { path: '/wellness', label: 'Wellness', Icon: ShieldCheckIcon },
+  { path: '/health', label: 'Physical Health', Icon: ShieldCheckIcon },
   { path: '/bills', label: 'Bills', Icon: WaitingOnIcon },
   { path: '/routines', label: 'Routines', Icon: TimelineIcon },
   { path: '/systems', label: 'Systems', Icon: SystemsIcon },

@@ -85,6 +85,7 @@ struct AppShell: View {
     @StateObject private var store = PhoneDataStore()
     @StateObject private var personalStore = PersonalDataStore()
     @State private var selectedTab: PhoneTab = PhoneDebug.tab ?? .overview
+    @State private var showingHealth = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -114,6 +115,19 @@ struct AppShell: View {
         }
         .tint(.blue)
         .accessibilityIdentifier("phone.shell")
+        // Apple Health bridge settings (NS-ADR-100): sheet opened from a small
+        // heart button so the frozen six-tab contract is untouched.
+        .overlay(alignment: .topTrailing) {
+            Button { showingHealth = true } label: {
+                Image(systemName: "heart.text.square")
+                    .padding(8)
+            }
+            .accessibilityLabel("Health sync")
+            .accessibilityIdentifier("phone.healthButton")
+        }
+        .sheet(isPresented: $showingHealth) {
+            HealthSettingsView().environmentObject(environment)
+        }
         .task {
             // Data-dump seam: when launched with --nerve-dump, serialize the
             // currently-rendered store to Documents/nerve-audit-dump.json so a

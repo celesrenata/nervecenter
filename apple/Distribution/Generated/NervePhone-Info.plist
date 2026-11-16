@@ -27,6 +27,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSHealthShareUsageDescription</key>
+	<string>Nerve Center reads your weight, sleep, steps and heart data from Apple Health and sends it to your own NerveCenter server so you can see trends. It never writes to Health.</string>
+	<key>NSHealthUpdateUsageDescription</key>
+	<string>Nerve Center does not write to Apple Health.</string>
 	<key>UILaunchScreen</key>
 	<dict/>
 	<key>UIRequiredDeviceCapabilities</key>
