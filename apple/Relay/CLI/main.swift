@@ -18,6 +18,8 @@ import SQLite3
 ///                        credential store → POST /api/relay/register
 ///   health               server health (GET /api/relay/health) + local
 ///                        diagnostics (binary, LaunchAgent, Full Disk Access)
+///   probe                read-only structure probe of the Phone app and
+///                        Contacts stores (paths, tables, row counts only)
 ///   import --consent     initial history import — REFUSED without the
 ///                        explicit --consent flag; posts stable-id batches
 ///                        to POST /api/relay/messages; the incremental loop
@@ -884,6 +886,9 @@ case "import":
     } catch {
         fail(.transport, "import failed: \(error.localizedDescription)")
     }
+case "probe":
+    // Read-only structure probe (voicemail/contacts discovery); no content.
+    Probe.run()
 default:
     usage()
 }
