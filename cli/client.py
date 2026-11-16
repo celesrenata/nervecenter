@@ -11,6 +11,7 @@ Design constraints:
 from __future__ import annotations
 
 import json
+import os
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +21,8 @@ from typing import Any
 
 DEFAULT_BASE_URL = "http://localhost:8000"
 ENV_API_URL = "NERVE_API"
+#: Personal API token (Settings -> Access) sent as a bearer on every request.
+ENV_TOKEN = "NERVE_TOKEN"
 TRACE_HEADER = "Nerve-Trace-Id"
 DEFAULT_TIMEOUT_S = 15.0
 
@@ -116,6 +119,9 @@ def request(
         TRACE_HEADER: trace_id or uuid.uuid4().hex,
         "Accept": "application/json",
     }
+    token = os.environ.get(ENV_TOKEN, "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     body: bytes | None = None
     if json_body is not None:
         body = json.dumps(json_body).encode("utf-8")

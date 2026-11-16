@@ -95,9 +95,16 @@ System Settings → Privacy & Security → Full Disk Access → +
 
 ## 4. Pair
 
+Pairing needs a signed-in person (NS-ADR-122): create a personal API token in the web
+app under Settings, Access, and pass it as `NERVE_TOKEN` for this one command. It is
+sent only to `/api/relay/pair` and `/api/relay/register` and is never stored.
+
 ```bash
-NERVE_RELAY_BASE_URL=https://nervcenter.example .build/debug/NervePersonalRelay pair
+NERVE_TOKEN=nct_... NERVE_RELAY_BASE_URL=https://nervcenter.example .build/debug/NervePersonalRelay pair
 ```
+
+After pairing, the relay uses only its own device token (`/api/relay/messages`,
+`/api/relay/contacts`, `/api/health/ingest`), which needs no `NERVE_TOKEN`.
 
 - `POST /api/relay/pair` → the server mints `device_id` + a **one-time
   token** (printed ONCE on stdout — it is stored in the keychain and never

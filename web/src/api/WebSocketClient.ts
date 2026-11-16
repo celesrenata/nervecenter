@@ -7,7 +7,17 @@
  * through console.error — so a missing /ws route in the mock backend degrades
  * the UI to a visible "reconnecting" state instead of failing console-error
  * based e2e assertions.
+ *
+ * Auth (NS-ADR-122): a browser WebSocket cannot send an Authorization header,
+ * so the first frame after open is `{"type":"auth","token":<access token>}`.
+ * The server closes with 4401 when it is missing or refused; the client then
+ * refreshes the session once and reconnects, or stops if the session is gone.
  */
+
+import { getAccessToken, recoverSession } from './client'
+
+/** Close code the server uses when the first-frame auth is missing or invalid. */
+const CLOSE_UNAUTHORIZED = 4401
 
 export type WebSocketConnectionState = 'connecting' | 'open' | 'closed' | 'error'
 
@@ -18,6 +28,7 @@ export class WebSocketClient {
   private reconnectTimeout: number | null = null
   private connected: boolean = false
   private disposed: boolean = false
+  private authFailures: number = 0
   private messageHandlers: ((data: any) => void)[] = []
   private stateHandlers: ((state: WebSocketConnectionState) => void)[] = []
   private state: WebSocketConnectionState = 'connecting'
@@ -49,11 +60,14 @@ export class WebSocketClient {
     this.ws = socket
 
     socket.onopen = () => {
+      const token = getAccessToken()
+      if (token) socket.send(JSON.stringify({ type: 'auth', token }))
       this.connected = true
       this.setState('open')
     }
 
     socket.onmessage = (event) => {
+      this.authFailures = 0
       try {
         const data = JSON.parse(event.data)
         for (const handler of this.messageHandlers) handler(data)
@@ -62,10 +76,14 @@ export class WebSocketClient {
       }
     }
 
-    socket.onclose = () => {
+    socket.onclose = (event) => {
       this.connected = false
       if (this.disposed) {
         this.setState('closed')
+        return
+      }
+      if (event.code === CLOSE_UNAUTHORIZED && this.authFailures++ < 1) {
+        void this.recoverAndReconnect()
         return
       }
       this.reconnect()
@@ -75,6 +93,19 @@ export class WebSocketClient {
       // The socket will (or already has) closed; flag the failure so the UI
       // can show an honest error/reconnecting state.
       this.setState('error')
+    }
+  }
+
+  /** Refresh the session after a 4401 close, then reconnect with the new token. */
+  private async recoverAndReconnect(): Promise<void> {
+    this.setState('connecting')
+    const recovered = await recoverSession()
+    if (this.disposed) return
+    if (recovered) {
+      this.connect()
+    } else {
+      // The session is gone (or the refresh failed); stop hammering the server.
+      this.setState('closed')
     }
   }
 

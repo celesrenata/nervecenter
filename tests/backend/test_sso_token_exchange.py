@@ -391,7 +391,7 @@ def test_sso_token_exchange_success(monkeypatch):
     token_body = {
         "access_token": "AT",
         "token_type": "Bearer",
-        "refresh_token": "RT",
+        "refresh_token": "issuer-refresh-fake",
         "expires_in": 300,
     }
     _patch_http(monkeypatch, 200, token_body)
@@ -411,7 +411,9 @@ def test_sso_token_exchange_success(monkeypatch):
     # and the refresh token only as an HttpOnly cookie (NS-ADR-123).
     assert out["access_token"] not in ("AT", "")
     assert out["token_type"] == "Bearer"
-    assert "refresh_token" not in out and "RT" not in r.text
+    # (a distinctive fake value: a short one like "RT" can occur by chance
+    # inside the base64 access token)
+    assert "refresh_token" not in out and "issuer-refresh-fake" not in r.text
     assert out["expires_in"] > 0
     cookie = r.headers["set-cookie"]
     assert cookie.startswith("nc_rt=") and "HttpOnly" in cookie

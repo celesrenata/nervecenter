@@ -16,15 +16,13 @@ import { expect, test } from '@playwright/test'
  *      (gates OV-1 / TA-1 / DC-1: no silent `[]` on errors);
  *   2. Bearer injection — `Authorization: Bearer <nc.accessToken>` from
  *      sessionStorage, and its absence without a token;
- *   3. 401 handling — session cleared, ApiError(401) surfaced, no refresh
- *      attempt (the backend exposes no refresh route — backend/api/auth.py);
+ *   3. 401 handling — one refresh attempt (POST /api/auth/refresh, NS-ADR-123);
+ *      when it is refused the session is cleared and ApiError(401) surfaced;
  *   4. /auth/callback — state validation, PKCE code exchange, token storage,
  *      redirect to the post-login route '/';
  *   5. /auth/callback CSRF — a state mismatch is rejected, nothing stored.
  *
- * Note: the backend data endpoints do not require auth, so the views remain
- * reachable; the App is intentionally ungated (gating decision pending — see
- * web/src/components/RequireAuth.tsx).
+ * session-refresh.spec.ts covers the refresh/retry success paths.
  */
 
 const FAKE_ACCESS = 'tok-e2e-access'
@@ -112,14 +110,19 @@ test.describe('auth transport (S102)', () => {
     expect(capturedAuth).toBe(`Bearer ${FAKE_ACCESS}`)
   })
 
-  test('401 clears the sessionStorage session, surfaces ApiError(401), and does not attempt a refresh', async ({
+  test('401 triggers one refresh; when it is refused the session is cleared and ApiError(401) surfaces', async ({
     page,
   }) => {
     await loadClient(page)
-
-    const requestUrls: string[] = []
-    page.on('request', (req) => requestUrls.push(req.url()))
-
+    const refreshCalls: Array<Record<string, string>> = []
+    await page.route('**/api/auth/refresh', (route) => {
+      refreshCalls.push(route.request().headers())
+      return route.fulfill({
+        status: 401,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'no refresh session' }),
+      })
+    })
     await page.route('**/api/goals*', (route) =>
       route.fulfill({
         status: 401,
@@ -127,12 +130,10 @@ test.describe('auth transport (S102)', () => {
         body: JSON.stringify({ detail: 'missing bearer token' }),
       }),
     )
-
     // The string is inlined (not FAKE_ACCESS) because page.evaluate serializes
     // the function into the browser context where spec-file consts don't exist.
     const result = await page.evaluate(async () => {
       sessionStorage.setItem('nc.accessToken', 'tok-e2e-access')
-      sessionStorage.setItem('nc.refreshToken', 'tok-e2e-refresh')
       const client = await import('/src/api/client.ts')
       const err = await client.goalsApi.list().catch((e) => e)
       return {
@@ -143,15 +144,15 @@ test.describe('auth transport (S102)', () => {
         refreshLeft: sessionStorage.getItem('nc.refreshToken'),
       }
     })
-
     expect(result.isApiError).toBe(true)
     expect(result.status).toBe(401)
     expect(result.detail).toBe('missing bearer token')
-    // Unrecoverable 401 (no backend refresh route) → session cleared.
+    // Refresh refused → session cleared; no refresh token ever lives in storage.
     expect(result.accessLeft).toBeNull()
     expect(result.refreshLeft).toBeNull()
-    // No refresh attempt was made anywhere.
-    expect(requestUrls.some((u) => u.includes('refresh'))).toBe(false)
+    // Exactly one refresh attempt, carrying the CSRF guard header.
+    expect(refreshCalls).toHaveLength(1)
+    expect(refreshCalls[0]['x-nc-refresh']).toBe('1')
   })
 
   test('/auth/callback validates state, exchanges the PKCE code, stores tokens, and redirects to /', async ({
@@ -175,12 +176,19 @@ test.describe('auth transport (S102)', () => {
         contentType: 'application/json',
         body: JSON.stringify({
           access_token: 'sso-access-1',
-          refresh_token: 'sso-refresh-1',
           token_type: 'Bearer',
-          expires_in: 300,
+          expires_in: 3600,
+          identity: { sub: 'sso-user-1', username: 'sso-user-1', email: null },
         }),
       })
     })
+    // The fake token is unknown to the real backend, so the app's first
+    // request would 401 and try a refresh. A server error on that refresh
+    // keeps the session (only an explicit refusal ends it), which keeps this
+    // test about the exchange itself.
+    await page.route('**/api/auth/refresh', (route) =>
+      route.fulfill({ status: 500, contentType: 'application/json', body: '{}' }),
+    )
     // Deterministic SSO config (does not depend on the live provider state).
     await page.route('**/api/auth/sso/config', (route) =>
       route.fulfill({
@@ -208,7 +216,8 @@ test.describe('auth transport (S102)', () => {
       verifier: sessionStorage.getItem('nc.pkce.codeVerifier'),
     }))
     expect(stored.access).toBe('sso-access-1')
-    expect(stored.refresh).toBe('sso-refresh-1')
+    // No refresh token is ever stored in the page (the cookie is HttpOnly).
+    expect(stored.refresh).toBeNull()
     // The code verifier is consumed by the exchange (single use).
     expect(stored.verifier).toBeNull()
 

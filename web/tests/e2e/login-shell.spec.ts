@@ -142,24 +142,13 @@ test.describe('login view (LG-1…LG-4)', () => {
     page,
   }) => {
     await mockSsoConfig(page, { enabled: false, client_id: '', issuer: '' })
-    // Simulate a valid credential exchange: the backend answers 200 with the
-    // access/refresh tokens (shape per backend/api/auth.py login response).
-    await page.route('**/api/auth/login', (route) =>
-      route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: JSON.stringify({
-          access_token: 'e2e-break-glass-access-token',
-          refresh_token: 'e2e-break-glass-refresh-token',
-          sub: 'local-admin',
-          roles: ['local-admin'],
-        }),
-      }),
-    )
+    // A real break-glass login against the e2e backend (global-setup.mjs
+    // enables it): every API route now requires a signed-in person, so a
+    // stubbed token would be refused by the backend and bounce back to /login.
     await page.goto('/login')
 
     await page.fill('#username', 'local-admin')
-    await page.fill('#password', 'correct-horse-battery-staple')
+    await page.fill('#password', 'e2e-breakglass')
     await page.getByRole('button', { name: 'Sign in' }).click()
 
     // The successful break-glass login must leave /login and land in the app

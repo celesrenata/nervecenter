@@ -70,6 +70,10 @@ function assertClean(cap: ConsoleCapture) {
   expect(cap.errors, 'console errors').toEqual([])
 }
 
+/** The token seeded by the latest seedAuth, for direct `page.request` calls
+ * (the API now requires a signed-in person on every non-public route). */
+let authHeaders: Record<string, string> = {}
+
 async function seedAuth(page: import('@playwright/test').Page) {
   const login = await fetch('http://127.0.0.1:8000/api/auth/login', {
     method: 'POST',
@@ -83,6 +87,7 @@ async function seedAuth(page: import('@playwright/test').Page) {
   await page.addInitScript((token: string) => {
     sessionStorage.setItem('nc.accessToken', token)
   }, access_token)
+  authHeaders = { Authorization: `Bearer ${access_token}` }
 }
 
 /** Seed one resolvable person + one matching communication via the real
@@ -90,12 +95,14 @@ async function seedAuth(page: import('@playwright/test').Page) {
 async function seedCommunication(page: import('@playwright/test').Page) {
   // A person identity so the communication resolves to a person_id.
   const identity = await page.request.post('/api/people/identities/ingest', {
+      headers: authHeaders,
     data: { kind: 'email', value: SENDER, display_name: 'Search E2E Person' },
   })
   expect(identity.ok()).toBeTruthy()
 
   // One email communication whose subject carries the query keyword.
   const ingest = await page.request.post('/api/communications/ingest', {
+      headers: authHeaders,
     data: {
       channel: 'email',
       direction: 'incoming',

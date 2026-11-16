@@ -36,6 +36,8 @@ def cli() -> None:
 
     All commands support ``--json`` for the raw API body and ``--api``
     (or the ``NERVE_API`` environment variable) to target a specific server.
+    Every API route requires a signed-in person: set ``NERVE_TOKEN`` to a
+    personal API token created in the web app under Settings, Access.
     """
 
 

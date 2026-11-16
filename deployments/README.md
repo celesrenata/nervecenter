@@ -267,3 +267,30 @@ token) unless it is on the allowlist in `backend/api/public_routes.py`.
   non-allowlisted route answers anything but 401/403. Local run (no Postgres, no 8001
   listener): start the app, then
   `NERVE_CHECK_BASE=http://127.0.0.1:8000 NERVE_CHECK_LOCAL=1 python deployments/harbor/check-route-auth.py`.
+
+### Sessions and personal API tokens (NS-ADR-123, NS-ADR-124)
+
+- **Session settings** (configmap, all optional): `NERVE_ACCESS_TOKEN_TTL_MINUTES` (60),
+  `NERVE_SESSION_IDLE_HOURS` (24, sliding), `NERVE_SESSION_MAX_DAYS` (30),
+  `NERVE_REFRESH_REUSE_GRACE_SECONDS` (10) and `NERVE_COOKIE_SECURE` (1; set 0 only for
+  plain-http local development). The web signs in once through SSO and then refreshes
+  silently; closing the browser does not end the session within the idle window.
+- **Migration 037_sessions_pat** adds two tables (`auth_refresh_sessions`,
+  `personal_api_tokens`) and alters none. Take the usual `pg_dump` before deploying anyway.
+- **Personal API tokens**: web app, Settings, Access tab. Create a token, copy it once, then
+  `curl -H "Authorization: Bearer nct_..." https://<host>/api/auth/me`. The `nerve` CLI reads
+  it from `NERVE_TOKEN`. Revoke it in the same tab. Tokens are hashed at rest and cannot
+  create or revoke tokens.
+
+### Owner "how to test" list
+
+1. After deploy, `deploy.sh` runs the route-auth check. To run it by hand:
+   `kubectl -n nervecenter exec -i <api pod> -c api -- python - < deployments/harbor/check-route-auth.py`
+   prints 0 open routes outside the allowlist.
+2. Device paths still work: a relay POST with a bad bearer answers 401 from the app;
+   opencode is still connected to `nervecenter-infra`; tunnel-client is Ready.
+3. Sign in through SSO, leave the tab for 20 minutes, click around: no login prompt. Close the
+   browser and reopen it the next morning (within 24 h): still signed in.
+4. Settings, Access: create a token, copy it, run the `curl` above (200); revoke it and run it
+   again (401).
+5. Settings, Access, "Sign out everywhere": every browser session of your account ends.

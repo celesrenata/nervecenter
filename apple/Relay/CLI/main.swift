@@ -600,7 +600,11 @@ case "pair":
         // 1) POST /api/relay/pair — the token is returned ONCE in this body.
         let deviceName = ProcessInfo.processInfo.environment["NERVE_RELAY_DEVICE_NAME"]
             ?? "Apple Messages relay"
-        let pair = try await relayPost(relayURL(base, "relay/pair"), token: "", body: [
+        // NS-ADR-122: pair/register need a signed-in person. NERVE_TOKEN is a
+        // personal API token created in Settings -> Access; it is only sent
+        // during pairing and is never stored.
+        let personToken = ProcessInfo.processInfo.environment["NERVE_TOKEN"] ?? ""
+        let pair = try await relayPost(relayURL(base, "relay/pair"), token: personToken, body: [
             "device_name": deviceName,
         ])
         guard let deviceID = pair["device_id"] as? String,
@@ -627,7 +631,7 @@ case "pair":
 
         // 3) POST /api/relay/register to complete registration.
         do {
-            let register = try await relayPost(relayURL(base, "relay/register"), token: token, body: [
+            let register = try await relayPost(relayURL(base, "relay/register"), token: personToken.isEmpty ? token : personToken, body: [
                 "device_id": deviceID,
                 "token": token,
             ])

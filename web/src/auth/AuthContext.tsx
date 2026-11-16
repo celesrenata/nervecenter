@@ -3,29 +3,35 @@ import { useNavigate } from 'react-router-dom'
 import {
   apiErrorFromResponse,
   apiFetch,
-  clearSessionTokens,
+  bootstrapSession,
   getAccessToken,
   getAuthorizationUrl,
   getSsoIdentity,
   setAccessToken,
+  setUnauthorizedHandler,
+  signOut,
 } from '../api/client'
 
 /**
  * Unified auth context (S102).
  *
- * Tokens live in the sessionStorage transport owned by `web/src/api/client.ts`
- * (keys `nc.accessToken` / `nc.refreshToken`) — NOT in localStorage. The old
+ * The access token lives in the sessionStorage transport owned by
+ * `web/src/api/client.ts` (key `nc.accessToken`) — NOT in localStorage. The
+ * refresh credential is an HttpOnly cookie the page cannot read; the client
+ * refreshes silently and restores the session after a browser restart
+ * (`bootstrapSession`). The old
  * localStorage `authToken` break-glass was stale: it was written by login
  * but never read by the fetch layer, so no request was ever authorized.
  *
  *   - login()  → POST /api/auth/login (break-glass), stores the returned
- *     access+refresh tokens in sessionStorage, resolves the user info,
+ *     access token in sessionStorage, resolves the user info,
  *     navigates to `/` (the app root) on success, and REJECTS with ApiError
  *     (status 401/403 + backend detail) on failure so LoginView can map
  *     credential errors to actionable messages.
- *   - logout() → clears the sessionStorage token keys and drops the session.
- *   - mount    → if a token is present, introspect /api/auth/me for the user;
- *     an expired/invalid token 401s, which clears the session (apiFetch).
+ *   - logout() → revokes the session server-side, clears the sessionStorage
+ *     token keys and drops the session.
+ *   - mount    → restore the session (valid token or refresh cookie), then
+ *     resolve the user; a refused refresh ends the session.
  *
  * The App is gated: every feature route renders under <RequireAuth> (App.tsx),
  * which redirects unauthenticated users to /login. Because this provider
@@ -45,7 +51,7 @@ interface AuthContextType {
   login: (username: string, password: string) => Promise<User>
   logout: () => void
   /** Mark the session active (used by the SSO callback after the token
-   *  exchange has already persisted nc.accessToken/nc.refreshToken). */
+   *  exchange has already persisted nc.accessToken). */
   setUser: (user: User | null) => void
 }
 
@@ -57,55 +63,71 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const navigate = useNavigate()
 
   useEffect(() => {
-    const token = getAccessToken()
-    if (!token) {
-      setLoading(false)
-      return
+    let cancelled = false
+    const finish = () => {
+      if (!cancelled) setLoading(false)
     }
-
-    // SSO sessions store the resolved identity (verified id_token) at
-    // exchange time — the realm *access* token carries no display claims,
-    // so /api/auth/me alone would show an anonymous placeholder.  Prefer
-    // the stored identity; only fall back to /api/auth/me for break-glass
-    // (HS256) tokens, which do carry a sub claim.
-    const stored = getSsoIdentity()
-    if (stored?.username || stored?.sub || stored?.email) {
-      setUserState({
-        username:
-          stored.username ??
-          stored.sub ??
-          (stored.email ? stored.email.split('@')[0] : 'sso-user'),
-        roles: [],
-      })
-      setLoading(false)
-      return
-    }
-
-    apiFetch('/auth/me')
-      .then((res) => {
-        if (!res.ok) return
-        return res.json() as Promise<{
-          sub?: string
-          username?: string
-          roles?: string[]
-        }>
-      })
-      .then((data) => {
-        // The backend resolves the display username (sub for break-glass).
-        // Prefer it over the raw sub.
-        if (data && (data.username || data.sub)) {
-          setUserState({
-            username: data.username ?? data.sub ?? 'sso-user',
-            roles: data.roles ?? [],
-          })
+    // Restore the session: keep a still-valid token, otherwise try the refresh
+    // cookie (browser restart, expired access token). A refused refresh leaves
+    // the user signed out.
+    bootstrapSession()
+      .then((restored) => {
+        if (cancelled) return
+        if (!restored || !getAccessToken()) {
+          finish()
+          return
         }
+        // SSO sessions store the resolved identity (verified id_token) at
+        // exchange time — the realm *access* token carries no display claims,
+        // so /api/auth/me alone would show an anonymous placeholder.  Prefer
+        // the stored identity; fall back to /api/auth/me otherwise.
+        const stored = getSsoIdentity()
+        if (stored?.username || stored?.sub || stored?.email) {
+          setUserState({
+            username:
+              stored.username ??
+              stored.sub ??
+              (stored.email ? stored.email.split('@')[0] : 'sso-user'),
+            roles: [],
+          })
+          finish()
+          return
+        }
+        return apiFetch('/auth/me')
+          .then((res) => {
+            if (!res.ok) return
+            return res.json() as Promise<{
+              sub?: string
+              username?: string
+              roles?: string[]
+            }>
+          })
+          .then((data) => {
+            // The backend resolves the display username (sub for break-glass).
+            // Prefer it over the raw sub.
+            if (data && (data.username || data.sub) && !cancelled) {
+              setUserState({
+                username: data.username ?? data.sub ?? 'sso-user',
+                roles: data.roles ?? [],
+              })
+            }
+          })
+          .catch(() => {
+            /* network failure — user stays unset, token left as-is */
+          })
+          .finally(finish)
       })
-      .catch(() => {
-        /* network failure — user stays unset, token left as-is */
-      })
-      .finally(() => setLoading(false))
+      .catch(finish)
+    return () => {
+      cancelled = true
+    }
   }, [])
-
+  // When the API layer gives up on the session (refresh refused), drop the
+  // user so RequireAuth sends them to /login.
+  useEffect(() => {
+    setUnauthorizedHandler(() => setUserState(null))
+    return () => setUnauthorizedHandler(null)
+  }, [])
   /**
    * SSO session bootstrap (gap-closure SSO-GAP).
    *
@@ -165,11 +187,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!res.ok) throw await apiErrorFromResponse(res)
 
     // backend/api/auth.py login response:
-    // { token_type, access_token, expires_at, refresh_token,
-    //   refresh_expires_at, sub, roles }
+    // { token_type, access_token, expires_at, sub, roles, ... }; the refresh
+    // credential arrives as an HttpOnly cookie.
     const data = (await res.json()) as {
       access_token?: string
-      refresh_token?: string | null
+      expires_at?: string | null
       sub?: string
       roles?: string[]
       user?: { username?: string; roles?: string[] }
@@ -177,7 +199,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!data.access_token) {
       throw new Error('Login response did not include an access token')
     }
-    setAccessToken(data.access_token, data.refresh_token ?? null)
+    setAccessToken(data.access_token, data.expires_at ?? null)
     const authedUser: User = {
       username: data.sub ?? data.user?.username ?? username,
       roles: Array.isArray(data.roles)
@@ -194,7 +216,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }
 
   const logout = () => {
-    clearSessionTokens()
+    void signOut()
     // Drop the one-shot SSO bootstrap guard too, so signing back in from this
     // tab can re-run the gate→session bootstrap (see the bootstrap effect).
     try {

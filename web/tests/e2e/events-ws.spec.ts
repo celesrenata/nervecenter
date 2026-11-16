@@ -48,8 +48,15 @@ test('GET /api/events/ws accepts the handshake and speaks the frame protocol', a
   // Origin header. The e2e webServer guarantees :3000 (Vite) is up here.
   await page.goto('http://localhost:3000/', { waitUntil: 'domcontentloaded' })
 
+  // NS-ADR-122: the first frame must authenticate a signed-in person.
+  const login = await fetch('http://127.0.0.1:8000/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: 'local-admin', password: 'e2e-breakglass' }),
+  })
+  const { access_token } = (await login.json()) as { access_token: string }
   const result = (await page.evaluate(
-    (url) =>
+    ({ url, token }) =>
       new Promise<WsProbeResult>((resolve) => {
         const frames: WsFrame[] = []
         let closed = false
@@ -70,6 +77,7 @@ test('GET /api/events/ws accepts the handshake and speaks the frame protocol', a
         const ws = new WebSocket(url)
         ws.onopen = () => {
           handshakeOk = true
+          ws.send(JSON.stringify({ type: 'auth', token }))
         }
         ws.onmessage = (ev: MessageEvent) => {
           const text = typeof ev.data === 'string' ? ev.data : ''
@@ -89,7 +97,7 @@ test('GET /api/events/ws accepts the handshake and speaks the frame protocol', a
           // The server signals failure by closing; onclose will settle us.
         }
       }),
-    'ws://localhost:8000/api/events/ws',
+    { url: 'ws://localhost:8000/api/events/ws', token: access_token },
   )) as WsProbeResult
 
   // 1) The handshake must be accepted. A 404 / connection-refused leaves

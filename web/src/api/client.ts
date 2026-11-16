@@ -414,7 +414,12 @@ export class ApiError extends Error {
  * so a closed tab ends the session — the security model the SSO spec calls for.
  */
 const ACCESS_TOKEN_KEY = 'nc.accessToken'
-const REFRESH_TOKEN_KEY = 'nc.refreshToken'
+/** Access-token lifetime bookkeeping (epoch ms) for proactive refresh. */
+const ACCESS_ISSUED_KEY = 'nc.accessIssuedAt'
+const ACCESS_EXPIRES_KEY = 'nc.accessExpiresAt'
+/** Pre-NS-ADR-123 builds kept the refresh token here; it is wiped on load. The
+ *  refresh credential is now an HttpOnly cookie the page cannot read. */
+const LEGACY_REFRESH_TOKEN_KEY = 'nc.refreshToken'
 /** Code-verifier + state for the in-flight PKCE authorization-code exchange. */
 const PKCE_VERIFIER_KEY = 'nc.pkce.codeVerifier'
 const PKCE_STATE_KEY = 'nc.pkce.state'
@@ -448,31 +453,86 @@ function safeRemoveSession(key: string): void {
   }
 }
 
+// Drop any refresh token an older build left in sessionStorage.
+if (typeof window !== 'undefined') safeRemoveSession(LEGACY_REFRESH_TOKEN_KEY)
+
 export function getAccessToken(): string | null {
   return safeGetSession(ACCESS_TOKEN_KEY)
 }
 
-/** Store a fresh access token (from break-glass login or the SSO token exchange). */
-export function setAccessToken(token: string | null, refreshToken?: string | null): void {
-  if (token) safeSetSession(ACCESS_TOKEN_KEY, token)
-  else safeRemoveSession(ACCESS_TOKEN_KEY)
-  if (refreshToken) safeSetSession(REFRESH_TOKEN_KEY, refreshToken)
-  else safeRemoveSession(REFRESH_TOKEN_KEY)
+/** Epoch ms from an ISO string, epoch seconds, or the token's own `exp` claim. */
+function resolveExpiryMs(token: string, expiresAt?: string | number | null): number | null {
+  if (typeof expiresAt === 'string' && expiresAt) {
+    const ms = Date.parse(expiresAt)
+    if (!Number.isNaN(ms)) return ms
+  } else if (typeof expiresAt === 'number' && Number.isFinite(expiresAt)) {
+    return expiresAt < 1e12 ? expiresAt * 1000 : expiresAt
+  }
+  try {
+    const payload = token.split('.')[1]
+    if (!payload) return null
+    const json = atob(payload.replace(/-/g, '+').replace(/_/g, '/'))
+    const exp = (JSON.parse(json) as { exp?: unknown }).exp
+    return typeof exp === 'number' ? exp * 1000 : null
+  } catch {
+    return null
+  }
 }
 
-/** Clear the whole session (logout or an un-recoverable 401). */
+let refreshTimer: number | null = null
+
+function cancelProactiveRefresh(): void {
+  if (refreshTimer !== null) {
+    window.clearTimeout(refreshTimer)
+    refreshTimer = null
+  }
+}
+
+/** Refresh silently once ~80% of the access token's lifetime has passed. */
+function scheduleProactiveRefresh(): void {
+  cancelProactiveRefresh()
+  const issued = Number(safeGetSession(ACCESS_ISSUED_KEY))
+  const expires = Number(safeGetSession(ACCESS_EXPIRES_KEY))
+  if (!getAccessToken() || !issued || !expires || expires <= issued) return
+  const due = issued + (expires - issued) * 0.8
+  const delay = Math.min(Math.max(0, due - Date.now()), 2_147_000_000)
+  refreshTimer = window.setTimeout(() => {
+    refreshTimer = null
+    void recoverSession()
+  }, delay)
+}
+
+/** Store a fresh access token (from break-glass login, the SSO exchange or a refresh). */
+export function setAccessToken(token: string | null, expiresAt?: string | number | null): void {
+  if (!token) {
+    safeRemoveSession(ACCESS_TOKEN_KEY)
+    safeRemoveSession(ACCESS_ISSUED_KEY)
+    safeRemoveSession(ACCESS_EXPIRES_KEY)
+    cancelProactiveRefresh()
+    return
+  }
+  safeSetSession(ACCESS_TOKEN_KEY, token)
+  const expiry = resolveExpiryMs(token, expiresAt)
+  if (expiry) {
+    safeSetSession(ACCESS_ISSUED_KEY, String(Date.now()))
+    safeSetSession(ACCESS_EXPIRES_KEY, String(expiry))
+  } else {
+    safeRemoveSession(ACCESS_ISSUED_KEY)
+    safeRemoveSession(ACCESS_EXPIRES_KEY)
+  }
+  scheduleProactiveRefresh()
+}
+
+/** Clear the whole local session (logout or an un-recoverable 401). */
 export function clearSessionTokens(): void {
+  cancelProactiveRefresh()
   safeRemoveSession(ACCESS_TOKEN_KEY)
-  safeRemoveSession(REFRESH_TOKEN_KEY)
+  safeRemoveSession(ACCESS_ISSUED_KEY)
+  safeRemoveSession(ACCESS_EXPIRES_KEY)
+  safeRemoveSession(LEGACY_REFRESH_TOKEN_KEY)
   safeRemoveSession(PKCE_VERIFIER_KEY)
   safeRemoveSession(PKCE_STATE_KEY)
   safeRemoveSession(IDENTITY_KEY)
-}
-
-/** The in-flight refresh token, if any (kept for the session; unused while
- * the backend exposes no refresh route — see apiFetch 401 handling). */
-export function getRefreshToken(): string | null {
-  return safeGetSession(REFRESH_TOKEN_KEY)
 }
 
 /**
@@ -521,20 +581,8 @@ export function setUnauthorizedHandler(handler: UnauthorizedHandler | null): voi
   unauthorizedHandler = handler
 }
 
-/**
- * The single fetch wrapper every real-API request goes through. Adds
- * `Authorization: Bearer <token>` (S102: the token comes from
- * sessionStorage `nc.accessToken`) when a session token is present.
- *
- * S102 401 handling: the backend exposes **no** token-refresh route
- * (backend/api/auth.py: login, me, logout, pairing only), so a 401 on an
- * authorized call is terminal — the sessionStorage session is cleared and
- * the caller surfaces ApiError(status=401) (realApi raises it via
- * responseOrThrow / listFromResponse). The break-glass login itself is
- * excluded: its 401 is a credential error the form should surface, not a
- * session invalidation.
- */
-export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+/** Resolve an API path to its canonical URL (see apiFetch). */
+function resolveApiUrl(path: string): string {
   const base = (API_BASE ?? '').replace(/\/+$/, '')
   // Route normalization (personal-ops-recovery, Area 4 e2e): the canonical
   // deployment serves the API under `/api` (VITE_API_BASE=/api — the k8s web
@@ -543,32 +591,151 @@ export async function apiFetch(path: string, init: RequestInit = {}): Promise<Re
   // clients pass the full `/api/...` path; without this the latter would
   // double-prefix to `/api/api/...` and 404. Collapse the overlap so both
   // styles resolve to the same canonical URL. Absolute URLs pass through.
-  let url: string
-  if (path.startsWith('http')) {
-    url = path
-  } else if (base && (path === base || path.startsWith(`${base}/`))) {
-    url = path // already carries the API base
-  } else if (base && path.startsWith('/')) {
-    url = `${base}${path}`
-  } else {
-    url = path
-  }
-  const headers = new Headers(init.headers)
+  if (path.startsWith('http')) return path
+  if (base && (path === base || path.startsWith(`${base}/`))) return path
+  if (base && path.startsWith('/')) return `${base}${path}`
+  return path
+}
+
+type RefreshOutcome = 'ok' | 'denied' | 'error'
+let refreshInFlight: Promise<RefreshOutcome> | null = null
+
+/**
+ * Rotate the session through `POST /api/auth/refresh` (NS-ADR-123). The
+ * credential is the HttpOnly `nc_rt` cookie; `X-NC-Refresh: 1` is the CSRF
+ * guard. Single-flight: concurrent callers share one request, so a burst of
+ * 401s or a proactive timer racing a retry cannot rotate the cookie twice.
+ *   ok     — a new access token is stored.
+ *   denied — the server refused (no/expired/replayed session).
+ *   error  — network or server failure; the session may still be valid.
+ */
+async function refreshSession(): Promise<RefreshOutcome> {
+  if (refreshInFlight) return refreshInFlight
+  refreshInFlight = (async (): Promise<RefreshOutcome> => {
+    try {
+      const res = await fetch(resolveApiUrl('/auth/refresh'), {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'X-NC-Refresh': '1' },
+      })
+      if (res.status === 401 || res.status === 403) return 'denied'
+      if (!res.ok) return 'error'
+      const body = (await res.json()) as {
+        access_token?: string
+        expires_at?: string | null
+        expires_in?: number | null
+        identity?: SsoIdentity | null
+      }
+      if (!body.access_token) return 'denied'
+      const expiresAt =
+        body.expires_at ??
+        (typeof body.expires_in === 'number' ? Date.now() + body.expires_in * 1000 : null)
+      setAccessToken(body.access_token, expiresAt)
+      const identity = body.identity
+      if (identity && (identity.sub || identity.username || identity.email)) {
+        setSsoIdentity(identity)
+      }
+      return 'ok'
+    } catch {
+      return 'error'
+    } finally {
+      refreshInFlight = null
+    }
+  })()
+  return refreshInFlight
+}
+
+/** End the local session and tell the app to return to /login. */
+function endSession(): void {
+  clearSessionTokens()
+  if (unauthorizedHandler) unauthorizedHandler()
+}
+
+/**
+ * Refresh the session; when the server denies it the local session ends and
+ * the unauthorized handler runs. Returns true when a fresh token is stored.
+ * Used by the proactive timer and by the WebSocket after a 4401 close.
+ */
+export async function recoverSession(): Promise<boolean> {
+  const outcome = await refreshSession()
+  if (outcome === 'denied') endSession()
+  return outcome === 'ok'
+}
+
+/**
+ * First-load session bootstrap: a still-valid access token in sessionStorage
+ * is kept (and its refresh timer re-armed); otherwise the refresh cookie is
+ * tried, which restores the session after a browser restart or an expiry.
+ * Returns true when the caller has a usable access token afterwards.
+ */
+export async function bootstrapSession(): Promise<boolean> {
   const token = getAccessToken()
-  if (token && !headers.has('Authorization')) {
+  const expires = Number(safeGetSession(ACCESS_EXPIRES_KEY))
+  if (token && (!expires || expires > Date.now() + 5_000)) {
+    scheduleProactiveRefresh()
+    return true
+  }
+  if (token) clearSessionTokens()
+  return (await refreshSession()) === 'ok'
+}
+
+/** Sign out: revoke the session server-side (best effort), then clear it locally. */
+export async function signOut(): Promise<void> {
+  const token = getAccessToken()
+  clearSessionTokens()
+  try {
+    await fetch(resolveApiUrl('/auth/logout'), {
+      method: 'POST',
+      credentials: 'include',
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    })
+  } catch {
+    /* offline — the local session is already gone */
+  }
+}
+
+/** Paths whose 401 is a credential error for the caller, not a session loss. */
+const NO_REFRESH_PATHS = ['/auth/login', '/auth/sso/token', '/auth/refresh', '/auth/logout']
+
+/**
+ * The single fetch wrapper every real-API request goes through. Adds
+ * `Authorization: Bearer <token>` (the token comes from sessionStorage
+ * `nc.accessToken`) when a session token is present.
+ *
+ * 401 handling (NS-ADR-123): refresh the session once through the cookie and
+ * retry the request once. Only when the refresh is refused (or the retry is
+ * still 401) is the local session cleared and the unauthorized handler run.
+ * A network failure during refresh leaves the session alone and returns the
+ * original 401. The break-glass login and SSO exchange are excluded: their 401
+ * is a credential error the form should surface, not a session invalidation.
+ */
+export async function apiFetch(path: string, init: RequestInit = {}): Promise<Response> {
+  const url = resolveApiUrl(path)
+  const headers = new Headers(init.headers)
+  const callerAuth = headers.has('Authorization')
+  const token = getAccessToken()
+  if (token && !callerAuth) {
     headers.set('Authorization', `Bearer ${token}`)
   }
   const res = await fetch(url, { ...init, headers })
-  if (res.status === 401) {
-    // /auth/login and /auth/sso/token are credential/exchange errors the caller
-    // should surface (form error / callback error UI), not session-loss events:
-    // no session exists yet, so a forced /login redirect would skip the
-    // caller's error presentation.
-    if (!path.startsWith('/auth/login') && !path.startsWith('/auth/sso/token')) {
-      clearSessionTokens()
-      if (unauthorizedHandler) unauthorizedHandler()
-    }
+  if (res.status !== 401) return res
+  if (NO_REFRESH_PATHS.some((p) => path.startsWith(p) || path.startsWith(`/api${p}`))) return res
+  if (callerAuth) {
+    // An explicit credential (e.g. a personal token) is not the cookie session.
+    return res
   }
+  const outcome = await refreshSession()
+  if (outcome === 'error') return res
+  if (outcome === 'ok') {
+    const retryHeaders = new Headers(init.headers)
+    const fresh = getAccessToken()
+    if (fresh) retryHeaders.set('Authorization', `Bearer ${fresh}`)
+    const retry = await fetch(url, { ...init, headers: retryHeaders })
+    if (retry.status !== 401) return retry
+    endSession()
+    return retry
+  }
+  endSession()
   return res
 }
 
@@ -718,8 +885,8 @@ export async function getAuthorizationUrl(): Promise<string | null> {
 }
 
 /**
- * Exchange the PKCE authorization code for tokens and store the session
- * tokens (nc.accessToken / nc.refreshToken).
+ * Exchange the PKCE authorization code and store the session
+ * the access token (nc.accessToken); the refresh credential is an HttpOnly cookie.
  *
  * The code→token exchange happens **server-side** at
  * `POST /api/auth/sso/token` (the "backend token route" per AC-S01): the
@@ -729,7 +896,7 @@ export async function getAuthorizationUrl(): Promise<string | null> {
  *
  * Steps: validate the round-tripped `state` against the stored
  * `nc.pkce.state`, consume the code verifier, POST the exchange to the
- * backend, store the returned access + refresh tokens in sessionStorage.
+ * backend, store the returned access token in sessionStorage.
  * Rejects with ApiError on a state mismatch, a missing verifier, a
  * failed token exchange, or a response without an access token.
  */
@@ -738,7 +905,6 @@ export async function exchangeAuthCode(
   state: string | null,
 ): Promise<{
   accessToken: string
-  refreshToken: string | null
   identity: SsoIdentity | null
 }> {
   const expectedState = getPkceState()
@@ -763,14 +929,21 @@ export async function exchangeAuthCode(
   if (!res.ok) throw await apiErrorFromResponse(res)
   const body = (await res.json()) as {
     access_token?: string
-    refresh_token?: string | null
+    expires_at?: string | null
+    expires_in?: number | null
     identity?: SsoIdentity | null
   }
   if (!body.access_token) {
     clearSessionTokens()
     throw new ApiError(res.status, 'SSO token exchange returned no access_token')
   }
-  setAccessToken(body.access_token, body.refresh_token ?? null)
+  // The refresh credential is the HttpOnly nc_rt cookie set by this response;
+  // the body carries only the access token, its expiry and the identity.
+  setAccessToken(
+    body.access_token,
+    body.expires_at ??
+      (typeof body.expires_in === 'number' ? Date.now() + body.expires_in * 1000 : null),
+  )
 
   // Persist the server-resolved identity (verified id_token).  The realm
   // access token has no display claims, so this is what the UI shows.
@@ -778,7 +951,6 @@ export async function exchangeAuthCode(
   setSsoIdentity(identity)
   return {
     accessToken: body.access_token,
-    refreshToken: body.refresh_token ?? null,
     identity,
   }
 }

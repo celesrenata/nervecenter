@@ -91,6 +91,12 @@ export default async function main() {
         // No default password exists (AC-S03); this one is test-only.
         NERVE_LOCAL_ADMIN: '1',
         NERVE_LOCAL_ADMIN_PASSWORD: 'e2e-breakglass',
+        // NS-ADR-123: the browser talks to the backend over plain http
+        // (localhost), so the refresh cookie must not be Secure-only here.
+        NERVE_COOKIE_SECURE: '0',
+        // A rotated refresh token may be replayed for this long (concurrent
+        // tabs); the session-refresh spec replays one after it has passed.
+        NERVE_REFRESH_REUSE_GRACE_SECONDS: '1',
       },
       stdio: 'ignore',
       detached: true,

@@ -119,6 +119,10 @@ function assertClean({
  * NERVE_LOCAL_ADMIN / NERVE_LOCAL_ADMIN_PASSWORD) and seed it into the
  * sessionStorage key the transport actually reads.
  */
+/** The token seeded by the latest seedAuth, for direct `page.request` calls
+ * (the API now requires a signed-in person on every non-public route). */
+let authHeaders: Record<string, string> = {}
+
 async function seedAuth(page: import('@playwright/test').Page) {
   const login = await fetch('http://127.0.0.1:8000/api/auth/login', {
     method: 'POST',
@@ -132,6 +136,7 @@ async function seedAuth(page: import('@playwright/test').Page) {
   await page.addInitScript((token: string) => {
     sessionStorage.setItem('nc.accessToken', token)
   }, access_token)
+  authHeaders = { Authorization: `Bearer ${access_token}` }
 }
 
 test('PF-1 boot gate: Now + Today render honest empty states (no demo records)', async ({
@@ -303,6 +308,7 @@ test('PF-4 calendar: ingest renders in Upcoming (in-memory surface)', async ({
     const end = new Date(start.getTime() + 60 * 60 * 1000)
     const iso = (d: Date) => d.toISOString().replace(/\.\d{3}Z$/, 'Z')
     const ingestRes = await page.request.post('/api/calendar/ingest', {
+      headers: authHeaders,
       data: {
         event_id: EVENT_ID,
         title: EVENT_TITLE,
@@ -349,6 +355,7 @@ test('PF-5 bills: degraded badge + empty states + honest confirm-paid wire', asy
     // configured." for a real row — web/src/views/BillsView.tsx:401-411).
     const confirmRes = await page.request.post(
       '/api/bills/e2e-accept-degraded/confirm-paid',
+      { headers: authHeaders },
     )
     expect(confirmRes.status()).toBe(202)
     const confirm = await confirmRes.json()
@@ -377,7 +384,7 @@ test('PF-6 durable-only Today divergence + Low Energy Mode degradation', async (
     // tests/backend/test_today.py::test_coming_up_calendar_window /
     // test_needs_you_ordering_importance_then_deadline pin the durable
     // behavior; the e2e asserts the honest degraded surface.
-    const today = await page.request.get('/api/today')
+    const today = await page.request.get('/api/today', { headers: authHeaders })
     expect(today.status()).toBe(200)
     const body = await today.json()
     expect(body.needs_you).toEqual([])

@@ -30,3 +30,30 @@ export async function seedBreakGlassSession(page: import('@playwright/test').Pag
   }, access_token)
   return access_token
 }
+
+/**
+ * Sign in through the real break-glass login *from the page*, so the browser
+ * context also receives the HttpOnly `nc_rt` refresh cookie (NS-ADR-123), and
+ * seed the access token into sessionStorage for every later navigation.
+ * Returns the access token and its expiry.
+ */
+export async function signInWithRefreshCookie(page: import('@playwright/test').Page) {
+  await page.goto('/login', { waitUntil: 'domcontentloaded' })
+  const session = await page.evaluate(async () => {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: 'local-admin', password: 'e2e-breakglass' }),
+    })
+    const body = (await res.json()) as { access_token: string; expires_at: string }
+    return { status: res.status, access_token: body.access_token, expires_at: body.expires_at }
+  })
+  if (session.status !== 200) {
+    throw new Error(`signInWithRefreshCookie: login failed (HTTP ${session.status})`)
+  }
+  await page.addInitScript((token: string) => {
+    if (!sessionStorage.getItem('nc.accessToken')) sessionStorage.setItem('nc.accessToken', token)
+  }, session.access_token)
+  return session
+}
