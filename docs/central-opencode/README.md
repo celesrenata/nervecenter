@@ -24,8 +24,9 @@ central executor) and by the owner's Macs with `opencode --server`.
 1. Secrets (values never in files or chat):
    ```bash
    kubectl -n opencode create secret generic opencode-server \
-     --from-literal=password="$(openssl rand -hex 32)" \
-     --from-literal=omniroute_api_key='<OmniRoute key>'
+     --from-literal=password="$(openssl rand -hex 32)"
+   # runmefirst.sh adds omniroute_api_key itself, copied (never printed) from
+   # NerveCenter's working OmniRoute client key in nervecenter-env.
    # optional, read-only token for private repos:
    kubectl -n opencode create secret generic opencode-git --from-file=credentials=./git-credentials
    # NerveCenter side, same password:
