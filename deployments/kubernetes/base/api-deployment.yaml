@@ -192,6 +192,9 @@ spec:
             # (NS-ADR-083), and the opencode NetworkPolicy admits only api pods
             # from this namespace plus the WireGuard subnet. Without the optional
             # Secret the executor stays off and central handoffs stay queued.
+            # Short-lived kubeconfig / SSH key files live only in this memory volume (NS-ADR-120).
+            - name: NERVE_INFRA_TMP
+              value: /run/nerve-infra
             - name: NERVE_OPENCODE_URL
               value: http://opencode.opencode.svc.cluster.local:4096
             - name: NERVE_OPENCODE_PASSWORD
@@ -231,6 +234,8 @@ spec:
             # Static inspector socket (NS-ADR-086).
             - name: inspector-run
               mountPath: /run/inspector
+            - name: infra-tmp
+              mountPath: /run/nerve-infra
           securityContext:
             runAsNonRoot: true
             runAsUser: 10001
@@ -260,5 +265,9 @@ spec:
           emptyDir:
             medium: Memory
             sizeLimit: 1Mi
+        - name: infra-tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 16Mi
       imagePullSecrets:
         - name: harbor-pull

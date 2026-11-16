@@ -229,7 +229,8 @@ def test_tools_endpoints() -> None:
     app.include_router(runner_ep.router)
     with TestClient(app) as client:
         body = client.get("/api/agents/tools").json()
-        assert set(body["servers"]) == {"sequential-thinking", "fetch", "memory", "omniroute"}
+        assert set(body["servers"]) == {
+            "sequential-thinking", "fetch", "memory", "omniroute", "infra"}
         assert body["servers"]["fetch"]["tools"] == ["fetch"]
         assert (
             client.post(

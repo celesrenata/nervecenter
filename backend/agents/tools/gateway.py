@@ -58,6 +58,8 @@ class ToolGateway:
         self._clients: dict[str, McpClient] = {}
         self._omni_client_key: str | None = None
         self._fetch_guard = fetch_guard or FetchGuard()
+        #: InfraService (NS-ADR-120); set by the runner/app wiring, None = unavailable.
+        self.infra: Any = None
 
     @property
     def _omni_key(self) -> str | None:
@@ -73,9 +75,11 @@ class ToolGateway:
 
     @property
     def configured(self) -> bool:
-        return self.hub_configured or self.omniroute_configured
+        return self.hub_configured or self.omniroute_configured or self.infra is not None
 
     def available(self, server: str) -> bool:
+        if server == policy.INFRA_SERVER:
+            return self.infra is not None
         return (
             self.omniroute_configured if server == policy.OMNIROUTE_SERVER else self.hub_configured
         )
@@ -85,7 +89,7 @@ class ToolGateway:
         return {
             "servers": {
                 server: {"tools": tools, "available": self.available(server)}
-                for server, tools in policy.listing().items()
+                for server, tools in policy.listing(include_infra=True).items()
             },
             "memory_rule": "refused unless a call is marked non-sensitive by the owner API "
             "or code, the agent is not in a sensitive class, and arguments carry no personal data",
@@ -139,6 +143,12 @@ class ToolGateway:
         reason = policy.check(agent, server, tool, args, non_sensitive=non_sensitive)
         if reason is None and not self.available(server):
             reason = "unconfigured"
+        if server == policy.INFRA_SERVER:
+            if reason is not None:
+                log.info("agent_tools.denied", agent_id=agent_id, server=server, tool=tool,
+                         reason=reason)
+                return {"ok": False, "denied_reason": reason}
+            return await self._infra_call(agent, agent_id, tool, args)
         is_fetch = server == "fetch" and tool == "fetch"
         host = host_of(str(args.get("url", ""))) if is_fetch and isinstance(args, dict) else "-"
         if reason is None and is_fetch:
@@ -168,6 +178,33 @@ class ToolGateway:
             self._audit_fetch(agent_id, host, "allowed", "ok")
         log.info("agent_tools.call", agent_id=agent_id, server=server, tool=tool)
         return {"ok": True, "result": result}
+
+    async def _infra_call(
+        self, agent: Any, agent_id: str, tool: str, args: dict[str, Any]
+    ) -> dict[str, Any]:
+        from backend.infra.service import InfraInputError
+
+        svc = self.infra
+        if tool == "connectors":
+            conns = await svc.list_connectors()
+            keep = ("name", "kind", "server", "namespace", "host", "port", "user",
+                    "host_key_status", "secret_set")
+            return {"ok": True, "result": [{k: c.get(k) for k in keep if k in c} for c in conns]}
+        if tool == "propose_plan":
+            try:
+                plan = await svc.propose(agent_id, args)
+            except InfraInputError as exc:
+                return {"ok": False, "denied_reason": f"plan_invalid: {exc}"[:200]}
+            log.info("agent_tools.call", agent_id=agent_id, server="infra", tool=tool)
+            return {"ok": True, "result": {"plan_id": plan["id"], "status": plan["status"],
+                                           "note": "Waiting for the owner's approval."}}
+        step = {k: args.get(k) for k in ("args", "command", "params")}
+        outcome = await svc.run_read(str(args.get("connector") or ""), step)
+        log.info("agent_tools.call", agent_id=agent_id, server="infra", tool=tool,
+                 ok=bool(outcome.get("ok")))
+        if "denied_reason" in outcome:
+            return outcome
+        return {"ok": True, "result": outcome}
 
     @staticmethod
     def _audit_fetch(agent_id: str, host: str, outcome: str, reason: str) -> None:

@@ -43,6 +43,7 @@ from .obligations import (
     OBLIGATION_TYPES,
     ObligationRow,
 )
+from .infra import InfraConnector, InfraPlan
 from .omniroute_keys import OmniRouteKeyAudit
 from .openai_usage import EscalationGrant, OpenAICall
 from .planned_changes import PlannedChange
@@ -74,6 +75,8 @@ __all__ = [
     "AgentSchedule",
     "AgentRun",
     "AgentOverride",
+    "InfraConnector",
+    "InfraPlan",
     "OmniRouteKeyAudit",
     "HealthSampleRow",
     "DebtAccountRow",

@@ -89,6 +89,13 @@ def build_runner(engine: Any, app: Any = None) -> AgentRunner:
 
     transport_for_health = raw_transport
     gateway = ToolGateway()
+    if app is not None:
+        try:
+            from backend.infra.service import get_service as infra_service
+
+            gateway.infra = infra_service(app)
+        except Exception:  # noqa: BLE001 - infra tools are optional
+            gateway.infra = None
 
     async def health() -> bool | None:
         primary = await route_health()

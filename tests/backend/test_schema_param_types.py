@@ -128,6 +128,8 @@ TABLES_WITH_ID = frozenset(
         "coding_handoffs",
         "openai_calls",
         "omniroute_key_audit",
+        "infra_connectors",
+        "infra_plans",
         "escalation_grants",
         "statement_imports",
         "ledger_entries",

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from backend.agents.tools import policy
+from backend.infra.policy import SSH_READ_COMMANDS
 
 MAX_ROUNDS = 3
 MAX_CALLS_PER_ROUND = 3
@@ -51,19 +52,40 @@ def parse_calls(text: str) -> list[ToolCall]:
     return calls
 
 
-def instructions() -> str:
+INFRA_HELP = (
+    "Infrastructure (read-only; changes only through an approved plan):\n"
+    '- TOOL_CALL {"server": "infra", "tool": "connectors", "args": {}} lists clusters/hosts.\n'
+    '- TOOL_CALL {"server": "infra", "tool": "kubectl", "args": {"connector": "<name>", '
+    '"args": ["get", "pods", "-A"]}} (get/describe/logs/top/events/api-resources only; '
+    "Secrets are never readable).\n"
+    '- TOOL_CALL {"server": "infra", "tool": "ssh", "args": {"connector": "<name>", '
+    '"command": "<menu entry>", "params": {}}} with a menu entry from: '
+    + ", ".join(sorted(SSH_READ_COMMANDS))
+    + " (service_status/journal take params.unit, journal/kernel_log params.lines).\n"
+    '- To change anything: TOOL_CALL {"server": "infra", "tool": "propose_plan", "args": '
+    '{"title": "...", "summary": "why and what", "steps": [{"connector": "<name>", '
+    '"args": ["rollout", "restart", "deploy/x", "-n", "ns"], "purpose": "..."}, '
+    '{"connector": "<ssh name>", "command": "sudo systemctl restart foo", "purpose": "..."}], '
+    '"verify": [{"connector": "<name>", "args": ["get", "pods", "-n", "ns"]}], '
+    '"rollback": "how to undo"}}. Nothing runs until the owner approves it.'
+)
+
+
+def instructions(agent: Any = None) -> str:
     """The prompt block that teaches the protocol and lists the allowlist."""
+    servers = policy.listing(agent)
     listing = "\n".join(
-        f"- {server}: {', '.join(tools)}"
-        for server, tools in policy.listing().items()
-        if server != "memory"
+        f"- {server}: {', '.join(tools)}" for server, tools in servers.items() if server != "memory"
     )
-    return (
+    text = (
         "Tools are available. To use one, write a line exactly like\n"
         'TOOL_CALL {"server": "fetch", "tool": "fetch", "args": {"url": "https://..."}}\n'
         f"and stop; results come back as TOOL_RESULT lines (at most {MAX_ROUNDS} rounds). "
         "Never put personal data in tool arguments. Allowed servers and tools:\n" + listing
     )
+    if policy.INFRA_SERVER in servers:
+        text += "\n" + INFRA_HELP
+    return text
 
 
 def format_result(call: ToolCall, outcome: dict[str, Any]) -> str:
@@ -88,7 +110,7 @@ async def run_with_tools(
     """
     if gateway is None or not gateway.configured:
         return await infer_once(prompt)
-    current = prompt + "\n\n" + instructions()
+    current = prompt + "\n\n" + instructions(agent)
     result = await infer_once(current)
     totals = {k: int(result.get(k) or 0) for k in ("input_tokens", "output_tokens")}
     latency = float(result.get("e2e_latency_ms") or 0)

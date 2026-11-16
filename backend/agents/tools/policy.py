@@ -58,6 +58,25 @@ OMNIROUTE_TOOLS = frozenset(
     }
 )
 
+#: Infrastructure tools (NS-ADR-120): read-only kubectl/ssh plus plan proposals.
+INFRA_SERVER = "infra"
+INFRA_TOOLS = frozenset({"connectors", "kubectl", "ssh", "propose_plan"})
+#: Agent types that get the infra tools by default; others need "infra" in their tools.
+INFRA_AGENT_TYPES = frozenset(
+    {"architecture_analyst", "infrastructure_inspector", "runtime_inspector",
+     "log_investigator", "incident_correlator"}
+)
+
+
+def infra_allowed(agent: Any) -> bool:
+    if agent is None:
+        return False
+    if str(getattr(agent, "type", "") or "") in INFRA_AGENT_TYPES:
+        return True
+    tools = getattr(agent, "tools", None) or []
+    return isinstance(tools, (list, tuple, set)) and "infra" in tools
+
+
 #: Agent classes that handle personal data: they never write to shared memory.
 SENSITIVE_CLASSES = frozenset(
     {"finance", "mental_health", "health", "wellness", "bills", "messages", "mail"}
@@ -86,6 +105,8 @@ def has_personal_data(args: Any) -> bool:
 
 
 def is_allowed(server: str, tool: str) -> bool:
+    if server == INFRA_SERVER:
+        return tool in INFRA_TOOLS
     if server == OMNIROUTE_SERVER:
         return tool in OMNIROUTE_TOOLS
     return tool in HUB_SERVERS.get(server, frozenset())
@@ -95,8 +116,10 @@ def check(
     agent: Any, server: str, tool: str, args: dict[str, Any], *, non_sensitive: bool = False
 ) -> str | None:
     """A refusal reason code, or ``None`` when the call is allowed."""
-    if server != OMNIROUTE_SERVER and server not in HUB_SERVERS:
+    if server not in (OMNIROUTE_SERVER, INFRA_SERVER) and server not in HUB_SERVERS:
         return "unknown_server"
+    if server == INFRA_SERVER and not infra_allowed(agent):
+        return "infra_not_granted"
     if not is_allowed(server, tool):
         return "tool_not_allowed"
     if not isinstance(args, dict):
@@ -113,8 +136,10 @@ def check(
     return None
 
 
-def listing() -> dict[str, list[str]]:
+def listing(agent: Any = None, *, include_infra: bool = False) -> dict[str, list[str]]:
     """The allowlist as plain data (for the tools endpoint and prompts)."""
     out = {name: sorted(tools) for name, tools in HUB_SERVERS.items()}
     out[OMNIROUTE_SERVER] = sorted(OMNIROUTE_TOOLS)
+    if include_infra or infra_allowed(agent):
+        out[INFRA_SERVER] = sorted(INFRA_TOOLS)
     return out

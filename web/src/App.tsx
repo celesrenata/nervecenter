@@ -36,6 +36,7 @@ import { TaskDagView } from './views/TaskDagView'
 import { AgentsView } from './views/AgentsView'
 import { InferenceView } from './views/InferenceView'
 import { ProvidersView } from './views/ProvidersView'
+import { InfrastructureView } from './views/InfrastructureView'
 import { IncidentsView } from './views/IncidentsView'
 import { DecisionsView } from './views/DecisionsView'
 import { AskView } from './views/AskView'
@@ -111,6 +112,7 @@ function App() {
             <Route path="/agents" element={<AgentsView />} />
             <Route path="/inference" element={<InferenceView />} />
             <Route path="/providers" element={<ProvidersView />} />
+            <Route path="/infrastructure" element={<InfrastructureView />} />
             <Route path="/incidents" element={<IncidentsView />} />
             <Route path="/decisions" element={<DecisionsView />} />
             <Route path="/ask" element={<AskView />} />

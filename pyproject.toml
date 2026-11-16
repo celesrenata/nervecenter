@@ -38,6 +38,7 @@ dependencies = [
     "prometheus-client",
     "tabulate>=0.9",
     "tenacity>=9.0",
+    "bcrypt>=4.1",
 ]
 
 [project.optional-dependencies]
