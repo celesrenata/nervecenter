@@ -182,7 +182,10 @@ def _google_items_response(
 
 
 def _google_calendar_list_response() -> HttpResponse:
-    body = {"items": [{"id": "primary@group.calendar.google.com", "type": "primary"}]}
+    body = {"items": [
+        {"id": "other@group.calendar.google.com"},
+        {"id": "primary@group.calendar.google.com", "primary": True},
+    ]}
     return HttpResponse(200, {}, json.dumps(body).encode("utf-8"))
 
 
@@ -543,12 +546,52 @@ class TestSyncRunner:
         assert any(r.ical_uid == "google-uid-1" for r in rows)
         assert service.get_event(f"{acct.id}:google-uid-1") is not None
 
-        # The sync token was persisted on the durable row.
+        # The primary calendar was subscribed; the window fetch expands
+        # recurrences and never sends a sync token (Google rejects syncToken
+        # with timeMin/timeMax/singleEvents).
         acct2 = await registry.calendar.get_account(acct.id)
         assert acct2.operational_status == "healthy"
-        assert acct2.sync_state["sync_tokens"] == {"primary@group.calendar.google.com": "tok-next"}
+        assert acct2.sync_state["last_calendars"] == ["primary@group.calendar.google.com"]
+        event_calls = [c for c in transport.calls if "/events" in c[1]]
+        assert event_calls and all(c[3]["singleEvents"] == "true" for c in event_calls)
+        assert all("syncToken" not in c[3] for c in event_calls)
+        await runner.sync_account(acct.id)  # a second pass still sends no token
+        assert all("syncToken" not in c[3] for c in transport.calls if "/events" in c[1])
 
         await engine.dispose()
+
+    async def test_google_follows_pages_and_marks_cancelled(self) -> None:
+        from backend.calendar.providers import GoogleCalendarProvider
+
+        def _ev(uid: str, status: str = "confirmed") -> dict[str, Any]:
+            return {"id": uid, "summary": uid, "status": status,
+                    "start": {"dateTime": "2026-11-20T17:00:00Z"},
+                    "end": {"dateTime": "2026-11-20T18:00:00Z"}}
+
+        class Paged(FakeTransport):
+            async def request(self, method, url, *, headers=None, params=None, body=None):
+                if "/events" in url:
+                    self.calls.append((method, url, dict(headers or {}), params))
+                    page = {"items": [_ev("a"), _ev("b")], "nextPageToken": "p2"}
+                    if (params or {}).get("pageToken") == "p2":
+                        page = {"items": [_ev("c", "cancelled")]}
+                    return HttpResponse(200, {}, json.dumps(page).encode("utf-8"))
+                return await super().request(method, url, headers=headers, params=params, body=body)
+
+        transport = Paged({
+            ("POST", "https://oauth2.googleapis.com/token"): _token_response(),
+            ("GET", "https://www.googleapis.com/calendar/v3/users/me/calendarList"):
+                _google_calendar_list_response(),
+        })
+        provider = GoogleCalendarProvider(transport, secret="rt", config={"client_id": "c"})
+        result = await provider.sync(
+            window_start=datetime(2026, 11, 14, tzinfo=UTC),
+            window_end=datetime(2026, 12, 14, tzinfo=UTC),
+        )
+        assert result.calendars == ["primary@group.calendar.google.com"]
+        assert [e.ical_uid for e in result.events] == ["a", "b", "c"]
+        assert [e.deleted for e in result.events] == [False, False, True]
+        assert len([c for c in transport.calls if "/events" in c[1]]) == 2
 
     async def test_caldav_sync_parses_ics_and_persists_etag(self, tmp_path: pathlib.Path) -> None:
         engine, registry, service = await self._harness(tmp_path)
@@ -828,6 +871,23 @@ async def _make_cal_wired_app(
 
 class TestCalendarEndpointsWired:
     """With the durable plane bound, the account/conflict routes behave."""
+
+    async def test_upcoming_list_shows_durable_events_after_restart(
+        self, tmp_path: pathlib.Path
+    ) -> None:
+        app, engine, registry, service = await _make_cal_wired_app(tmp_path)
+        acct = await registry.calendar.create_account(provider="google")
+        soon = datetime.now(UTC) + timedelta(days=2)
+        await registry.calendar.upsert_event(
+            account_id=acct.id, ical_uid="durable-1", title="Dentist",
+            start=soon, end=soon + timedelta(hours=1), all_day=False,
+        )
+        # The in-memory service starts empty (as after an API restart).
+        with TestClient(app) as client:
+            res = client.get("/api/calendar")
+            assert res.status_code == 200
+            assert [e["title"] for e in res.json()["data"]] == ["Dentist"]
+        await engine.dispose()
 
     async def test_account_crud_and_vault_secret(
         self, tmp_path: pathlib.Path

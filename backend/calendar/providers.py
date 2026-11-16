@@ -34,6 +34,7 @@ configured timezone. Times are never stored naive.
 from __future__ import annotations
 
 import re
+import urllib.parse
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta, tzinfo
 from typing import Any, Protocol
@@ -43,6 +44,8 @@ from zoneinfo import ZoneInfo
 #: leading horizon so "availability today" is answered, not just "tomorrow").
 DEFAULT_BACK_WINDOW = timedelta(days=14)
 DEFAULT_FORE_WINDOW = timedelta(days=60)
+#: Page cap per calendar per pass (250 events a page).
+MAX_EVENT_PAGES = 20
 
 
 # ---------------------------------------------------------------------------
@@ -284,8 +287,9 @@ class GoogleCalendarProvider:
             return list(configured)
         data = await self._get_json(GoogleCalendarProvider.CALENDARS_URL, None)
         items = data.get("items", [])
-        # Default to the primary calendar when none are configured.
-        primary = next((c["id"] for c in items if c.get("type") == "primary"), None)
+        # Default to the primary calendar when none are configured. Google's
+        # calendarList marks it with ``"primary": true``.
+        primary = next((c["id"] for c in items if c.get("primary") is True), None)
         if primary is None:
             return []
         return [primary]
@@ -297,23 +301,30 @@ class GoogleCalendarProvider:
         result = SyncResult()
         calendars = await self.list_calendars()
         result.calendars = list(calendars)
-        tokens = self._sync_state.get("sync_tokens", {})
+        # Window fetch every pass. Google rejects ``syncToken`` combined with
+        # timeMin/timeMax/singleEvents, so no sync token is sent; recurring
+        # events are expanded into instances (``singleEvents``) so the
+        # upcoming list shows each occurrence, and cancelled instances come
+        # back (``showDeleted``) so they are marked deleted.
         for cal in calendars:
-            params = {
-                "timeMin": window_start.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-                "timeMax": window_end.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-                "maxResults": "500",
-            }
-            token = tokens.get(cal)
-            if token:
-                params["syncToken"] = token
-            url = self.EVENTS_URL_TMPL.format(cal=cal)
-            data = await self._get_json(url, params)
-            for item in data.get("items", []):
-                result.events.append(self._normalize(item))
-            next_token = data.get("nextSyncToken")
-            if next_token:
-                result.new_sync_tokens[cal] = next_token
+            url = self.EVENTS_URL_TMPL.format(cal=urllib.parse.quote(cal, safe="@."))
+            page_token: str | None = None
+            for _ in range(MAX_EVENT_PAGES):
+                params = {
+                    "timeMin": window_start.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                    "timeMax": window_end.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                    "maxResults": "250",
+                    "singleEvents": "true",
+                    "showDeleted": "true",
+                }
+                if page_token:
+                    params["pageToken"] = page_token
+                data = await self._get_json(url, params)
+                for item in data.get("items", []):
+                    result.events.append(self._normalize(item))
+                page_token = data.get("nextPageToken")
+                if not page_token:
+                    break
         return result
 
     # -- normalization -------------------------------------------------------

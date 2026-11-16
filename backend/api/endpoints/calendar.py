@@ -129,6 +129,16 @@ async def list_events(
     svc = _service(request)
     ws = _parse(start, "start")
     we = _parse(end, "end")
+    registry = _registry(request)
+    if registry is not None:
+        # The in-memory plane is empty after a restart; replay the durable
+        # rows for the window first (idempotent) so synced events show.
+        lo = ws or datetime.now(UTC)
+        rows = await registry.calendar.list_events(
+            start=lo, end=we or lo + timedelta(days=7), include_deleted=False, limit=500
+        )
+        for row in rows:
+            svc.ingest(_row_payload(row))
     events = svc.list_events(start=ws, end=we, limit=limit)
     return ListResponse(
         data=[e.model_dump(mode="json") for e in events],
