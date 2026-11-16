@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react'
 import { contactsApi, ApiError } from '../api/client'
+import { ContactAvatar } from '../components/ContactAvatar'
 
 /**
  * ContactsView — the Contacts plane (prompt2 Phase P4).
@@ -163,6 +164,7 @@ export function ContactsView() {
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
+                    <ContactAvatar name={c.display_name} personId={c.person_id} size={36} />
                     <span className="font-medium text-gray-800 dark:text-gray-100">
                       {c.display_name}
                     </span>

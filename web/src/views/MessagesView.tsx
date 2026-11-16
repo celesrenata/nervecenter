@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, type FormEvent } from 'react'
 import { messagesApi, ApiError } from '../api/client'
+import { ContactAvatar } from '../components/ContactAvatar'
 
 /**
  * MessagesView — the Messages plane (prompt2 Phase P1).
@@ -196,9 +197,10 @@ export function MessagesView() {
                       }`}
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-medium text-gray-800 dark:text-gray-100">
-                          {who}
-                          <span className="ml-2 text-xs font-normal text-gray-400">
+                        <span className="flex min-w-0 items-center gap-2 font-medium text-gray-800 dark:text-gray-100">
+                          <ContactAvatar name={who} handle={c.peer_identifier} />
+                          <span className="truncate">{who}</span>
+                          <span className="text-xs font-normal text-gray-400">
                             {c.channel}
                           </span>
                         </span>

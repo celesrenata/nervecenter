@@ -1,15 +1,16 @@
 # Public route for the Mac Messages relay (NS-ADR-092, owner: "permanent route: sure").
 #
 # The main Ingress sends everything to oauth2-proxy (SSO). A launchd agent on the
-# owner's Mac cannot do an interactive SSO login, so ONE path bypasses SSO:
+# owner's Mac cannot do an interactive SSO login, so TWO exact paths bypass SSO:
 #
 #     POST /api/relay/messages      (pathType Exact: nothing else matches)
+#     POST /api/relay/contacts      (NS-ADR-097, owner: "contacts: ok"; same rules)
 #
 # Why that is safe enough:
 #  * The endpoint authenticates every call itself with the paired device's
 #    opaque bearer token (`_require_relay_token`): unknown device, wrong token or
 #    missing header all return one generic 401. It stores nothing before that check.
-#  * It is the ONLY unauthenticated path. `/api/relay/pair`, `/register`,
+#  * Both endpoints authenticate the same way; they are the ONLY unauthenticated paths. `/api/relay/pair`, `/register`,
 #    `/health`, `/import-request`, the legacy `/api/messages/ingest` (which has NO
 #    auth) and everything else stay behind SSO (verified after deploy).
 #  * The body is capped and requests are rate limited at the edge (below).
@@ -59,6 +60,13 @@ spec:
       http:
         paths:
           - path: /api/relay/messages
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+          - path: /api/relay/contacts
             pathType: Exact
             backend:
               service:

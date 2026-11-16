@@ -46,6 +46,7 @@ from backend.api.endpoints import (
     bills,
     calendar,
     communications,
+    contact_photos,
     conversations,
     connections,
     contacts,
@@ -113,6 +114,7 @@ ALL_ROUTERS = (
     waiting_on.router,
     calendar.router,
     contacts.router,
+    contact_photos.router,
     people.router,
     communications.router,
     conversations.router,
@@ -245,6 +247,21 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                     log.info("api.messages_rehydrated", **counts)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.messages_rehydrate_failed", error=str(exc))
+            # Contact names into Messages + the Contacts screen (NS-ADR-097).
+            try:
+                from backend.contacts.durable import hydrate_views
+
+                if getattr(app.state, "contacts_service", None) is None:
+                    app.state.contacts_service = get_contacts_service()
+                counts = await hydrate_views(
+                    getattr(app.state, "repository_registry", None),
+                    getattr(app.state, "messages_service", None),
+                    app.state.contacts_service,
+                )
+                if counts["people"]:
+                    log.info("api.contacts_hydrated", **counts)
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.contacts_hydrate_failed", error=str(exc))
             # The Email screen reads an in-memory service; fill it from stored
             # mail (security verdicts respected, see backend.email.durable_feed).
             try:

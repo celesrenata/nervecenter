@@ -227,6 +227,69 @@ async def relay_messages(
     return {**result, "mirrored": mirrored}
 
 
+class RelayContactPhone(BaseModel):
+    number: str = Field(max_length=64)
+    label: str | None = Field(default=None, max_length=64)
+
+
+class RelayContactEmail(BaseModel):
+    address: str = Field(max_length=320)
+    label: str | None = Field(default=None, max_length=64)
+
+
+class RelayContact(BaseModel):
+    uid: str = Field(min_length=1, max_length=128)
+    display_name: str = Field(min_length=1, max_length=256)
+    phones: list[RelayContactPhone] = Field(default_factory=list, max_length=50)
+    emails: list[RelayContactEmail] = Field(default_factory=list, max_length=50)
+    #: Base64 thumbnail (<= 96 KiB decoded); JPEG or PNG only.
+    photo_b64: str | None = Field(default=None, max_length=131_072)
+    photo_type: str | None = Field(default=None, max_length=32)
+
+
+class ContactsRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=128)
+    snapshot: str | None = Field(default=None, max_length=128)
+    chunk: int | None = None
+    chunks: int | None = None
+    contacts: list[RelayContact] = Field(max_length=500)
+
+
+@router.post("/contacts")
+async def relay_contacts(
+    request: Request,
+    body: ContactsRequest,
+    credentials: HTTPAuthorizationCredentials | None = Security(_bearer),  # noqa: B008
+) -> dict[str, Any]:
+    """Mac Contacts snapshot chunk (NS-ADR-097), device-token authenticated.
+
+    Merges the contacts into people (names, phones, emails, thumbnail), then
+    pushes the names into the live Messages plane and the Contacts screen.
+    Returns counts only.
+    """
+    from backend.contacts import get_contacts_service
+    from backend.contacts.durable import apply_contacts, hydrate_views
+    from backend.ingest.supervisor import _object_store_from_env
+
+    plane = _plane(request)
+    if plane is None or not plane.registry_configured:
+        return _degraded_write(request, "durable storage is not configured")
+    await _require_relay_token(plane, body.device_id, credentials)
+    registry = getattr(request.app.state, "repository_registry", None)
+    if registry is None:
+        return _degraded_write(request, "durable storage is not configured")
+    counts = await apply_contacts(
+        registry, _object_store_from_env(), [c.model_dump() for c in body.contacts]
+    )
+    state = request.app.state
+    if getattr(state, "contacts_service", None) is None:
+        state.contacts_service = get_contacts_service()
+    views = await hydrate_views(
+        registry, getattr(state, "messages_service", None), state.contacts_service
+    )
+    return {"accepted": True, "executed": True, **counts, "hydrated": views["people"]}
+
+
 @router.get("/health")
 async def relay_health(request: Request) -> ListResponse:
     """Per relay device: auth/operational status, last seen, backlog count."""

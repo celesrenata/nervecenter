@@ -57,6 +57,7 @@ let kLogsDir = "~/Library/Logs/nervcenter"
 let kLogsOut = "~/Library/Logs/nervcenter/relay.out.log"
 let kLogsErr = "~/Library/Logs/nervcenter/relay.err.log"
 let kIdentityFile = "~/Library/Application Support/NerveCenterRelay/identity.json"
+let kContactsStateFile = "~/Library/Application Support/NerveCenterRelay/contacts-snapshot.sha256"
 let kImportCursorFile = "~/Library/Application Support/NerveCenterRelay/import-cursor.json"
 
 // -- identity + credential helpers ---------------------------------------------
@@ -441,6 +442,12 @@ case "run":
                 log("channel \(channel.rawValue): outbox unavailable (\(error)) — channel skipped this start")
             }
         }
+        // Mac Contacts (NS-ADR-097): a changed snapshot goes to
+        // POST /api/relay/contacts, checked at most every 10 minutes.
+        let contactsSync: ContactsSync? = config.relayDeviceID == nil ? nil : ContactsSync(
+            config: config,
+            stateFile: RelayConfig.expand(kContactsStateFile))
+        var lastContactsCheck: Date? = nil
         log("relay starting: mode=\(config.relayDeviceID == nil ? "legacy-ingest" : "relay-device") store=\(config.storePath.path) schema=v\(schema) target=\(config.baseURL.absoluteString) interval=\(config.interval)s channels=\(channelEngines.count) \(once ? "mode=once" : "mode=loop")")
         while true {
             do {
@@ -459,6 +466,17 @@ case "run":
                         }
                     } catch {
                         log("[\(plane.channel.rawValue)] cycle error: \(error) — data stays queued (§70)")
+                    }
+                }
+                if let contactsSync,
+                   lastContactsCheck.map({ Date().timeIntervalSince($0) >= 600 }) ?? true {
+                    lastContactsCheck = Date()
+                    do {
+                        let root = RelayConfig.expand("~/Library/Application Support/AddressBook")
+                        let sent = try await contactsSync.syncIfChanged(try ContactsReader.read(root: root))
+                        if sent > 0 { log("[contacts] sent snapshot of \(sent) contacts") }
+                    } catch {
+                        log("[contacts] sync error: \(error) — retrying in 10 minutes")
                     }
                 }
                 if once { break }
