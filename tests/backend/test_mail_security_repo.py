@@ -328,7 +328,7 @@ def test_migration_single_head(tmp_path):
         _alembic_config(f"sqlite:///{tmp_path / 'noop.db'}")
     )
     heads = script.get_heads()
-    assert list(heads) == ["036_infra"], (
+    assert list(heads) == ["037_sessions_pat"], (
         f"expected one head, got {heads}"
     )
 

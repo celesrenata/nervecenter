@@ -115,6 +115,8 @@ TABLES_WITH_ID = frozenset(
         "approvals",
         "auth_devices",
         "auth_sessions",
+        "auth_refresh_sessions",
+        "personal_api_tokens",
         "claims",
         "decisions",
         "health_samples",

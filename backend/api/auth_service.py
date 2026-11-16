@@ -77,12 +77,17 @@ ENV_SSO_JWKS_URI = "NERVE_SSO_JWKS_URI"
 ENV_SSO_TOKEN_ENDPOINT = "NERVE_SSO_TOKEN_ENDPOINT"
 ENV_LOCAL_ADMIN = "NERVE_LOCAL_ADMIN"
 ENV_LOCAL_ADMIN_PASSWORD = "NERVE_LOCAL_ADMIN_PASSWORD"
+ENV_ACCESS_TOKEN_TTL_MINUTES = "NERVE_ACCESS_TOKEN_TTL_MINUTES"
+ENV_SESSION_IDLE_HOURS = "NERVE_SESSION_IDLE_HOURS"
+ENV_SESSION_MAX_DAYS = "NERVE_SESSION_MAX_DAYS"
+ENV_REFRESH_REUSE_GRACE_SECONDS = "NERVE_REFRESH_REUSE_GRACE_SECONDS"
+ENV_COOKIE_SECURE = "NERVE_COOKIE_SECURE"
 
 DEFAULT_SSO_ISSUER = "https://sso.celestium.life/application/o/nervecenter/"
 AUDIENCE = "nervecenter"
 
 #: Token lifetimes.
-ACCESS_TOKEN_TTL = timedelta(minutes=30)
+ACCESS_TOKEN_TTL = timedelta(minutes=60)
 REFRESH_TOKEN_TTL = timedelta(days=7)
 DEVICE_CREDENTIAL_TTL = timedelta(days=30)
 PAIRING_CHALLENGE_TTL = timedelta(minutes=5)
@@ -134,6 +139,47 @@ def _parse_falsy(raw: str | None) -> bool:
     if raw is None:
         return False
     return raw.strip().lower() not in ("", "0", "false", "no", "off")
+
+
+def _env_number(name: str, default: float) -> float:
+    """A positive number from the environment; unset or invalid gives ``default``."""
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+@dataclass(frozen=True)
+class AuthSettings:
+    """Session lifetime settings (NS-ADR-123), all environment-configurable.
+
+    ``access_ttl`` is ``None`` unless ``NERVE_ACCESS_TOKEN_TTL_MINUTES`` is set;
+    the module default :data:`ACCESS_TOKEN_TTL` applies otherwise.
+    """
+
+    access_ttl: timedelta | None = None
+    idle_timeout: timedelta = timedelta(hours=24)
+    absolute_lifetime: timedelta = timedelta(days=30)
+    reuse_grace: timedelta = timedelta(seconds=10)
+    cookie_secure: bool = True
+
+    @classmethod
+    def from_env(cls) -> AuthSettings:
+        access = _env_number(ENV_ACCESS_TOKEN_TTL_MINUTES, 0)
+        raw_secure = os.environ.get(ENV_COOKIE_SECURE)
+        return cls(
+            access_ttl=timedelta(minutes=access) if access else None,
+            idle_timeout=timedelta(hours=_env_number(ENV_SESSION_IDLE_HOURS, 24)),
+            absolute_lifetime=timedelta(days=_env_number(ENV_SESSION_MAX_DAYS, 30)),
+            reuse_grace=timedelta(
+                seconds=_env_number(ENV_REFRESH_REUSE_GRACE_SECONDS, 10)
+            ),
+            cookie_secure=True if raw_secure is None else _parse_falsy(raw_secure),
+        )
 
 
 # ─── JWKS / OIDC discovery ────────────────────────────────────────────────────
@@ -249,6 +295,8 @@ class AuthContext:
     #: Optional explicit overrides for endpoint discovery.
     jwks_uri_override: str = ""
     token_endpoint_override: str = ""
+    #: Session lifetimes and cookie policy (NS-ADR-123).
+    settings: AuthSettings = field(default_factory=AuthSettings)
 
     _jwks: JwksProvider | None = field(default=None, repr=False)
 
@@ -277,6 +325,7 @@ class AuthContext:
             client_secret=os.environ.get(ENV_SSO_CLIENT_SECRET, "").strip(),
             jwks_uri_override=os.environ.get(ENV_SSO_JWKS_URI, "").strip(),
             token_endpoint_override=os.environ.get(ENV_SSO_TOKEN_ENDPOINT, "").strip(),
+            settings=AuthSettings.from_env(),
         )
 
     @property
@@ -506,11 +555,13 @@ class AuthContext:
         roles: list[str] | None = None,
         *,
         device_id: str | None = None,
+        extra: dict[str, Any] | None = None,
     ) -> tuple[str, datetime]:
         """Mint an access token.  Returns ``(token, expires_at)``."""
         token, exp, _ = self._mint(
-            sub=sub, typ=TYP_ACCESS, roles=list(roles or []), ttl=ACCESS_TOKEN_TTL,
-            device_id=device_id,
+            sub=sub, typ=TYP_ACCESS, roles=list(roles or []),
+            ttl=self.settings.access_ttl or ACCESS_TOKEN_TTL,
+            device_id=device_id, extra=extra,
         )
         return token, exp
 
@@ -675,6 +726,8 @@ class _InMemoryStore:
         self.devices: dict[str, Any] = {}
         self.challenges: dict[str, Any] = {}
         self.approvals: dict[str, Any] = {}
+        self.refresh_sessions: dict[str, Any] = {}
+        self.personal_tokens: dict[str, Any] = {}
 
     def get_session(self, jti: str) -> Any:
         return self.sessions.get(jti)

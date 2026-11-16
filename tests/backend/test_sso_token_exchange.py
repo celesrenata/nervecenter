@@ -407,10 +407,15 @@ def test_sso_token_exchange_success(monkeypatch):
     )
     assert r.status_code == 200, r.text
     out = r.json()
-    assert out["access_token"] == "AT"
+    # NerveCenter owns the session: its own access token, no issuer tokens,
+    # and the refresh token only as an HttpOnly cookie (NS-ADR-123).
+    assert out["access_token"] not in ("AT", "")
     assert out["token_type"] == "Bearer"
-    assert out["refresh_token"] == "RT"
-    assert out["expires_in"] == 300
+    assert "refresh_token" not in out and "RT" not in r.text
+    assert out["expires_in"] > 0
+    cookie = r.headers["set-cookie"]
+    assert cookie.startswith("nc_rt=") and "HttpOnly" in cookie
+    assert "Path=/api/auth" in cookie and "SameSite=strict" in cookie
 
     url, kwargs = _FakeHttpClient.last
     assert url == KEYCLOAK_TOKEN

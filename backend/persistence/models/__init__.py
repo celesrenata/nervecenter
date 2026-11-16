@@ -24,7 +24,14 @@ Usage::
 """
 
 from .agent_runner import AgentOverride, AgentRun, AgentSchedule
-from .auth import ApprovalRecord, AuthDevice, AuthSession, PairingChallenge
+from .auth import (
+    ApprovalRecord,
+    AuthDevice,
+    AuthRefreshSession,
+    AuthSession,
+    PairingChallenge,
+    PersonalApiToken,
+)
 from .base import Base, Jsonb, RootRecord, TimedRecord, UUIDv4, Vector
 from .claims import Claim, Decision
 from .entities import Entity
@@ -94,6 +101,8 @@ __all__ = [
     "InferenceProvider",
     "InferenceCombo",
     "AuthSession",
+    "AuthRefreshSession",
+    "PersonalApiToken",
     "AuthDevice",
     "PairingChallenge",
     "ApprovalRecord",

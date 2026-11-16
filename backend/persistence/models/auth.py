@@ -5,6 +5,10 @@ These tables back the signed-JWT auth surface in :mod:`backend.api.auth`:
 - :class:`AuthSession` — one row per issued NerveCenter token (access /
   refresh / device).  Persisting sessions means an API restart never
   invalidates a still-valid JWT, and ``logout`` can revoke a session.
+- :class:`AuthRefreshSession` — one row per opaque refresh token (stored only
+  as a SHA-256 hash); rows of one login share a ``family_id`` (NS-ADR-123).
+- :class:`PersonalApiToken` — a long-lived ``nct_`` API token owned by a
+  person, stored only as a SHA-256 hash (NS-ADR-124).
 - :class:`AuthDevice` — a paired device (prompot.md §71).  The stable
   ``device_id`` is chosen by the device; pairing mints a device credential
   JWT bound to it.
@@ -86,6 +90,85 @@ class AuthSession(Base):
             f"<AuthSession id={self.id!r} sub={self.sub!r} typ={self.typ!r} "
             f"revoked={self.revoked!r}>"
         )
+
+
+class AuthRefreshSession(Base):
+    """One opaque refresh token of a NerveCenter login (NS-ADR-123).
+
+    Only the SHA-256 ``token_hash`` is stored.  Every rotation inserts a new
+    row in the same ``family_id`` and marks the old row ``rotated_at``; a
+    rotated token presented after the grace window revokes the whole family.
+    """
+
+    __tablename__ = "auth_refresh_sessions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid4_str)
+    family_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    sub: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    #: Verified identity captured at login (``sub`` / ``username`` / ``email``).
+    identity: Mapped[dict | None] = mapped_column(Jsonb, nullable=True)
+    #: ``sso`` | ``local-admin``.
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="sso")
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    issued_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    idle_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    absolute_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    rotated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    replaced_by: Mapped[str | None] = mapped_column(String, nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    user_agent: Mapped[str | None] = mapped_column(String(255), nullable=True)
+
+    def __repr__(self) -> str:
+        return (
+            f"<AuthRefreshSession id={self.id!r} family_id={self.family_id!r} "
+            f"revoked={self.revoked!r}>"
+        )
+
+
+class PersonalApiToken(Base):
+    """A personal ``nct_`` API token (NS-ADR-124); only its hash is stored."""
+
+    __tablename__ = "personal_api_tokens"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=_uuid4_str)
+    owner_sub: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False)
+    token_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    #: First characters of the token, for display only.
+    prefix: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    def __repr__(self) -> str:
+        return f"<PersonalApiToken id={self.id!r} name={self.name!r}>"
 
 
 class AuthDevice(Base):

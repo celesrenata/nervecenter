@@ -6,7 +6,11 @@ This module is the HTTP layer over :mod:`backend.api.auth_service`.  It exposes:
 - ``POST /api/auth/login``      — AC-S03: break-glass local-admin login
   (no default password; disabled unless ``NERVE_LOCAL_ADMIN`` is enabled).
 - ``GET  /api/auth/me``         — introspect the presenting access token.
-- ``POST /api/auth/logout``     — revoke the presenting token's session.
+- ``POST /api/auth/logout``     — revoke the presenting token's session and
+  its refresh family, and clear the refresh cookie.
+- ``POST /api/auth/logout-all`` — revoke every session of the caller.
+- ``POST /api/auth/refresh``    — rotate the ``nc_rt`` refresh cookie and mint a
+  new access token (NS-ADR-123).
 - ``POST /api/auth/pairing/initiate`` — AC-S04 (§71): start a device pairing
   (``POST /api/auth/pairing`` is retained as a compatibility alias).
 - ``POST /api/auth/pairing/confirm`` — AC-S04 (§71): confirm + mint device credential.
@@ -25,13 +29,16 @@ constant time.
 from __future__ import annotations
 
 import hmac
-from typing import Any
+import secrets
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Security
+import structlog
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, Security
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field
 
-from backend.api import auth_service
+from backend.api import auth_service, auth_sessions
 from backend.api.auth_service import (
     TYP_ACCESS,
     TokenError,
@@ -41,6 +48,13 @@ router = APIRouter(prefix="/api/auth", tags=["authentication"])
 approvals_router = APIRouter(prefix="/api/approvals", tags=["approvals"])
 
 bearer = HTTPBearer(auto_error=False)
+log = structlog.get_logger(__name__)
+
+#: Refresh cookie (HttpOnly, SameSite=Strict, scoped to ``/api/auth``).
+REFRESH_COOKIE = "nc_rt"
+REFRESH_COOKIE_PATH = "/api/auth"
+#: Header the web client sends to ``/api/auth/refresh`` as a CSRF guard.
+CSRF_HEADER = "X-NC-Refresh"
 
 
 # ─── Request models ───────────────────────────────────────────────────────────
@@ -191,14 +205,62 @@ async def current_access(
     ctx = _get_ctx(request)
     if credentials is None or not credentials.credentials:
         raise HTTPException(status_code=401, detail="missing bearer token")
+    token = credentials.credentials
     try:
-        return await ctx.verify_token(credentials.credentials, expected_typ=TYP_ACCESS)
+        if auth_sessions.looks_like_pat(token):
+            claims = await auth_sessions.authenticate_pat(ctx, token)
+            route = request.scope.get("route")
+            log.info(
+                "auth.pat_used",
+                token_id=claims["token_id"],
+                token_name=claims["token_name"],
+                method=request.method,
+                route=getattr(route, "path", None) or "unknown",
+            )
+            return claims
+        return await ctx.verify_token(token, expected_typ=TYP_ACCESS)
     except TokenError as exc:
         raise HTTPException(status_code=401, detail=exc.detail) from exc
 
 
 def _constant_time_equal(a: str, b: str) -> bool:
     return hmac.compare_digest(a.encode("utf-8"), b.encode("utf-8"))
+
+
+def _set_refresh_cookie(response: Response, ctx: auth_service.AuthContext, raw: str) -> None:
+    """Deliver the refresh token only as an HttpOnly cookie (never in a body)."""
+    response.set_cookie(
+        REFRESH_COOKIE,
+        raw,
+        max_age=int(ctx.settings.absolute_lifetime.total_seconds()),
+        httponly=True,
+        secure=ctx.settings.cookie_secure,
+        samesite="strict",
+        path=REFRESH_COOKIE_PATH,
+    )
+
+
+def _clear_refresh_cookie(response: Response, ctx: auth_service.AuthContext) -> None:
+    response.delete_cookie(
+        REFRESH_COOKIE,
+        path=REFRESH_COOKIE_PATH,
+        httponly=True,
+        secure=ctx.settings.cookie_secure,
+        samesite="strict",
+    )
+
+
+def _session_body(access_token: str, access_exp: Any, identity: Any) -> dict[str, Any]:
+    from datetime import UTC, datetime
+
+    seconds = max(0, int((access_exp - datetime.now(UTC)).total_seconds()))
+    return {
+        "access_token": access_token,
+        "token_type": "Bearer",
+        "expires_in": seconds,
+        "expires_at": access_exp.isoformat(),
+        "identity": identity or {},
+    }
 
 
 # ─── SSO discovery (AC-S01) ───────────────────────────────────────────────────
@@ -222,7 +284,7 @@ async def sso_config(request: Request) -> dict[str, Any]:
 
 @router.post("/sso/token")
 async def sso_token_exchange(
-    body: SsoTokenRequest, request: Request
+    body: SsoTokenRequest, request: Request, response: Response
 ) -> dict[str, Any]:
     """Server-side PKCE authorization-code → token exchange.
 
@@ -233,9 +295,11 @@ async def sso_token_exchange(
     ``redirect_uri`` from the authorization request) to the issuer's token
     endpoint with the client secret (Basic auth) and returns the token response.
 
-    The returned ``access_token`` is a standard Keycloak RS256 access token that
-    :func:`current_access` verifies statelessly against the issuer JWKS.  The
-    issuer's raw error body is never echoed to the caller.
+    After the issuer exchange succeeds, NerveCenter creates its own session
+    (NS-ADR-123): the response carries a NerveCenter access token and the
+    verified identity, and the refresh token travels only in the ``nc_rt``
+    HttpOnly cookie.  The issuer's tokens and raw error body are never echoed to
+    the caller.
 
     Raises ``501`` when the exchange is not configured (no client secret), and
     ``401`` for a bad / expired / already-used authorization code, a mismatched
@@ -269,21 +333,34 @@ async def sso_token_exchange(
         email=str(identity.get("email") or "")[:80],
     )
 
-    return {
-        "access_token": tokens.get("access_token", ""),
-        "token_type": tokens.get("token_type", "Bearer"),
-        "refresh_token": tokens.get("refresh_token"),
-        "expires_in": tokens.get("expires_in"),
-        "id_token": tokens.get("id_token", ""),
-        "identity": identity,
-    }
+    # NerveCenter owns the session from here (NS-ADR-123): the issuer's tokens
+    # are not handed to the browser.  The refresh token is opaque, hashed at
+    # rest and delivered only as an HttpOnly cookie.
+    sub = (
+        identity.get("sub")
+        or identity.get("username")
+        or identity.get("email")
+        or f"sso-session:{secrets.token_hex(6)}"
+    )
+    raw_refresh, row = await auth_sessions.start_session(
+        ctx,
+        sub=str(sub),
+        identity=identity,
+        source="sso",
+        user_agent=request.headers.get("user-agent"),
+    )
+    access_token, access_exp = await auth_sessions.issue_session_access_token(ctx, row)
+    _set_refresh_cookie(response, ctx, raw_refresh)
+    return _session_body(access_token, access_exp, identity)
 
 
 # ─── Break-glass local admin (AC-S03) ─────────────────────────────────────────
 
 
 @router.post("/login")
-async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
+async def login(
+    body: LoginRequest, request: Request, response: Response
+) -> dict[str, Any]:
     """Break-glass login for the local admin (no default password).
 
     Only the ``local-admin`` username is accepted.  The login succeeds only when
@@ -307,17 +384,16 @@ async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
 
     sub = auth_service.LOCAL_ADMIN_SUB
     roles = ["admin"]
-    access_token, access_exp = ctx.issue_access_token(sub, roles)
-    refresh_token, refresh_exp = ctx.issue_refresh_token(sub, roles=roles)
-    jti = auth_service._jti_of(access_token, ctx)
-    await auth_service.record_session(
+    raw_refresh, row = await auth_sessions.start_session(
         ctx,
-        jti=jti,
         sub=sub,
-        typ=TYP_ACCESS,
-        expires_at=access_exp,
+        identity={"sub": sub, "username": sub, "email": None},
         source="local-admin",
+        user_agent=request.headers.get("user-agent"),
     )
+    access_token, access_exp = await auth_sessions.issue_session_access_token(ctx, row)
+    refresh_token, refresh_exp = ctx.issue_refresh_token(sub, roles=roles)
+    _set_refresh_cookie(response, ctx, raw_refresh)
     return {
         "token_type": "Bearer",
         "access_token": access_token,
@@ -327,6 +403,33 @@ async def login(body: LoginRequest, request: Request) -> dict[str, Any]:
         "sub": sub,
         "roles": roles,
     }
+
+
+@router.post("/refresh")
+async def refresh_session(request: Request, response: Response) -> Any:
+    """Rotate the refresh cookie and mint a new access token (NS-ADR-123).
+
+    Self-authenticating: the ``nc_rt`` cookie is the credential and the
+    ``X-NC-Refresh`` header is a CSRF guard (a cross-site form cannot set it).
+    A replayed rotated token revokes its whole session family.
+    """
+    ctx = _get_ctx(request)
+    if request.headers.get(CSRF_HEADER) != "1":
+        raise HTTPException(status_code=401, detail="missing refresh header")
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if not raw:
+        raise HTTPException(status_code=401, detail="no refresh session")
+    try:
+        new_raw, row = await auth_sessions.rotate_session(
+            ctx, raw, user_agent=request.headers.get("user-agent")
+        )
+    except TokenError as exc:
+        failure = JSONResponse({"detail": exc.detail}, status_code=401)
+        _clear_refresh_cookie(failure, ctx)
+        return failure
+    access_token, access_exp = await auth_sessions.issue_session_access_token(ctx, row)
+    _set_refresh_cookie(response, ctx, new_raw)
+    return _session_body(access_token, access_exp, row.identity)
 
 
 @router.get("/me")
@@ -356,9 +459,11 @@ async def me(claims: dict[str, Any] = Depends(current_access)) -> dict[str, Any]
 
 @router.post("/logout")
 async def logout(
-    request: Request, claims: dict[str, Any] = Depends(current_access)
+    request: Request,
+    response: Response,
+    claims: Annotated[dict[str, Any], Depends(current_access)],
 ) -> dict[str, Any]:
-    """Revoke the presenting token's session."""
+    """Revoke the presenting token's session and its refresh family."""
     ctx = _get_ctx(request)
     jti = claims.get("jti")
     if not jti:
@@ -366,7 +471,30 @@ async def logout(
     revoked = await auth_service.revoke_session(ctx, jti)
     if not revoked:
         raise HTTPException(status_code=404, detail="session not found")
+    family = claims.get(auth_sessions.FAMILY_CLAIM)
+    raw = request.cookies.get(REFRESH_COOKIE)
+    if family:
+        await auth_sessions.revoke_family(ctx, str(family))
+    elif raw:
+        await auth_sessions.revoke_family_by_token(ctx, raw)
+    _clear_refresh_cookie(response, ctx)
     return {"revoked": True, "jti": jti}
+
+
+@router.post("/logout-all")
+async def logout_all(
+    request: Request,
+    response: Response,
+    claims: Annotated[dict[str, Any], Depends(current_access)],
+) -> dict[str, Any]:
+    """Revoke every session and refresh family of the caller (a person only)."""
+    ctx = _get_ctx(request)
+    sub = claims.get("sub")
+    if claims.get(auth_service.SSO_SOURCE_CLAIM) == "pat" or not isinstance(sub, str) or not sub:
+        raise HTTPException(status_code=403, detail="A signed-in person is required.")
+    await auth_sessions.revoke_all_for_sub(ctx, sub)
+    _clear_refresh_cookie(response, ctx)
+    return {"revoked": True}
 
 
 # ─── Device pairing (AC-S04 / prompot §71) ────────────────────────────────────
