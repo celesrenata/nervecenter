@@ -194,12 +194,15 @@ def secure_model(
 def build_guard(base_url: str | None, api_key: str | Callable[[], str | None] | None) -> Guard:
     """The NS-ADR-073 route guard bound to the OmniRoute registry."""
     from backend.inference.omniroute_registry import HttpRegistryTransport
-    from backend.mail_security.route_guard import LocalOnlyRouteResolver
+    from backend.mail_security.route_guard import LocalOnlyRouteResolver, ResolverLimits
 
     resolver = LocalOnlyRouteResolver(
         HttpRegistryTransport(base_url or "", api_key or ""),  # str or live callable
         omniroute_base_url=base_url or "",
         require_secure_combo=True,
+        # Live /api/combos takes ~1.6 s and sometimes >5 s; the 5 s default
+        # denied asks with REGISTRY_TIMEOUT.
+        limits=ResolverLimits(timeout_seconds=15.0),
     )
     return resolver.resolve
 

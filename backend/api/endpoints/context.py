@@ -21,14 +21,15 @@ still degrade honestly instead of 500-ing.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime
 from uuid import uuid4
 
 from fastapi import Request
 from starlette.responses import JSONResponse
 
-from backend.api.endpoints._helpers import make_read_router
 from backend.agents.registry import get_agent_registry
+from backend.api.endpoints._helpers import make_read_router
 from backend.context.ask import AskInference, AskRequest, AskService, get_ask_service
 
 router = make_read_router(
@@ -99,7 +100,10 @@ async def ask(request: Request, body: AskRequest) -> JSONResponse:
     if body.agent is not None and body.agent != "":
         await _hydrate_agent_binding(request, body.agent)
 
-    outcome = svc.ask(
+    # The pipeline is synchronous (15-25 s of inference); run it off the event
+    # loop so the rest of the API keeps serving while it works.
+    outcome = await asyncio.to_thread(
+        svc.ask,
         AskRequest(
             question=question,
             context=body.context,
