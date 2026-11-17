@@ -60,6 +60,11 @@ class InfraPlan(Base):
     #: per-step outcome: [{"index", "ok", "exit", "output"}] (redacted, capped)
     results: Mapped[list[dict[str, Any]]] = mapped_column(Jsonb, nullable=False, default=list)
     handoff_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    #: approved step indexes; null = every step (plans approved before per-step approval)
+    selected_steps: Mapped[list[int] | None] = mapped_column(Jsonb, nullable=True)
+    #: "kube" for plans proposed by the kube_doctor agent (FEAT-002), else null
+    guard: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    issue_key: Mapped[str | None] = mapped_column(String(300), nullable=True)
 
 
 __all__ = ["InfraConnector", "InfraPlan"]

@@ -38,8 +38,8 @@ TOOLS: dict[str, dict[str, Any]] = {
         "required": ["plan_id"],
     },
     "infra_run_step": {
-        "description": "Run the next step of an approved plan exactly as approved. Steps run "
-        "in order starting at 0. Returns ok, exit code and (redacted) output. If ok is false "
+        "description": "Run the next step of an approved plan exactly as approved. index must be "
+        "the next selected step (the plan's selected_steps, or all steps when null; ascending). Returns ok, exit code and (redacted) output. If ok is false "
         "the plan stops: report and do not continue.",
         "properties": {"plan_id": _ID, "index": {"type": "integer", "minimum": 0}},
         "required": ["plan_id", "index"],

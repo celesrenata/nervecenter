@@ -16,6 +16,7 @@ test('connectors, write-only credentials, host key confirmation and plan approva
     steps: [{ connector: 'home', args: ['rollout', 'restart', 'deploy/api'], purpose: 'restart' }],
     verify: [{ connector: 'home', args: ['get', 'pods'] }], rollback: 'none', act_mode: 'opencode',
     decided_by: null, decided_at: null, results: [], handoff_id: null, created_at: null,
+    selected_steps: null,
   }
   await page.route('**/api/infra/connectors', (r) => r.fulfill({ json: { connectors } }))
   await page.route('**/api/infra/plans', (r) => r.fulfill({ json: { plans: [plan] } }))
@@ -57,7 +58,7 @@ test('connectors, write-only credentials, host key confirmation and plan approva
   expect(sent).toEqual([
     JSON.stringify({ token: TOKEN }),
     JSON.stringify({ fingerprints: ['SHA256:abc (ED25519)'] }),
-    JSON.stringify({ act_mode: 'opencode' }),
+    JSON.stringify({ act_mode: 'opencode', selected_steps: [0] }),
   ])
 })
 
@@ -114,4 +115,41 @@ test('a running plan updates its live log without a page reload', async ({ page 
   await expect(page.getByTestId('maximize-overlay')).toContainText('pushed')
   await page.keyboard.press('Escape')
   await expect(page.getByTestId('maximize-overlay')).toHaveCount(0)
+})
+
+test('approving some steps: locked steps explain themselves and selected_steps is posted', async ({ page }) => {
+  const sent: string[] = []
+  let plan: Record<string, unknown> = {
+    id: 'p5', agent_id: 'kube_doctor', title: 'Repair db', summary: '', status: 'proposed',
+    steps: [
+      { connector: 'home', args: ['get', 'pods'], purpose: 'look', kind: 'read' },
+      { connector: 'home', args: ['rollout', 'restart', 'deploy/db'], purpose: 'restart', requires: [0] },
+      { connector: 'home', args: ['rollout', 'status', 'deploy/db'], purpose: 'wait' },
+    ],
+    verify: [], rollback: '', act_mode: 'opencode', decided_by: null, decided_at: null,
+    results: [], selected_steps: null, handoff_id: null, created_at: null,
+  }
+  await page.route('**/api/infra/connectors', (r) => r.fulfill({ json: { connectors: [] } }))
+  await page.route('**/api/infra/plans', (r) => r.fulfill({ json: { plans: [plan] } }))
+  await page.route('**/api/infra/plans/p5/approve', (r) => {
+    sent.push(r.request().postData() ?? '')
+    plan = { ...plan, status: 'approved', selected_steps: [0, 1], decided_by: 'owner' }
+    return r.fulfill({ json: plan })
+  })
+  await seedBreakGlassSession(page)
+  await page.goto('/infrastructure', { waitUntil: 'domcontentloaded' })
+  const box = (i: number) => page.getByTestId(`infra-step-p5-${i}`)
+  await expect(box(0)).toBeChecked()
+  await expect(box(1)).toBeEnabled()
+  await expect(page.getByTestId('infra-approve-p5')).toHaveText('Approve ticked steps')
+  await box(2).uncheck()
+  await box(0).uncheck()
+  await expect(box(1)).not.toBeChecked()
+  await expect(box(1)).toBeDisabled()
+  await expect(page.getByTestId('infra-plan-p5')).toContainText('Needs step 1 ticked first')
+  await box(0).check()
+  await box(1).check()
+  await page.getByTestId('infra-approve-p5').click()
+  await expect(page.getByTestId('infra-plan-p5')).toContainText('not approved')
+  expect(sent).toEqual([JSON.stringify({ act_mode: 'opencode', selected_steps: [0, 1] })])
 })

@@ -247,6 +247,24 @@ function PlanCard({ p, onChange }: { p: InfraPlan; onChange: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [verify, setVerify] = useState<string | null>(null)
+  const [ticked, setTicked] = useState<Set<number>>(() => new Set(p.steps.map((_, i) => i)))
+  const choosing = p.status === 'proposed' && p.steps.length > 1
+  const selected = p.selected_steps ?? p.steps.map((_, i) => i)
+  const toggle = (i: number, on: boolean) => {
+    const next = new Set(ticked)
+    const walk = (n: number) => {
+      if (next.has(n)) return
+      next.add(n)
+      ;(p.steps[n].requires ?? []).forEach(walk)
+    }
+    const drop = (n: number) => {
+      if (!next.delete(n)) return
+      p.steps.forEach((s, j) => (s.requires ?? []).includes(n) && drop(j))
+    }
+    if (on) walk(i)
+    else drop(i)
+    setTicked(next)
+  }
   const act = async (fn: () => Promise<unknown>) => {
     setBusy(true)
     setError(null)
@@ -271,13 +289,31 @@ function PlanCard({ p, onChange }: { p: InfraPlan; onChange: () => void }) {
         {p.steps.map((s, i) => {
           const r = p.results.find((x) => x.index === i)
           const running = p.live?.index === i
+          const approved = selected.includes(i)
+          const locked = (s.requires ?? []).find((n) => !ticked.has(n))
           return (
-            <li key={i}>
+            <li key={i} className={!choosing && !approved ? 'opacity-50' : undefined}>
+              {choosing && (
+                <label className="mr-2 inline-flex items-center gap-1">
+                  <input
+                    type="checkbox"
+                    checked={ticked.has(i)}
+                    disabled={locked !== undefined}
+                    onChange={(e) => toggle(i, e.target.checked)}
+                    data-testid={`infra-step-${p.id}-${i}`}
+                    aria-label={`Approve step ${i + 1}`}
+                  />
+                </label>
+              )}
+              {choosing && locked !== undefined && (
+                <span className="mr-2 text-xs text-amber-700 dark:text-amber-300">Needs step {locked + 1} ticked first</span>
+              )}
+              {!choosing && !approved && <span className="mr-2 text-xs italic text-muted">not approved</span>}
               <span className="font-mono text-xs">[{s.connector}] {stepText(s)}</span>
               {s.purpose && <span className="text-muted"> — {s.purpose}</span>}
               {r && (
                 <span className={`ml-2 text-xs font-semibold ${r.ok ? 'text-green-600' : 'text-red-600'}`}>
-                  {r.ok ? 'ok' : `failed (exit ${r.exit ?? '-'})`}
+                  {r.skipped ? 'skipped' : r.ok ? 'ok' : `failed (exit ${r.exit ?? '-'})`}
                 </span>
               )}
               {running && <span className="ml-2 animate-pulse text-xs font-semibold text-blue-600">running</span>}
@@ -295,7 +331,7 @@ function PlanCard({ p, onChange }: { p: InfraPlan; onChange: () => void }) {
             <option value="opencode">Act through opencode (stops on a surprise)</option>
             <option value="direct">Run the steps directly</option>
           </select>
-          <button className={primary} disabled={busy} onClick={() => void act(() => infraApi.approve(p.id, mode))} data-testid={`infra-approve-${p.id}`}>Approve</button>
+          <button className={primary} disabled={busy || ticked.size === 0} onClick={() => void act(() => infraApi.approve(p.id, mode, [...ticked].sort((a, b) => a - b)))} data-testid={`infra-approve-${p.id}`}>{choosing ? 'Approve ticked steps' : 'Approve'}</button>
           <button className={secondary} disabled={busy} onClick={() => void act(() => infraApi.reject(p.id))}>Reject</button>
         </div>
       )}

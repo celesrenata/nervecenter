@@ -29,7 +29,7 @@ export function InfraPlanLog({ p, describe }: { p: InfraPlan; describe: (s: Infr
   const lines = results.map((r) => ({
     index: r.index,
     head: `▸ ${r.index + 1}/${p.steps.length} [${p.steps[r.index]?.connector}] ${describe(p.steps[r.index] ?? ({} as InfraStep))}`,
-    state: r.ok ? 'ok' : `failed (exit ${r.exit ?? '-'})`,
+    state: r.skipped ? 'skipped' : r.ok ? 'ok' : `failed (exit ${r.exit ?? '-'})`,
     ok: r.ok,
     body: r.output,
   }))

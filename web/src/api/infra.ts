@@ -31,11 +31,15 @@ export interface InfraStep {
   stdin?: string
   command?: string
   params?: Record<string, unknown>
+  requires?: number[]
+  kind?: 'read' | 'backup' | 'backup_verify' | 'change' | 'repair' | 'restore' | 'prune'
+  on_failure_of?: number[]
 }
 
 export interface InfraResult {
   index: number
   ok: boolean
+  skipped?: boolean
   exit: number | null
   output: string
 }
@@ -53,6 +57,9 @@ export interface InfraPlan {
   decided_by: string | null
   decided_at: string | null
   results: InfraResult[]
+  /** Approved step indexes; null means every step. */
+  selected_steps: number[] | null
+  guard?: string | null
   handoff_id: string | null
   created_at: string | null
   /** Output so far of the step running now (redacted); null when none is running. */
@@ -93,8 +100,13 @@ export const infraApi = {
       await post(`/api/infra/connectors/${encodeURIComponent(name)}/test`),
     ),
   plans: async () => (await json<{ plans: InfraPlan[] }>(await apiFetch('/api/infra/plans'))).plans,
-  approve: async (id: string, act_mode: 'opencode' | 'direct') =>
-    json<InfraPlan>(await post(`/api/infra/plans/${id}/approve`, { act_mode })),
+  approve: async (id: string, act_mode: 'opencode' | 'direct', selectedSteps?: number[]) =>
+    json<InfraPlan>(
+      await post(`/api/infra/plans/${id}/approve`, {
+        act_mode,
+        ...(selectedSteps ? { selected_steps: selectedSteps } : {}),
+      }),
+    ),
   reject: async (id: string) => json<InfraPlan>(await post(`/api/infra/plans/${id}/reject`)),
   verify: async (id: string) =>
     json<{ verify: (InfraResult & { denied_reason?: string })[] }>(await post(`/api/infra/plans/${id}/verify`)),

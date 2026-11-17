@@ -10,7 +10,9 @@ Plan/act: an agent proposes a plan (steps + verification + rollback). It stays
 written, one at a time and in order, either through the central opencode
 (default: opencode calls the NerveCenter MCP tools ``infra_get_plan`` /
 ``infra_run_step``; credentials never leave NerveCenter) or directly here.
-A failed step stops the plan (``failed``); verification steps run read-only.
+A failed step stops the plan (``failed``) unless a later selected step declares
+``on_failure_of`` for it. The owner may approve only some steps (``selected_steps``); a step
+may ``require`` earlier steps. Verification steps run read-only.
 """
 
 from __future__ import annotations
@@ -40,6 +42,8 @@ OWNER_KIND = "infra_connector"
 SECRET_KIND = "infra_credential"
 ACT_MODES = ("opencode", "direct")
 MAX_STEPS = 25
+#: What a step does; ``change`` is the default. FEAT-002's guard builds on these.
+STEP_KINDS = ("read", "backup", "backup_verify", "change", "repair", "restore", "prune")
 _NAME_OK = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
 
 
@@ -107,11 +111,37 @@ def connector_view(row: InfraConnector, secret_set: bool) -> dict[str, Any]:
     return view
 
 
+def _index_list(raw: Any, own: int, field: str) -> list[int]:
+    """A list of earlier step indexes (each int < ``own``)."""
+    if not isinstance(raw, list) or len(raw) > MAX_STEPS:
+        raise InfraInputError(f"step {own}: {field} must be a list of earlier step indexes")
+    for i in raw:
+        if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < own:
+            raise InfraInputError(f"step {own}: {field} must be a list of earlier step indexes")
+    return sorted(set(raw))
+def selected_indexes(plan: Any) -> list[int]:
+    """Approved step indexes in ascending order (all steps when nothing was selected)."""
+    sel = plan["selected_steps"] if isinstance(plan, dict) else plan.selected_steps
+    steps = plan["steps"] if isinstance(plan, dict) else plan.steps
+    return sorted(sel) if sel is not None else list(range(len(steps)))
+def plan_status(steps: list[dict[str, Any]], selected: list[int],
+                results: list[dict[str, Any]]) -> str:
+    """``failed`` on an unhandled failure, ``done`` when every selected step has a result."""
+    by_index = {r["index"]: r for r in results}
+    for r in results:
+        if r.get("ok") or r.get("skipped"):
+            continue
+        handled = any(j > r["index"] and r["index"] in (steps[j].get("on_failure_of") or [])
+                      for j in selected)
+        if not handled:
+            return "failed"
+    return "done" if all(i in by_index for i in selected) else "running"
 def plan_view(p: InfraPlan) -> dict[str, Any]:
     return {
         "id": p.id, "agent_id": p.agent_id, "title": p.title, "summary": p.summary,
         "steps": p.steps, "verify": p.verify, "rollback": p.rollback, "status": p.status,
-        "act_mode": p.act_mode, "decided_by": p.decided_by,
+        "act_mode": p.act_mode, "selected_steps": p.selected_steps, "guard": p.guard,
+        "issue_key": p.issue_key, "decided_by": p.decided_by,
         "decided_at": p.decided_at.isoformat() if p.decided_at else None,
         "results": p.results, "handoff_id": p.handoff_id,
         "created_at": p.created_at.isoformat() if p.created_at else None,
@@ -302,6 +332,16 @@ class InfraService:
                         step["params"] = raw.get("params") or {}
                 except PolicyError as exc:
                     raise InfraInputError(f"step refused: {exc.code}") from exc
+                own = len(out)
+                if raw.get("requires") is not None:
+                    step["requires"] = _index_list(raw["requires"], own, "requires")
+                if raw.get("on_failure_of") is not None:
+                    step["on_failure_of"] = _index_list(raw["on_failure_of"], own, "on_failure_of")
+                if raw.get("kind") is not None:
+                    if raw["kind"] not in STEP_KINDS:
+                        raise InfraInputError(f"step {own}: kind must be one of "
+                                              f"{', '.join(STEP_KINDS)}")
+                    step["kind"] = raw["kind"]
                 out.append(step)
         return out
 
@@ -353,7 +393,8 @@ class InfraService:
         return {"index": live["index"], "started_at": live["started_at"], "output": text}
 
     async def decide(self, plan_id: str, *, approve: bool, actor: str,
-                     act_mode: str = "opencode") -> dict[str, Any]:
+                     act_mode: str = "opencode",
+                     selected_steps: list[int] | None = None) -> dict[str, Any]:
         if act_mode not in ACT_MODES:
             raise InfraInputError("act_mode must be opencode or direct")
         async with self._sessions() as s:
@@ -362,6 +403,8 @@ class InfraService:
                 raise KeyError(plan_id)
             if p.status != "proposed":
                 raise InfraInputError(f"plan is {p.status}")
+            if approve and selected_steps is not None:
+                p.selected_steps = self._check_selection(p.steps, selected_steps)
             p.status = "approved" if approve else "rejected"
             p.act_mode = act_mode
             p.decided_by, p.decided_at = actor[:200], _now()
@@ -385,12 +428,30 @@ class InfraService:
         return await self.get_plan(plan_id)
 
     @staticmethod
+    def _check_selection(steps: list[dict[str, Any]], selected: Any) -> list[int]:
+        if not isinstance(selected, list) or not selected:
+            raise InfraInputError("selected_steps must be a non-empty list of step indexes")
+        for i in selected:
+            if not isinstance(i, int) or isinstance(i, bool) or not 0 <= i < len(steps):
+                raise InfraInputError("selected_steps must be valid step indexes")
+        if len(set(selected)) != len(selected):
+            raise InfraInputError("selected_steps must not repeat an index")
+        chosen = sorted(selected)
+        for i in chosen:
+            for need in steps[i].get("requires") or []:
+                if need not in chosen:
+                    raise InfraInputError(f"step {i} requires step {need} to be selected")
+        return chosen
+    @staticmethod
     def opencode_brief(plan: dict[str, Any]) -> str:
         lines = [
             f"Carry out the approved infrastructure plan {plan['id']} ({plan['title']}).",
             "You do not have the credentials. Use ONLY the NerveCenter MCP tools:",
             "  infra_get_plan(plan_id) to read it, then infra_run_step(plan_id, index) for each",
-            "  step in order (0, 1, 2 ...). Each step runs exactly as the owner approved it.",
+            "  approved step in ascending order. Each step runs exactly as the owner approved it.",
+            "Approved step indexes (run only these, in this order): "
+            + ", ".join(str(i) for i in selected_indexes(plan)) + ".",
+            "If infra_run_step refuses a step, STOP and report the refusal.",
             "After every step read its output. If a step fails or the output is not what the",
             "plan expects, STOP: do not run further steps, do not improvise or retry with",
             "different commands. Report what happened and the rollback described in the plan.",
@@ -400,7 +461,7 @@ class InfraService:
         return "\n".join(lines)
 
     async def run_step(self, plan_id: str, index: int) -> dict[str, Any]:
-        """Run the next approved step (``index`` must be the next one)."""
+        """Run the next approved step (``index`` must be the next selected step)."""
         async with self._sessions() as s:
             p = await s.get(InfraPlan, plan_id)
             if p is None:
@@ -408,9 +469,28 @@ class InfraService:
             if p.status not in ("approved", "running"):
                 raise InfraInputError(f"plan is {p.status}")
             results = list(p.results or [])
-            if index != len(results) or not 0 <= index < len(p.steps):
-                raise InfraInputError("steps run in order; that is not the next step")
+            selected = selected_indexes(p)
+            have = {r["index"] for r in results}
+            nxt = next((i for i in selected if i not in have), None)
+            if nxt is None or index != nxt or not 0 <= index < len(p.steps):
+                raise InfraInputError("steps run in order; that is not the next selected step")
             step = dict(p.steps[index])
+            by_index = {r["index"]: r for r in results}
+            for need in step.get("requires") or []:
+                got = by_index.get(need)
+                if not got or not got.get("ok") or got.get("skipped"):
+                    raise InfraInputError(f"step {index} requires step {need}")
+            fallback_for = step.get("on_failure_of") or []
+            if fallback_for and not all(
+                (by_index.get(i) or {}).get("ok") is False and not by_index[i].get("skipped")
+                for i in fallback_for
+            ):
+                skipped = {"index": index, "ok": True, "skipped": True, "output": "[skipped]"}
+                p.results = [*results, skipped]
+                p.status = plan_status(p.steps, selected, p.results)
+                await s.commit()
+                log.info("infra.step_skipped", plan_id=plan_id, index=index)
+                return skipped
             p.status = "running"
             await s.commit()
             row = await self._row(s, step["connector"])
@@ -434,10 +514,7 @@ class InfraService:
         async with self._sessions() as s:
             p = await s.get(InfraPlan, plan_id)
             p.results = [*list(p.results or []), {"index": index, **res}]
-            if not res["ok"]:
-                p.status = "failed"
-            elif index == len(p.steps) - 1:
-                p.status = "done"
+            p.status = plan_status(p.steps, selected_indexes(p), p.results)
             await s.commit()
         log.info("infra.step", plan_id=plan_id, index=index, ok=res["ok"])
         return {"index": index, **res}
@@ -454,9 +531,10 @@ class InfraService:
     async def run_all(self, plan_id: str) -> None:
         try:
             plan = await self.get_plan(plan_id)
-            for i in range(len(plan["steps"])):
+            for i in selected_indexes(plan):
                 if not (await self.run_step(plan_id, i))["ok"]:
-                    return
+                    if (await self.get_plan(plan_id))["status"] == "failed":
+                        return
         except Exception as exc:  # noqa: BLE001 - recorded in logs; status stays as set
             log.warning("infra.run_all_failed", plan_id=plan_id, error=type(exc).__name__)
 

@@ -174,9 +174,14 @@ async def get_plan(request: Request, plan_id: str, claims: Claims) -> dict[str, 
 async def approve_plan(request: Request, plan_id: str, claims: Claims) -> dict[str, Any]:
     actor = _actor(claims)
     body = await _body(request)
+    selected = body.get("selected_steps")
+    if selected is not None and (not isinstance(selected, list) or any(
+            not isinstance(i, int) or isinstance(i, bool) for i in selected)):
+        raise HTTPException(status_code=422, detail="selected_steps must be a list of integers.")
     try:
         return await _svc(request).decide(plan_id, approve=True, actor=actor,
-                                          act_mode=str(body.get("act_mode") or "opencode"))
+                                          act_mode=str(body.get("act_mode") or "opencode"),
+                                          selected_steps=selected)
     except _EXPECTED as exc:
         raise _bad(exc) from None
 
