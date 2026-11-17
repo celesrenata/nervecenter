@@ -103,6 +103,9 @@ NERVE_ARGS = {
     "repo_ask": '{"repo": "nervcenter", "ref": "main", "question": "..."} (queues a read-only '
     "opencode job; no personal data in it)",
     "repo_result": '{"handoff_id": "..."} (poll a repo_ask; it can take minutes)',
+    "resources_list": "{} (files the owner linked to you; empty when none)",
+    "resources_read": '{"resource_id": "...", "offset": 0, "limit": 5000} (text files only, '
+    "5,000 characters per page)",
 }
 def nerve_help(tools: list[str]) -> str:
     lines = []

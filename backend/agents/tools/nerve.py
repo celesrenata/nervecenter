@@ -34,6 +34,7 @@ ES_INDEX_ENV = "NERVE_LOGS_ES_INDEX"
 DEFAULT_ES_INDEX = "logs-*"
 MAX_OPEN_HANDOFFS = 3
 MAX_QUESTION = 1_500
+RESOURCE_PAGE = 5_000
 
 
 class NerveToolError(Exception):
@@ -118,7 +119,7 @@ class NerveTools:
             raise NerveToolError("tool_not_allowed")
         if tool in ("task_create", "task_update"):
             return await handler(agent, args, run_key)
-        if tool == "repo_ask":
+        if tool in ("repo_ask", "resources_list", "resources_read"):
             return await handler(agent, args)
         return await handler(args)
 
@@ -193,6 +194,50 @@ class NerveTools:
             raise NerveToolError("nothing_to_update")
         task = await svc.update(task_id, changes)
         return {"task_id": task.id, "status": task.status}
+
+    # -- resources (owner files linked to this agent; NS-ADR-125) --------------------------
+    def _resources(self) -> Any:
+        from backend.resources.service import get_service
+
+        svc = get_service(self._app) if self._app is not None else None
+        if svc is None:
+            raise NerveToolError("unconfigured")
+        return svc
+
+    @staticmethod
+    def _agent_key(agent: Any) -> str:
+        return str(getattr(agent, "id", "") or getattr(agent, "type", "") or "")
+
+    async def _t_resources_list(self, agent: Any, args: dict[str, Any]) -> Any:
+        rows = await self._resources().get_links(self._agent_key(agent))
+        return _fit([
+            {"id": r["id"], "name": _clip(r["name"], 100), "content_type": r["content_type"],
+             "size": r["size"]}
+            for r in rows if r["sensitivity"] == "normal"
+        ])
+
+    async def _t_resources_read(self, agent: Any, args: dict[str, Any]) -> Any:
+        from backend.resources.service import ResourceStoreUnavailable, is_text_type
+
+        rid = _text(args, "resource_id", required=True, limit=64)
+        offset = _int(args, "offset", 0, 0, 100_000_000)
+        limit = _int(args, "limit", RESOURCE_PAGE, 1, RESOURCE_PAGE)
+        try:
+            view, data = await self._resources().read_linked(self._agent_key(agent), rid)
+        except KeyError:
+            raise NerveToolError("resource_not_linked") from None
+        except ResourceStoreUnavailable:
+            raise NerveToolError("unconfigured") from None
+        if view["sensitivity"] != "normal":
+            raise NerveToolError("resource_not_linked")
+        if not is_text_type(view["content_type"]):
+            raise NerveToolError("resource_not_text")
+        text = data.decode("utf-8", errors="replace")
+        page = text[offset: offset + limit]
+        end = offset + len(page)
+        return {"id": rid, "name": _clip(view["name"], 100), "offset": offset,
+                "total_chars": len(text), "next_offset": end if end < len(text) else None,
+                "text": page}
 
     # -- incidents, events, changes ----------------------------------------------------------
     async def _t_incidents_list(self, args: dict[str, Any]) -> Any:

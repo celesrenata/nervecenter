@@ -380,6 +380,7 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
             ),
             tools=[
                 "nerve.goals_list", "nerve.tasks_list", "nerve.task_create", "nerve.task_update",
+                "nerve.resources_list", "nerve.resources_read",
                 "sequential-thinking",
             ],
             loop_protection={"max_iterations": 10, "blackboard_change_threshold": 0.1},
@@ -647,7 +648,7 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "repositories, or the owner's own data. Pages are cut at a size limit, so say "
                 "when you saw only the start of a page.",
             ),
-            tools=["fetch", "sequential-thinking"],
+            tools=["fetch", "nerve.resources_list", "nerve.resources_read", "sequential-thinking"],
             loop_protection={"max_iterations": 15, "blackboard_change_threshold": 0.1},
         ),
         AGENT_VERIFIER: AgentManifest(
@@ -679,6 +680,7 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
             ),
             tools=[
                 "infra", "nerve.evidence_search", "nerve.evidence_get", "nerve.systems_status",
+                "nerve.resources_list", "nerve.resources_read",
                 "fetch", "sequential-thinking",
             ],
             loop_protection={"max_iterations": 10, "blackboard_change_threshold": 0.1},
@@ -707,6 +709,7 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
             ),
             tools=[
                 "nerve.goals_list", "nerve.tasks_list", "nerve.evidence_search",
+                "nerve.resources_list", "nerve.resources_read",
                 "sequential-thinking",
             ],
             loop_protection={"max_iterations": 8, "blackboard_change_threshold": 0.2},

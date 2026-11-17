@@ -73,7 +73,10 @@ INFRA_AGENT_TYPES = frozenset(
 NERVE_SERVER = "nerve"
 NERVE_AGENT_TOOLS: MappingProxyType[str, frozenset[str]] = MappingProxyType(
     {
-        "planner": frozenset({"tasks_list", "goals_list", "task_create", "task_update"}),
+        "planner": frozenset(
+            {"tasks_list", "goals_list", "task_create", "task_update", "resources_list",
+             "resources_read"}
+        ),
         "repository_inspector": frozenset({"repo_ask", "repo_result"}),
         "code_reviewer": frozenset({"repo_ask", "repo_result"}),
         "test_runner": frozenset({"repo_ask", "repo_result"}),
@@ -81,9 +84,15 @@ NERVE_AGENT_TOOLS: MappingProxyType[str, frozenset[str]] = MappingProxyType(
         "incident_correlator": frozenset(
             {"incidents_list", "incident_get", "events_search", "changes_list", "app_logs"}
         ),
-        "verifier": frozenset({"evidence_search", "evidence_get", "systems_status"}),
+        "verifier": frozenset(
+            {"evidence_search", "evidence_get", "systems_status", "resources_list",
+             "resources_read"}
+        ),
         "architecture_analyst": frozenset({"systems_status"}),
-        "context_critic": frozenset({"goals_list", "tasks_list", "evidence_search"}),
+        "context_critic": frozenset(
+            {"goals_list", "tasks_list", "evidence_search", "resources_list", "resources_read"}
+        ),
+        "research_agent": frozenset({"resources_list", "resources_read"}),
     }
 )
 NERVE_TOOLS = frozenset().union(*NERVE_AGENT_TOOLS.values())

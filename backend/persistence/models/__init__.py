@@ -56,6 +56,7 @@ from .openai_usage import EscalationGrant, OpenAICall
 from .planned_changes import PlannedChange
 from .projects import ProjectContext, ProjectContextNote
 from .relationships import Relationship
+from .resources import AgentResourceLink, Resource
 from .research import ResearchCheckpoint, ResearchProject, ResearchStep
 from .tasks import Task, TaskRun
 
@@ -82,8 +83,10 @@ __all__ = [
     "AgentSchedule",
     "AgentRun",
     "AgentOverride",
+    "AgentResourceLink",
     "InfraConnector",
     "InfraPlan",
+    "Resource",
     "OmniRouteKeyAudit",
     "HealthSampleRow",
     "DebtAccountRow",

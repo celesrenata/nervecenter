@@ -2,6 +2,7 @@ import { useState, useEffect, type FormEvent } from 'react'
 import { agentsApi, type AgentUpdatePayload, type RunnerStatus } from '../api/agents'
 import { AgentRunnerPanel } from './AgentRunnerPanel'
 import { AgentLiveLog } from './AgentLiveLog'
+import { AgentResourceLinks } from './AgentResourceLinks'
 import { CatalogPicker } from '../components/CatalogPicker'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import {
@@ -792,6 +793,7 @@ const AgentsView = () => {
                   className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
                 />
               </div>
+              {editingAgentId && <AgentResourceLinks agentId={editingAgentId} />}
               {editError && (
                 <div
                   role="alert"
