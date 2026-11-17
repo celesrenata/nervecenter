@@ -59,6 +59,8 @@ from backend.inference.omniroute import (
 )
 from backend.agents.registry import get_agent_registry
 from backend.policy.pdp import INFER_ROUTE_ACTION, InferRouteDecision, PolicyDecisionPoint
+from backend.context.retrieval.policy import kind_for
+from backend.context.retrieval.service import RetrievalResult
 from schemas.context import ContextPackage
 from schemas.nc_platform import NCPrincipal, NCPolicy
 from schemas.routes import InferenceRoute
@@ -281,29 +283,46 @@ def _build_sources(
     question: str,
     ctx: AskContext | None,
     request_id: str,
+    retrieval: RetrievalResult | None = None,
 ) -> list[ContextSource]:
     """Build the compiler sources for an ask.
 
-    The fixture source carries *references and summaries only* — the record
-    ids ground the answer, and the summary is bounded text the caller already
-    deemed safe for the remote plane (R107 firewall).
+    Retrieved records become one source per section kind, each carrying the
+    real record ids as ``refs`` (R107: references and bounded summaries only).
+    Client-supplied ``fixture_refs`` keep working. With no refs at all there
+    is **no source**, so the compiler never invents placeholder ids.
     """
-    kind = (ctx.fixture_kind if ctx and ctx.fixture_kind else "evidence")  # type: ignore[assignment]
+    sources: list[ContextSource] = []
+    if retrieval is not None and retrieval.records:
+        by_kind: dict[str, list[str]] = {}
+        for rec in retrieval.records:
+            by_kind.setdefault(kind_for(rec.domain), []).append(rec.id)
+        for kind, ids in sorted(by_kind.items()):
+            sources.append(
+                ContextSource(
+                    id=f"ask-{request_id}-{kind}",
+                    kind=kind,  # type: ignore[arg-type]
+                    query={"question": question, "refs": ids},
+                    relevance_score=1.0,
+                    partition="personal",
+                    summary=None,
+                )
+            )
     refs = sorted({rid for rid in (ctx.fixture_refs if ctx else []) if rid})
-    summaries = {
-        rid: ((ctx.summaries.get(rid) if ctx else None) or rid) for rid in refs
-    }
-    partition = (ctx.partition if ctx and ctx.partition else "engineering")
-    return [
-        ContextSource(
-            id=f"ask-{request_id}",
-            kind=kind,
-            query={"question": question, "refs": refs},
-            relevance_score=1.0,
-            partition=partition,
-            summary="; ".join(summaries.values()) if summaries else None,
+    if refs:
+        kind = ctx.fixture_kind if ctx and ctx.fixture_kind else "evidence"
+        summaries = {rid: ((ctx.summaries.get(rid) if ctx else None) or rid) for rid in refs}
+        sources.append(
+            ContextSource(
+                id=f"ask-{request_id}",
+                kind=kind,  # type: ignore[arg-type]
+                query={"question": question, "refs": refs},
+                relevance_score=1.0,
+                partition=(ctx.partition if ctx and ctx.partition else "engineering"),
+                summary="; ".join(summaries.values()),
+            )
         )
-    ]
+    return sources
 
 
 def _package_refs(package: ContextPackage) -> list[str]:
@@ -456,11 +475,23 @@ class AskService:
 
     # -- context -------------------------------------------------------------
 
+    @property
+    def personal_allowed(self) -> bool:
+        """Personal records may be read only when the transport is the secure
+        local combo (NS-ADR-108): it has ``check``."""
+        return self._transport is not None and hasattr(self._transport, "check")
+
     def _compile(
-        self, question: str, ctx: AskContext | None, request_id: str
+        self,
+        question: str,
+        ctx: AskContext | None,
+        request_id: str,
+        retrieval: RetrievalResult | None = None,
     ) -> ContextPackage:
-        sources = _build_sources(question, ctx, request_id)
-        personal = bool(ctx and ctx.partition == "personal")
+        sources = _build_sources(question, ctx, request_id, retrieval)
+        personal = bool(
+            (ctx and ctx.partition == "personal") or (retrieval and retrieval.records)
+        )
         return self._compiler.compile(
             purpose="inference",
             task_id=f"ask-{request_id}",
@@ -471,17 +502,19 @@ class AskService:
 
     # -- policy --------------------------------------------------------------
 
-    def _preflight(self, ctx: AskContext | None) -> InferRouteDecision:
+    def _preflight(
+        self, ctx: AskContext | None, personal: bool = False
+    ) -> InferRouteDecision:
         """Run the R107 PDP pre-flight **before** any inference (req 2)."""
         sensitivity = (ctx.sensitivity if ctx and ctx.sensitivity else None) or "internal"
         return self._pdp.infer_route(
             self._principal,
             {
                 "sensitivity_class": sensitivity,
-                # The remote payload carries references/summaries only —
-                # never raw personal communications — so this flag is false
-                # by construction.
-                "contains_personal_communications": False,
+                # Retrieved personal records make this true: the PDP then
+                # returns a local tier, and Ask proceeds only on the secure
+                # local transport (``personal_allowed``).
+                "contains_personal_communications": personal,
                 "remote_provider_allowed": self._remote_provider_allowed,
             },
             action=INFER_ROUTE_ACTION,
@@ -541,33 +574,43 @@ class AskService:
         question: str,
         ctx: AskContext | None,
         evidence: list[str],
+        retrieval: RetrievalResult | None = None,
     ) -> dict[str, Any]:
-        """The only thing that crosses to the remote plane (R107 firewall).
-
-        The question, record *references* and their *summaries* — never raw
-        personal plaintext.
-        """
+        """The question plus the evidence the model may cite. Retrieved records
+        carry real title, date and a short scrubbed snippet; client-supplied
+        refs carry the caller's summaries. Never a bare id as its own summary."""
+        records = retrieval.by_id() if retrieval is not None else {}
+        items: list[dict[str, Any]] = []
+        for rid in evidence:
+            rec = records.get(rid)
+            if rec is not None:
+                parts = [rec.title, rec.when or "", rec.snippet]
+                items.append({
+                    "id": rid,
+                    "summary": " | ".join(p for p in parts if p),
+                    "domain": rec.domain,
+                })
+            else:
+                summary = (ctx.summaries.get(rid) if ctx else None) or ""
+                items.append({"id": rid, "summary": summary})
         return {
             "question": question,
             "partition": (ctx.partition if ctx and ctx.partition else "engineering"),
             "sensitivity": (ctx.sensitivity if ctx and ctx.sensitivity else "internal"),
-            "evidence": [
-                {
-                    "id": rid,
-                    "summary": (ctx.summaries.get(rid) if ctx else None) or rid,
-                }
-                for rid in evidence
-            ],
+            "evidence": items,
         }
 
     @staticmethod
     def _prompt(question: str, payload: dict[str, Any]) -> str:
         ev = payload["evidence"]
         lines = [
-            "Answer strictly from the cited evidence below.",
-            "Cite each claim as [REF] where REF is an evidence id; never invent a REF.",
+            "Answer strictly from the records below.",
+            "Cite each claim as [REF] where REF is a record id from the list; never invent a REF.",
+            "If the records do not contain the answer, say so plainly instead of guessing.",
             f"Question: {question}",
         ]
+        if not ev:
+            lines.append("No records were found for this question.")
         for item in ev:
             lines.append(f"REF {item['id']}: {item['summary']}")
         return "\n".join(lines)
@@ -608,7 +651,13 @@ class AskService:
 
     # -- pipeline ------------------------------------------------------------
 
-    def ask(self, request: AskRequest, *, calendar: Any = None) -> AskOutcome:
+    def ask(
+        self,
+        request: AskRequest,
+        *,
+        calendar: Any = None,
+        retrieval: RetrievalResult | None = None,
+    ) -> AskOutcome:
         """Run the full grounded ask pipeline (offline under fixture mode).
 
         Order of operations (T003.AC9):
@@ -649,15 +698,21 @@ class AskService:
         audit = self._resolve_inference(request.agent, request.inference)
         provider = audit["provider"]
         model = audit["model"]
-        package = self._compile(question, ctx, request_id)
-        decision = self._preflight(ctx)
+        retrieval = self._usable_retrieval(retrieval)
+        personal = bool(retrieval and retrieval.records)
+        package = self._compile(question, ctx, request_id, retrieval)
+        decision = self._preflight(ctx, personal)
 
         # R107 pre-flight: a denial is a structured policy-denied answer —
-        # no inference is ever attempted, nothing is fabricated.
-        if not decision.remote_allowed:
+        # no inference is ever attempted, nothing is fabricated. Personal
+        # records are allowed only on the secure local transport.
+        if not decision.remote_allowed and not (personal and self.personal_allowed):
             outcome = self._denial_body(request_id, decision, package)
             outcome.body["inference"] = audit
             return outcome
+
+        if (missing := self._not_found_outcome(request_id, question, audit, decision, package, retrieval)):
+            return missing
 
         if not self.transport_available:
             exc = OmniRouteUnavailableError(
@@ -681,7 +736,7 @@ class AskService:
             return calendar_outcome
 
         evidence = _package_refs(package)
-        payload = self._remote_payload(question, ctx, evidence)
+        payload = self._remote_payload(question, ctx, evidence, retrieval)
         prompt = self._prompt(question, payload)
 
         route = InferenceRoute(
@@ -725,11 +780,74 @@ class AskService:
             decision=decision,
             package=package,
             evidence=evidence,
+            retrieval=retrieval,
         )
         return outcome
 
+    def _usable_retrieval(self, retrieval: RetrievalResult | None) -> RetrievalResult | None:
+        """Personal records never reach a transport that is not the secure route."""
+        if retrieval is not None and retrieval.records and not self.personal_allowed:
+            return None
+        return retrieval
+
+    def _not_found_outcome(
+        self,
+        request_id: str,
+        question: str,
+        audit: dict[str, str],
+        decision: InferRouteDecision,
+        package: ContextPackage,
+        retrieval: RetrievalResult | None,
+    ) -> AskOutcome | None:
+        """A lookup that matched nothing is answered in code: no model call,
+        no citations, and a plain statement of what was searched."""
+        if retrieval is None or retrieval.records:
+            return None
+        intent = retrieval.intent
+        if not (intent.lookup_shaped and intent.has_terms):
+            return None
+        subject = ", ".join(intent.search_terms[:4])
+        where = ", ".join(d.replace("_", " ") for d in retrieval.searched) or "any connected source"
+        answer = f"I found nothing about {subject} in {where}."
+        if retrieval.skipped:
+            answer += " I could not search " + ", ".join(
+                d.replace("_", " ") for d in retrieval.skipped) + " just now."
+        body: dict[str, Any] = {
+            "accepted": True,
+            "executed": True,
+            "service": "context",
+            "request_id": request_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "status": "answered",
+            "request_status": "answered",
+            "answer": answer,
+            "grounded": False,
+            "citations": [],
+            "records": [],
+            "ungrounded_claims": [],
+            "inference": audit,
+            "policy": {
+                "denied": False,
+                "model_tier": decision.model_tier,
+                "remote_allowed": True,
+                "policy_id": decision.policy_id,
+                "sensitivity_class": decision.sensitivity_class,
+            },
+            "provenance": {
+                "context_package_id": package.id,
+                "context_records": [],
+                "searched": list(retrieval.searched),
+            },
+            "result": None,
+        }
+        return AskOutcome(200, body)
+
     def ask_stream(
-        self, request: AskRequest, *, calendar: Any = None
+        self,
+        request: AskRequest,
+        *,
+        calendar: Any = None,
+        retrieval: RetrievalResult | None = None,
     ) -> Iterator[tuple[str, dict[str, Any]]]:
         """Streaming twin of :meth:`ask`: yields ``(event, data)`` pairs.
 
@@ -753,13 +871,20 @@ class AskService:
         ctx = request.context
         audit = self._resolve_inference(request.agent, request.inference)
         provider, model = audit["provider"], audit["model"]
-        package = self._compile(question, ctx, request_id)
-        decision = self._preflight(ctx)
+        retrieval = self._usable_retrieval(retrieval)
+        personal = bool(retrieval and retrieval.records)
+        package = self._compile(question, ctx, request_id, retrieval)
+        decision = self._preflight(ctx, personal)
 
-        if not decision.remote_allowed:
+        if not decision.remote_allowed and not (personal and self.personal_allowed):
             outcome = self._denial_body(request_id, decision, package)
             outcome.body["inference"] = audit
             yield "done", outcome.body
+            return
+        missing = self._not_found_outcome(request_id, question, audit, decision, package, retrieval)
+        if missing is not None:
+            yield "delta", {"text": missing.body["answer"]}
+            yield "done", missing.body
             return
         if not self.transport_available:
             exc = OmniRouteUnavailableError(
@@ -791,7 +916,9 @@ class AskService:
             return
 
         evidence = _package_refs(package)
-        prompt = self._prompt(question, self._remote_payload(question, ctx, evidence))
+        prompt = self._prompt(
+            question, self._remote_payload(question, ctx, evidence, retrieval)
+        )
         parts: list[str] = []
         started = time.monotonic()
         try:
@@ -879,6 +1006,7 @@ class AskService:
             decision=decision,
             package=package,
             evidence=evidence,
+            retrieval=retrieval,
         )
         yield "done", outcome.body
 
@@ -896,9 +1024,17 @@ class AskService:
         decision: InferRouteDecision,
         package: ContextPackage,
         evidence: list[str],
+        retrieval: RetrievalResult | None = None,
     ) -> AskOutcome:
         """The 200 ``answered`` body (shared by ``ask`` and ``ask_stream``)."""
         citations, ungrounded, grounded = _grounded_citations(content, package)
+        found = retrieval.by_id() if retrieval is not None else {}
+        cited_records: list[dict[str, Any]] = []
+        for cite in citations:
+            rec = found.get(cite["record_id"])
+            if rec is not None:
+                cite.update(title=rec.title, domain=rec.domain, link=rec.link, when=rec.when)
+                cited_records.append(rec.public())
         fixture = bool(self._transport and self._transport.fixture_mode)
         body: dict[str, Any] = {
             "accepted": True,
@@ -911,6 +1047,7 @@ class AskService:
             "answer": content,
             "grounded": grounded,
             "citations": citations,
+            "records": cited_records,
             "ungrounded_claims": ungrounded,
             "model": model_name,
             "provider": provider_name,

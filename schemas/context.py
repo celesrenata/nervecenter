@@ -44,6 +44,13 @@ ContextSectionKind = Literal[
     "goals",
     "agent_results",
     "notes",
+    "calendar",
+    "mail",
+    "messages",
+    "voicemail",
+    "contacts",
+    "bills",
+    "personal",
 ]
 
 

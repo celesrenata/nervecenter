@@ -37,6 +37,7 @@ from backend.agents.registry import get_agent_registry
 from backend.api.endpoints._helpers import make_read_router
 from backend.context.ask import AskInference, AskRequest, AskService, get_ask_service
 from backend.context.ask_actions import build_calendar_context, looks_like_calendar_create
+from backend.context.retrieval import RetrievalResult, retrieve
 
 log = structlog.get_logger(__name__)
 
@@ -111,6 +112,7 @@ async def ask(request: Request, body: AskRequest) -> JSONResponse:
     # The pipeline is synchronous (15-25 s of inference); run it off the event
     # loop so the rest of the API keeps serving while it works.
     calendar = await _calendar_context(request, question, body.account_id)
+    retrieval = await _retrieval(request, svc, question, body, calendar)
     outcome = await asyncio.to_thread(
         svc.ask,
         AskRequest(
@@ -122,6 +124,7 @@ async def ask(request: Request, body: AskRequest) -> JSONResponse:
             session_id=body.session_id,
         ),
         calendar=calendar,
+        retrieval=retrieval,
     )
     return JSONResponse(status_code=outcome.status_code, content=outcome.body)
 
@@ -137,6 +140,31 @@ async def _calendar_context(request: Request, question: str, account_id: str | N
     if not looks_like_calendar_create(question):
         return None
     return await build_calendar_context(request.app.state, sub=_sub(request), account_id=account_id)
+
+
+RETRIEVAL_TIMEOUT_S = 6.0
+
+
+async def _retrieval(
+    request: Request, svc: AskService, question: str, body: AskRequest, calendar: Any
+) -> RetrievalResult | None:
+    """Search the user's own records for this question.
+
+    Skipped when the caller supplied grounding context, when this is a calendar
+    action, and unless the transport is the secure local route (NS-ADR-108):
+    personal records never go to any other transport.
+    """
+    if calendar is not None or not svc.personal_allowed:
+        return None
+    if body.context is not None and body.context.fixture_refs:
+        return None
+    try:
+        return await asyncio.wait_for(
+            retrieve(request.app.state, question), RETRIEVAL_TIMEOUT_S
+        )
+    except Exception as exc:  # noqa: BLE001 - Ask still answers, without records
+        log.warning("ask.retrieval_failed", error=type(exc).__name__)
+        return None
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:
@@ -219,6 +247,7 @@ async def ask_stream(request: Request, body: AskRequest) -> Any:
     if body.agent is not None and body.agent != "":
         await _hydrate_agent_binding(request, body.agent)
     calendar = await _calendar_context(request, question, body.account_id)
+    retrieval = await _retrieval(request, svc, question, body, calendar)
     ask_request = AskRequest(
         question=question,
         context=body.context,
@@ -229,7 +258,7 @@ async def ask_stream(request: Request, body: AskRequest) -> Any:
     )
 
     return StreamingResponse(
-        _with_keepalive(lambda: svc.ask_stream(ask_request, calendar=calendar)),
+        _with_keepalive(lambda: svc.ask_stream(ask_request, calendar=calendar, retrieval=retrieval)),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
