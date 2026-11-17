@@ -202,8 +202,10 @@ async def test_tool_loop_is_bounded_and_sums_tokens() -> None:
         }
 
     result = await run_with_tools(infer, "p", mcp.gateway(), AGENT)
-    assert len(prompts) == MAX_ROUNDS + 1 and len(mcp.tool_calls()) == MAX_ROUNDS
-    assert result["input_tokens"] == 2 * (MAX_ROUNDS + 1)
+    # One extra model call asks for the final report once the rounds are spent.
+    assert len(prompts) == MAX_ROUNDS + 2 and len(mcp.tool_calls()) == MAX_ROUNDS
+    assert result["input_tokens"] == 2 * (MAX_ROUNDS + 2)
+    assert "no tool rounds are left" in prompts[-1]
     assert "TOOL_RESULT fetch/fetch" in prompts[-1]
 
 

@@ -206,6 +206,18 @@ async def run_with_tools(
         for k in totals:
             totals[k] += int(result.get(k) or 0)
         latency += float(result.get("e2e_latency_ms") or 0)
+    if parse_calls(strip_invented_results(str(result.get("content", "")))):
+        # The round budget ran out while the model still wanted tools: ask for the report.
+        current = (
+            f"{current}\n\n{strip_invented_results(str(result.get('content', '')))}\n\n"
+            "TOOL_RESULT: no tool rounds are left. Do not write any TOOL_CALL. Write the final "
+            "Markdown report now from the results above, listing what you could not check."
+        )
+        round_no += 1
+        result = await call_model(current, round_no)
+        for k in totals:
+            totals[k] += int(result.get(k) or 0)
+        latency += float(result.get("e2e_latency_ms") or 0)
     merged = dict(result)
     merged.update(totals)
     if latency:

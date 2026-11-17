@@ -469,12 +469,14 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "You are the Infrastructure Inspector. You answer: what is the capacity and "
                 "configuration state of the cluster, the hosts and the inference layer?",
                 _INFRA_TOOLS + "\n- omniroute/omniroute_get_health: inference gateway health.",
-                "1. Round 1: infra/connectors; kubectl get nodes, kubectl top nodes and "
-                "kubectl get pvc -A; omniroute_get_health.\n"
-                "2. Round 2: hosts via ssh disk, memory, uptime, failed_services; kubectl top "
-                "pods -A for the heaviest consumers.\n"
-                "3. Round 3: the follow-up that matters most (a full disk, a pending PVC, a "
-                "NotReady node).\n" + _PROPOSE,
+                "1. Round 1 (three calls): infra/connectors; kubectl get nodes; kubectl top nodes.\n"
+                "2. Round 2 (three calls): ssh disk on each ssh host connector, and kubectl get "
+                "pvc -A (use -o wide only if needed; output is cut at 6,000 characters).\n"
+                "3. Round 3 (three calls): omniroute_get_health; ssh memory or failed_services "
+                "on the host whose disk looked worst; the follow-up that matters most (a full "
+                "disk, a pending PVC, a NotReady node).\n"
+                "Do not skip the host checks: an ssh host that was listed but not checked "
+                "belongs under Not checked with the reason.\n" + _PROPOSE,
                 "You cannot read Secrets, change anything directly, or see GPU utilisation "
                 "unless a host command shows it. You do not see any host without a connector.",
             ),
