@@ -531,7 +531,7 @@ def test_migration_up_then_down(tmp_path):
 
 def test_migration_single_head_chained_on_016(tmp_path):
     script = ScriptDirectory.from_config(_cfg(f"sqlite:///{tmp_path / 'noop.db'}"))
-    assert list(script.get_heads()) == ["046_pentest_scope_guard"]
+    assert list(script.get_heads()) == ["045_kube_agent"]
     assert (
         script.get_revision("025_mail_expect_feedback").down_revision
         == "024_mail_expectedness"

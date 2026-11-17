@@ -51,6 +51,7 @@ from .obligations import (
     OBLIGATION_TYPES,
     ObligationRow,
 )
+from .kube import KubeIssue, KubeOverride, KubeReport, KubeSettings
 from .omniroute_keys import OmniRouteKeyAudit
 from .openai_usage import EscalationGrant, OpenAICall
 from .pentest import (
@@ -94,6 +95,10 @@ __all__ = [
     "AgentResourceLink",
     "InfraConnector",
     "InfraPlan",
+    "KubeIssue",
+    "KubeOverride",
+    "KubeReport",
+    "KubeSettings",
     "PentestAdvisoryCache",
     "PentestAllowlist",
     "PentestFinding",

@@ -98,8 +98,109 @@ def _mentions_secrets(arg: str) -> bool:
     return False
 
 
-def check_kubectl(args: Any, *, act: bool = False, stdin: str | None = None) -> list[str]:
-    """Validated kubectl arguments (without the ``kubectl`` binary), or PolicyError."""
+#: ``exec`` under the kube guard: the owner's approved commands only (NS-ADR-120).
+EXEC_ALLOWED = MappingProxyType({
+    "php": "occ upgrade | occ db:*",
+    "occ": "upgrade | db:*",
+    "mysqlcheck": "any options",
+    "redis-check-aof": "any options (--fix mutates)",
+    "redis-check-rdb": "any options",
+})
+_EXEC_NAME = re.compile(r"^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$")
+_EXEC_NS = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
+_MYSQL_MUTATING_LONG = ("--repair", "--auto-repair", "--optimize")
+_MYSQL_SHORT_MUTATING = re.compile(r"^-[A-Za-z]*[ro][A-Za-z]*$")
+
+
+def _exec_parts(args: list[str]) -> tuple[str, str, list[str]]:
+    """(namespace, pod, argv) of ``exec -n <ns> <pod> [-c <c>] -- <argv>`` or PolicyError."""
+    if "--" not in args:
+        raise PolicyError("exec_not_allowed")
+    cut = args.index("--")
+    head, argv = args[1:cut], args[cut + 1:]
+    ns: str | None = None
+    pods: list[str] = []
+    i = 0
+    while i < len(head):
+        a = head[i]
+        if a in ("-n", "--namespace", "-c", "--container"):
+            if i + 1 >= len(head):
+                raise PolicyError("exec_not_allowed")
+            if a in ("-n", "--namespace"):
+                ns = head[i + 1]
+            elif not _EXEC_NAME.match(head[i + 1]):
+                raise PolicyError("exec_not_allowed")
+            i += 2
+        elif a.startswith("--namespace="):
+            ns = a.split("=", 1)[1]
+            i += 1
+        elif a.startswith("--container="):
+            if not _EXEC_NAME.match(a.split("=", 1)[1]):
+                raise PolicyError("exec_not_allowed")
+            i += 1
+        elif a.startswith("-"):
+            raise PolicyError("exec_not_allowed")
+        else:
+            pods.append(a)
+            i += 1
+    if ns is None or not _EXEC_NS.match(ns) or len(pods) != 1:
+        raise PolicyError("exec_not_allowed")
+    if "/" in pods[0] or not _EXEC_NAME.match(pods[0]) or not argv:
+        raise PolicyError("exec_not_allowed")
+    if argv[:4] == ["runuser", "-u", "www-data", "--"]:
+        argv = argv[4:]
+    if not argv:
+        raise PolicyError("exec_not_allowed")
+    return ns, pods[0], argv
+
+
+def _occ_command(argv: list[str]) -> str | None:
+    """The occ sub-command of ``php occ ...`` or ``occ ...``, else None."""
+    def is_occ(token: str) -> bool:
+        return token == "occ" or token.endswith("/occ")
+    if argv[0] == "php" and len(argv) > 2 and is_occ(argv[1]):
+        return argv[2]
+    if is_occ(argv[0]) and len(argv) > 1:
+        return argv[1]
+    return None
+
+
+def check_exec(args: list[str]) -> list[str]:
+    """``exec`` args under the kube guard, or PolicyError('exec_not_allowed')."""
+    _, _, argv = _exec_parts(args)
+    occ = _occ_command(argv)
+    if occ is not None:
+        if occ == "upgrade" or occ.startswith("db:"):
+            return args
+        raise PolicyError("exec_not_allowed")
+    if argv[0] in ("mysqlcheck", "redis-check-aof", "redis-check-rdb"):
+        return args
+    raise PolicyError("exec_not_allowed")
+
+
+def exec_is_mutating(args: list[str]) -> bool:
+    """Whether an (already allowed) exec step changes data."""
+    if not args or args[0] != "exec":
+        return False
+    _, _, argv = _exec_parts(args)
+    occ = _occ_command(argv)
+    if occ is not None:
+        return occ == "upgrade" or occ.startswith("db:")
+    rest = argv[1:]
+    if argv[0] == "mysqlcheck":
+        return any(_flag_name(a) in _MYSQL_MUTATING_LONG or _MYSQL_SHORT_MUTATING.match(a)
+                   for a in rest)
+    if argv[0] == "redis-check-aof":
+        return any(_flag_name(a) == "--fix" for a in rest)
+    return False
+
+
+def check_kubectl(args: Any, *, act: bool = False, stdin: str | None = None,
+                  kube_guard: bool = False) -> list[str]:
+    """Validated kubectl arguments (without the ``kubectl`` binary), or PolicyError.
+
+    ``kube_guard`` (act mode, kube_doctor plans) restricts ``exec`` to ``check_exec``.
+    """
     args = _clean_args(args)
     verb = args[0]
     if verb in KUBECTL_FORBIDDEN_VERBS:
@@ -117,6 +218,8 @@ def check_kubectl(args: Any, *, act: bool = False, stdin: str | None = None) -> 
         if stdin is not None:
             raise PolicyError("stdin_forbidden")
         return args
+    if kube_guard and verb == "exec":
+        check_exec(args)
     # Act: local files only as "-f -" with the manifest given in the step's stdin.
     for i, a in enumerate(args):
         name = _flag_name(a)
@@ -186,10 +289,13 @@ def redact(text: str) -> str:
 
 
 __all__ = [
+    "EXEC_ALLOWED",
     "KUBECTL_READ_VERBS",
     "PolicyError",
     "SSH_READ_COMMANDS",
+    "check_exec",
     "check_kubectl",
+    "exec_is_mutating",
     "check_ssh_act_command",
     "redact",
     "ssh_read_command",

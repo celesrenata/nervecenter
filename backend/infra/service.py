@@ -33,6 +33,7 @@ from backend.infra.policy import (
     redact,
     ssh_read_command,
 )
+from backend.kube.guard import GuardError
 from backend.persistence.models.infra import InfraConnector, InfraPlan
 
 log = structlog.get_logger(__name__)
@@ -153,6 +154,8 @@ class InfraService:
         self._sessions = session_factory
         self._vault = vault  # registry.connections (upsert_secret/get_secret/delete_secret)
         self._handoffs = handoffs
+        #: KubeGuard for plans with ``guard == "kube"`` (set by get_service; None = unavailable)
+        self.kube_guard: Any = None
         self._tasks: set[asyncio.Task[Any]] = set()
         # Live output of the step running now, per plan (memory only; see live_view).
         self._live: dict[str, dict[str, Any]] = {}
@@ -273,10 +276,11 @@ class InfraService:
     # -- running ----------------------------------------------------------------------
 
     async def _execute(self, row: InfraConnector, step: dict[str, Any], *, act: bool,
-                       on_output: Any = None) -> executor.RunResult:
+                       on_output: Any = None, kube_guard: bool = False) -> executor.RunResult:
         secret = await self._secret(row.id)
         if row.kind == "kubernetes":
-            args = check_kubectl(step.get("args"), act=act, stdin=step.get("stdin"))
+            args = check_kubectl(step.get("args"), act=act, stdin=step.get("stdin"),
+                                 kube_guard=kube_guard)
             return await executor.run_kubectl(row.config or {}, secret, args,
                                               on_output=on_output,
                                               stdin=step.get("stdin"), act=act)
@@ -304,7 +308,8 @@ class InfraService:
 
     # -- plans ------------------------------------------------------------------------
 
-    async def _validate_steps(self, steps: Any, *, act: bool) -> list[dict[str, Any]]:
+    async def _validate_steps(self, steps: Any, *, act: bool,
+                              kube_guard: bool = False) -> list[dict[str, Any]]:
         if not isinstance(steps, list) or len(steps) > MAX_STEPS:
             raise InfraInputError(f"steps: a list of at most {MAX_STEPS}")
         out: list[dict[str, Any]] = []
@@ -321,7 +326,8 @@ class InfraService:
                 try:
                     if row.kind == "kubernetes":
                         step["args"] = check_kubectl(raw.get("args"), act=act,
-                                                     stdin=raw.get("stdin"))
+                                                     stdin=raw.get("stdin"),
+                                                     kube_guard=kube_guard)
                         if raw.get("stdin") is not None:
                             step["stdin"] = raw["stdin"]
                     elif act:
@@ -337,6 +343,8 @@ class InfraService:
                     step["requires"] = _index_list(raw["requires"], own, "requires")
                 if raw.get("on_failure_of") is not None:
                     step["on_failure_of"] = _index_list(raw["on_failure_of"], own, "on_failure_of")
+                if raw.get("rollback"):
+                    step["rollback"] = str(raw["rollback"])[:500]
                 if raw.get("kind") is not None:
                     if raw["kind"] not in STEP_KINDS:
                         raise InfraInputError(f"step {own}: kind must be one of "
@@ -345,19 +353,35 @@ class InfraService:
                 out.append(step)
         return out
 
-    async def propose(self, agent_id: str | None, payload: dict[str, Any]) -> dict[str, Any]:
+    async def propose(self, agent_id: str | None, payload: dict[str, Any],
+                      guard: str | None = None) -> dict[str, Any]:
         title = str(payload.get("title") or "").strip()
         if not 1 <= len(title) <= 200:
             raise InfraInputError("title: 1-200 characters")
-        steps = await self._validate_steps(payload.get("steps"), act=True)
+        if guard not in (None, "kube"):
+            raise InfraInputError("unknown guard")
+        issue_key = str(payload.get("issue_key") or "").strip()
+        if guard == "kube":
+            if self.kube_guard is None:
+                raise InfraInputError("the kube guard is not available")
+            if not 1 <= len(issue_key) <= 300:
+                raise InfraInputError("issue_key: 1-300 characters")
+        steps = await self._validate_steps(payload.get("steps"), act=True,
+                                           kube_guard=guard == "kube")
         if not steps:
             raise InfraInputError("a plan needs at least one step")
+        if guard == "kube":
+            try:
+                await self.kube_guard.check_plan(steps, issue_key)
+            except GuardError as exc:
+                raise InfraInputError(f"plan refused: {exc.code}") from exc
         verify = await self._validate_steps(payload.get("verify") or [], act=False)
         plan = InfraPlan(agent_id=agent_id, title=title,
                          summary=str(payload.get("summary") or "")[:8_000],
                          steps=steps, verify=verify,
                          rollback=str(payload.get("rollback") or "")[:8_000],
-                         status="proposed", results=[])
+                         status="proposed", results=[], guard=guard,
+                         issue_key=issue_key if guard == "kube" else None)
         async with self._sessions() as s:
             s.add(plan)
             await s.commit()
@@ -475,6 +499,8 @@ class InfraService:
             if nxt is None or index != nxt or not 0 <= index < len(p.steps):
                 raise InfraInputError("steps run in order; that is not the next selected step")
             step = dict(p.steps[index])
+            guarded = p.guard == "kube"
+            plan_ctx = {"steps": list(p.steps), "issue_key": p.issue_key}
             by_index = {r["index"]: r for r in results}
             for need in step.get("requires") or []:
                 got = by_index.get(need)
@@ -505,8 +531,13 @@ class InfraService:
                 buf[:] = [joined]
 
         try:
-            res = (await self._execute(row, step, act=True, on_output=on_output)).as_dict()
-        except (PolicyError, executor.ExecutorError) as exc:
+            if guarded:
+                if self.kube_guard is None:
+                    raise GuardError("guard_unavailable")
+                await self.kube_guard.check_step_now(plan_ctx, index)
+            res = (await self._execute(row, step, act=True, on_output=on_output,
+                                       kube_guard=guarded)).as_dict()
+        except (PolicyError, executor.ExecutorError, GuardError) as exc:
             res = {"ok": False, "exit": None, "output": f"[refused: {exc.code}]"}
         finally:
             if self._live.get(plan_id) is live:
@@ -550,6 +581,10 @@ def get_service(app: Any) -> InfraService | None:
 
     svc = InfraService(registry.session_factory, registry.connections,
                        handoffs=handoffs_service(app))
+    from backend.kube.guard import KubeGuard
+    from backend.kube.settings import KubeOverrideStore, KubeSettingsStore
+    settings = KubeSettingsStore(registry.session_factory)
+    svc.kube_guard = KubeGuard(settings, KubeOverrideStore(registry.session_factory, settings))
     app.state.infra_service = svc
     return svc
 
