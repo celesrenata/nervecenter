@@ -24,6 +24,7 @@ async function installStreamFake(page: Page) {
           send: (ev: string, data: unknown) =>
             ctrl.enqueue(enc.encode(`event: ${ev}\ndata: ${JSON.stringify(data)}\n\n`)),
           close: () => ctrl.close(),
+          drop: () => ctrl.error(new TypeError('Load failed')),
         })
         return Promise.resolve(
           new Response(stream, { status: 200, headers: { 'Content-Type': 'text/event-stream' } }),
@@ -187,4 +188,25 @@ test('a busy model shows the retry status until the answer starts', async ({ pag
   await push(page, 0, 'done', { answer: 'I am here.', status: 'answered' })
   await closeStream(page, 0)
   await expect(bubble(page, 'I am here.')).toBeVisible()
+})
+
+test('a dropped connection before any text is retried and the answer arrives', async ({ page }) => {
+  await installStreamFake(page)
+  await seedBreakGlassSession(page)
+  await page.goto('/ask', { waitUntil: 'domcontentloaded' })
+  await ask(page, 'please survive a drop')
+  await expect.poll(() => streams(page)).toBe(1)
+  await push(page, 0, 'meta', { request_id: 'r1', session_id: 's' })
+  await page.evaluate(() => (window as any).__askCtls[0].drop())
+  await expect(page.getByTestId('ask-status')).toContainText('The connection dropped (Load failed)')
+  await expect(page.getByTestId('ask-status')).toContainText('retry 1 of 3')
+  // The retry re-sends the same question.
+  await expect.poll(() => streams(page), { timeout: 10_000 }).toBe(2)
+  const bodies = await page.evaluate(() => (window as any).__askBodies.map((b: string) => JSON.parse(b).question))
+  expect(bodies).toEqual(['please survive a drop', 'please survive a drop'])
+  await push(page, 1, 'delta', { text: 'Survived.' })
+  await push(page, 1, 'done', { answer: 'Survived.', status: 'answered' })
+  await closeStream(page, 1)
+  await expect(bubble(page, 'Survived.')).toBeVisible()
+  await expect(page.getByTestId('ask-status')).toHaveCount(0)
 })

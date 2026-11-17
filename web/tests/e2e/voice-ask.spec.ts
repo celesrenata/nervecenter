@@ -381,6 +381,7 @@ test('confirm-first off: a created event offers Undo', async ({ page }) => {
 })
 
 test('specific error messages for 401, network failure and unavailable inference', async ({ page }) => {
+  test.setTimeout(60_000)
   await mockVoice(page)
   await page.route('**/api/auth/refresh', (route) => route.fulfill({ status: 500, json: { detail: 'down' } }))
   let mode: '401' | 'network' | 'unavailable' = '401'
@@ -412,7 +413,9 @@ test('specific error messages for 401, network failure and unavailable inference
 
   mode = 'network'
   await sendQuestion(page, 'two')
-  await expect(page.getByText('Could not reach the server', { exact: false })).toBeVisible()
+  // A refused connection is retried (3 times) before the specific error shows.
+  await expect(page.getByTestId('ask-status')).toContainText('retry 1 of 3')
+  await expect(page.getByText('The connection to the server dropped', { exact: false })).toBeVisible({ timeout: 30_000 })
 
   mode = 'unavailable'
   await sendQuestion(page, 'three')

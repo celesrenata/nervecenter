@@ -5,7 +5,6 @@ import json
 from pathlib import Path
 from typing import Any
 
-import pytest
 from test_ask_calendar_create import SENTENCE, World, world  # noqa: F401 - fixture import
 
 from backend.context.ask import AskService
@@ -202,3 +201,29 @@ async def test_a_partial_answer_is_never_retried(world: World) -> None:
         "error",
         {"code": "stream_interrupted", "message": "The answer stopped before it finished."},
     )
+
+
+async def test_quiet_streams_get_keepalive_comments_and_events_pass_through() -> None:
+    import time as _time
+
+    from backend.api.endpoints.context import _with_keepalive
+
+    def slow():
+        yield "meta", {"request_id": "r"}
+        _time.sleep(0.35)
+        yield "done", {"status": "answered"}
+
+    frames = [f async for f in _with_keepalive(slow, interval=0.1)]
+    assert frames[0].startswith("event: meta") and frames[-1].startswith("event: done")
+    assert ": keep-alive\n\n" in frames[1:-1]
+
+
+async def test_producer_crash_becomes_one_error_event() -> None:
+    from backend.api.endpoints.context import _with_keepalive
+
+    def broken():
+        yield "meta", {}
+        raise RuntimeError("secret detail")
+
+    frames = [f async for f in _with_keepalive(broken, interval=5)]
+    assert frames[-1].startswith("event: error") and "secret detail" not in frames[-1]

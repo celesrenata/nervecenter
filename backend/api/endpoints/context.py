@@ -23,11 +23,13 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Iterator
+import threading
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
+import structlog
 from fastapi import Request
 from starlette.responses import JSONResponse, StreamingResponse
 
@@ -35,6 +37,8 @@ from backend.agents.registry import get_agent_registry
 from backend.api.endpoints._helpers import make_read_router
 from backend.context.ask import AskInference, AskRequest, AskService, get_ask_service
 from backend.context.ask_actions import build_calendar_context, looks_like_calendar_create
+
+log = structlog.get_logger(__name__)
 
 router = make_read_router(
     prefix="/api/context",
@@ -139,6 +143,54 @@ def _sse(event: str, data: dict[str, Any]) -> str:
     return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
 
 
+#: Seconds of silence before a keep-alive comment. A model can take minutes to
+#: load; a comment line keeps every hop (and the browser) from treating the
+#: open stream as dead. SSE clients ignore lines starting with ":".
+KEEPALIVE_S = 5.0
+_STREAM_END = object()
+
+
+async def _with_keepalive(
+    make: Any, interval: float | None = None
+) -> AsyncIterator[str]:
+    """Run the blocking ask generator in a worker thread; yield its events as
+    SSE frames and a ``: keep-alive`` comment whenever it is quiet."""
+    wait = KEEPALIVE_S if interval is None else interval
+    loop = asyncio.get_running_loop()
+    queue: asyncio.Queue[Any] = asyncio.Queue()
+    stop = threading.Event()
+
+    def produce() -> None:
+        try:
+            for name, data in make():
+                if stop.is_set():
+                    return
+                loop.call_soon_threadsafe(queue.put_nowait, _sse(name, data))
+        except Exception as exc:  # noqa: BLE001 - one safe error event, no detail
+            log.warning("ask.stream_producer_failed", error=type(exc).__name__)
+            frame = _sse(
+                "error", {"code": "ask_failed", "message": "The answer could not be produced."}
+            )
+            loop.call_soon_threadsafe(queue.put_nowait, frame)
+        finally:
+            loop.call_soon_threadsafe(queue.put_nowait, _STREAM_END)
+
+    worker = threading.Thread(target=produce, name="ask-stream", daemon=True)
+    worker.start()
+    try:
+        while True:
+            try:
+                item = await asyncio.wait_for(queue.get(), timeout=wait)
+            except TimeoutError:
+                yield ": keep-alive\n\n"
+                continue
+            if item is _STREAM_END:
+                return
+            yield item
+    finally:
+        stop.set()  # client gone: the worker stops at its next event
+
+
 @router.post("/ask/stream")
 async def ask_stream(request: Request, body: AskRequest) -> Any:
     """Streaming ask (server-sent events).
@@ -176,12 +228,8 @@ async def ask_stream(request: Request, body: AskRequest) -> Any:
         session_id=body.session_id,
     )
 
-    def events() -> Iterator[str]:
-        for name, data in svc.ask_stream(ask_request, calendar=calendar):
-            yield _sse(name, data)
-
     return StreamingResponse(
-        events(),
+        _with_keepalive(lambda: svc.ask_stream(ask_request, calendar=calendar)),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

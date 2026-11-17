@@ -96,9 +96,29 @@ export function describeAskError(err: unknown): string {
     if (err.status >= 500) return `The server failed to answer (HTTP ${err.status}): ${err.detail}`
     return `The request failed (HTTP ${err.status}): ${err.detail}`
   }
-  if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.'
+  if (err instanceof TypeError) {
+    const why = err.message ? ` (${err.message})` : ''
+    return `The connection to the server dropped${why}. NerveCenter retried and gave up; try again in a moment.`
+  }
   return `Ask failed: ${err instanceof Error ? err.message : String(err)}`
 }
+
+/** Connection drops before any answer text are retried this many times. */
+export const STREAM_RETRIES = 3
+const STREAM_RETRY_DELAYS_MS = [2000, 5000, 10000]
+let retryDelays = STREAM_RETRY_DELAYS_MS
+/** Test hook: shorten the waits between stream retries. */
+export function setStreamRetryDelaysForTest(ms: number[]): void {
+  retryDelays = ms
+}
+const sleepMs = (ms: number, signal: AbortSignal) =>
+  new Promise<void>((resolve) => {
+    const t = setTimeout(resolve, ms)
+    signal.addEventListener('abort', () => {
+      clearTimeout(t)
+      resolve()
+    })
+  })
 
 function newId(): string {
   return typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -376,6 +396,7 @@ export const askSessions = {
     const patch = (fn: (m: ChatMessage) => ChatMessage) => patchMessage(sessionId, assistantId, fn)
 
     let finished = false
+    let gotText = false
     try {
       const inference =
         overrides.model || overrides.provider
@@ -384,14 +405,14 @@ export const askSessions = {
               ...(overrides.provider ? { provider: overrides.provider } : {}),
             }
           : undefined
-      await postAskStream(
-        {
-          question,
-          session_id: sessionId,
-          ...(overrides.agent ? { agent: overrides.agent } : {}),
-          ...(inference ? { inference } : {}),
-        },
-        (ev) => {
+      const body = {
+        question,
+        session_id: sessionId,
+        ...(overrides.agent ? { agent: overrides.agent } : {}),
+        ...(inference ? { inference } : {}),
+      }
+      const onEvent = (ev: Parameters<Parameters<typeof postAskStream>[1]>[0]) => {
+          if (ev.type === 'delta' && ev.data.text) gotText = true
           if (ev.type === 'status') {
             patch((m) => ({ ...m, status: ev.data.message ?? 'Waiting for the model…' }))
           } else if (ev.type === 'delta') {
@@ -461,9 +482,28 @@ export const askSessions = {
               content: m.content ? `${m.content}\n\n${content}` : content,
             }))
           }
-        },
-        abort.signal,
-      )
+      }
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await postAskStream(body, onEvent, abort.signal)
+          break
+        } catch (error) {
+          // Only a dropped connection before any answer text is retried; the
+          // server then starts the answer again from scratch.
+          if (abort.signal.aborted || gotText || finished || !(error instanceof TypeError) || attempt >= STREAM_RETRIES) {
+            throw error
+          }
+          const wait = retryDelays[Math.min(attempt, retryDelays.length - 1)]
+          patch((m) => ({
+            ...m,
+            status: `The connection dropped (${error.message || 'network error'}). Reconnecting in ${Math.round(
+              wait / 1000,
+            )} s (retry ${attempt + 1} of ${STREAM_RETRIES}).`,
+          }))
+          await sleepMs(wait, abort.signal)
+          if (abort.signal.aborted) return
+        }
+      }
       if (!finished) {
         q.end()
         patch((m) => ({ ...m, content: m.content || 'The answer stream ended before any answer arrived.' }))
@@ -472,7 +512,7 @@ export const askSessions = {
       if (abort.signal.aborted) return
       q.stop()
       const content = describeAskError(error)
-      patch((m) => ({ ...m, content: m.content ? `${m.content}\n\n${content}` : content }))
+      patch((m) => ({ ...m, status: undefined, content: m.content ? `${m.content}\n\n${content}` : content }))
     } finally {
       if (aborts.get(sessionId) === abort) {
         aborts.delete(sessionId)
