@@ -117,7 +117,7 @@ async def test_stream_accepts_account_and_session_fields(world: World) -> None:
 async def test_streamed_plain_answer_uses_the_model_stream(world: World) -> None:
     events = stream(world, "hello world")
     assert [d["text"] for n, d in events if n == "delta"] == ["A ", "streamed ", "answer."]
-    assert events[-1][1]["answer"] == "A streamed answer."
+    assert events[-1][1]["answer"].startswith("A streamed answer.")
 
 
 class FlakyTransport:

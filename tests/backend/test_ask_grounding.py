@@ -21,17 +21,19 @@ class SecureModel:
     fixture_mode = True
     base_url = "http://omniroute.invalid"
 
-    def __init__(self, cite_extra: str | None = None) -> None:
+    def __init__(self, cite_extra: str | None = None, ref_form: bool = False) -> None:
         self.prompts: list[str] = []
         self.cite_extra = cite_extra
+        self.ref_form = ref_form
 
     def check(self, model: str) -> None:
         return None
 
     def _reply(self, prompt: str) -> str:
         ids = re.findall(r"^REF (\S+):", prompt, re.MULTILINE)
-        text = f"It is on your calendar [{ids[0]}]." if ids else "I have no records for that."
-        return text + (f" Also [{self.cite_extra}]." if self.cite_extra else "")
+        mark = (lambda i: f"[REF {i}]") if self.ref_form else (lambda i: f"[{i}]")
+        text = f"It is on your calendar {mark(ids[0])}." if ids else "I have no records for that."
+        return text + (f" Also {mark(self.cite_extra)}." if self.cite_extra else "")
 
     def generate(self, model, prompt, parameters=None, timeout=None, *, kind=None, **kw):
         self.prompts.append(prompt)
@@ -92,6 +94,47 @@ def test_prompt_carries_real_content_never_placeholder_ids() -> None:
     ask(client_for(prompt), "When is my piano lesson?")
     assert "Piano lesson with Marta" in prompt.prompts[0]
     assert FAKE_TOKEN not in prompt.prompts[0]
+
+
+def test_ref_marker_form_resolves_to_the_real_record() -> None:
+    body = ask(client_for(SecureModel(ref_form=True)), "When is my piano lesson?")
+    assert body["grounded"] is True and body["ungrounded_claims"] == []
+    cite = body["citations"][0]
+    assert cite["record_id"].startswith("cal-") and cite["title"] == "Piano lesson with Marta"
+    assert cite["domain"] == "calendar" and cite["when"]
+    assert body["records"][0]["id"] == cite["record_id"]
+
+
+def test_unknown_ref_id_is_ungrounded_and_dropped() -> None:
+    body = ask(client_for(SecureModel(cite_extra="cal-ffffffffff", ref_form=True)), "When is my piano lesson?")
+    assert body["ungrounded_claims"] == ["cal-ffffffffff"] and body["grounded"] is False
+    assert all(c["record_id"] != "cal-ffffffffff" for c in body["citations"]) and body["citations"]
+
+
+def test_citation_parser_accepts_both_forms_and_lists() -> None:
+    from backend.context.ask import _citation_markers
+    text = "a [REF mail-6b1d4abb1a] b [cal-0123456789] c [REF: x-1, REF y-2] d [see note] e [REF  z_3]"
+    assert _citation_markers(text) == ["mail-6b1d4abb1a", "cal-0123456789", "x-1", "y-2", "z_3"]
+
+
+def test_prompt_asks_for_the_form_the_parser_reads() -> None:
+    model = SecureModel()
+    ask(client_for(model), "When is my piano lesson?")
+    from backend.context.ask import _citation_markers
+    instruction = [ln for ln in model.prompts[0].splitlines() if "[REF" in ln and "exactly like" in ln]
+    assert instruction and _citation_markers(instruction[0])[0] == "mail-1234abcd"
+
+
+def test_failed_domain_is_named_only_when_one_failed(monkeypatch: pytest.MonkeyPatch) -> None:
+    clean = ask(client_for(SecureModel()), "When is my piano lesson?")
+    assert "could not search" not in clean["answer"]
+    from backend.context.retrieval import sources, service
+
+    async def boom(state, intent, limit):
+        raise RuntimeError("down")
+    monkeypatch.setattr(service, "ADAPTERS", {**sources.ADAPTERS, "bills": boom})
+    hurt = ask(client_for(SecureModel()), "When is my piano lesson?")
+    assert hurt["answer"].endswith("I could not search bills just now.") and hurt["citations"]
 
 
 def test_a_cited_id_that_was_not_retrieved_is_ungrounded() -> None:

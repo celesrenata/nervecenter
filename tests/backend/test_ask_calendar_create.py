@@ -277,12 +277,12 @@ async def test_past_start_is_rejected_without_a_proposal(world: World) -> None:
 async def test_unusable_extraction_falls_through_to_the_normal_answer(world: World) -> None:
     world.model.extract_reply = "I cannot do that"
     body = world.propose()
-    assert body["status"] == "answered" and body["answer"] == "A plain answer."
+    assert body["status"] == "answered" and body["answer"].startswith("A plain answer.")
 
 
 async def test_non_calendar_question_costs_no_extra_inference(world: World) -> None:
     body = world.propose(question="what is on my calendar tomorrow?")
-    assert body["answer"] == "A plain answer."
+    assert body["answer"].startswith("A plain answer.")
     assert [c["kind"] for c in world.model.calls] == [None]
 
 

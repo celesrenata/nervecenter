@@ -8,7 +8,7 @@ from typing import Any
 
 from backend.agents.tools.nerve import ES_URL_ENV, NerveToolError, NerveTools
 from backend.context.retrieval.intent import Intent
-from backend.context.retrieval.sources._util import make
+from backend.context.retrieval.sources._util import make_all
 from backend.context.retrieval.types import Record
 
 
@@ -25,8 +25,8 @@ async def logs(state: Any, intent: Intent, limit: int, *, es_transport: Any = No
         )
     except NerveToolError as exc:
         raise RuntimeError(exc.reason) from None  # counted as skipped by the service
-    return [
-        make("logs", f"{r.get('t')}:{r.get('pod')}:{r.get('msg')}", f"{r.get('ns')}/{r.get('pod')}",
-             r.get("msg"), r.get("t"))
+    return await make_all([
+        ("logs", f"{r.get('t')}:{r.get('pod')}:{r.get('msg')}", f"{r.get('ns')}/{r.get('pod')}",
+         r.get("msg"), r.get("t"))
         for r in result.get("items", [])
-    ]
+    ])

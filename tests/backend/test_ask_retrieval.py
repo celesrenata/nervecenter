@@ -201,3 +201,52 @@ async def test_unreachable_log_store_is_skipped(monkeypatch: pytest.MonkeyPatch)
 
     result = await retrieve(SimpleNamespace(), "why did the web pod crash?", NOW, adapters={"logs": adapter})
     assert result.skipped == ["logs"] and result.records == []
+
+
+async def test_cpu_bound_scrubbing_never_blocks_the_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: mail scrubbing ran on the event loop for seconds, so every
+    database-backed adapter awaiting beside it timed out at the same instant."""
+    import asyncio
+    import threading
+    import time
+    from backend.context.retrieval.sources import _util
+    real_make = _util.make
+    threads: list[str] = []
+
+    def slow_make(*args, **kwargs):
+        threads.append(threading.current_thread().name)
+        time.sleep(0.02)
+        return real_make(*args, **kwargs)
+    monkeypatch.setattr(_util, "make", slow_make)
+    state = make_state()
+    for i in range(40):  # 40 threads x 20 ms of scrubbing = 0.8 s of blocking work
+        state.email_service.ingest({
+            "message_id": f"bulk-{i}", "from_address": f"s{i}@example.test", "to_address": "me@example.test",
+            "subject": f"Bulk {i}", "body": "x", "timestamp": (NOW - timedelta(days=3, minutes=i)).isoformat(),
+        })
+
+    gaps: list[float] = []
+
+    async def heartbeat() -> None:  # any other coroutine on the loop, e.g. a database await
+        last = time.perf_counter()
+        while True:
+            await asyncio.sleep(0.01)
+            now = time.perf_counter()
+            gaps.append(now - last)
+            last = now
+    ticker = asyncio.create_task(heartbeat())
+    result = await retrieve(state, "bulk", NOW, adapters={"mail": ADAPTERS["mail"]}, timeout=10)
+    ticker.cancel()
+    assert result.skipped == [] and len(result.records) > 5
+    assert max(gaps) < 0.25, max(gaps)  # blocking on the loop would show one gap of ~0.8 s
+    assert threads and threading.main_thread().name not in threads
+
+
+def test_url_userinfo_redaction_is_linear_on_long_tokens() -> None:
+    import time
+    from backend.connectors.redact import redact_message
+    blob = ("a" * 20000) + " me@example.test"
+    started = time.perf_counter()
+    redact_message(blob, limit=30000)
+    assert time.perf_counter() - started < 0.5
+    assert redact_message("see https://bob:hunter2@host.test/x", limit=100) == "see https://bob@host.test/x"

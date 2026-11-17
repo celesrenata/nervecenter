@@ -110,8 +110,22 @@ log = structlog.get_logger(__name__)
 #: transport replays recorded fixtures instead of the network.
 FIXTURE_MARKER = "fixture"
 
-#: Citation markers embedded in model output, e.g. ``[INC-7]``.
-_CITATION_RE = re.compile(r"\[([A-Za-z0-9_][A-Za-z0-9_\-]*)\]")
+#: Citation markers embedded in model output: ``[REF mail-6b1d4abb1a]`` (the form
+#: the prompt asks for), the bare ``[mail-6b1d4abb1a]``, and lists such as
+#: ``[REF a, REF b]``. Each bracket group is split into ids by ``_CITATION_ID_RE``.
+_CITATION_GROUP_RE = re.compile(r"\[([^\[\]]{1,300})\]")
+_CITATION_ID_RE = re.compile(r"^(?:REF[\s:=]+)?([A-Za-z0-9_][A-Za-z0-9_\-]*)$", re.IGNORECASE)
+
+
+def _citation_markers(content: str) -> list[str]:
+    """Record ids cited in ``content``, in order of appearance, duplicates kept."""
+    found: list[str] = []
+    for group in _CITATION_GROUP_RE.findall(content or ""):
+        for part in re.split(r"[,;]", group):
+            match = _CITATION_ID_RE.match(part.strip())
+            if match:
+                found.append(match.group(1))
+    return found
 
 
 class AskContext(BaseModel):
@@ -325,6 +339,13 @@ def _build_sources(
     return sources
 
 
+def _skipped_notice(retrieval: RetrievalResult | None) -> str:
+    """Words for the user when a source truly failed; empty when none did."""
+    if retrieval is None or not retrieval.skipped:
+        return ""
+    return " I could not search " + ", ".join(d.replace("_", " ") for d in retrieval.skipped) + " just now."
+
+
 def _package_refs(package: ContextPackage) -> list[str]:
     """All record ids referenced by the compiled package (deterministic order)."""
     return [rid for section in package.sections for rid in section.record_ids]
@@ -349,7 +370,7 @@ def _grounded_citations(
 
     seen: list[str] = []
     ungrounded: list[str] = []
-    for marker in _CITATION_RE.findall(content or ""):
+    for marker in _citation_markers(content):
         if marker in refs:
             if marker not in seen:
                 seen.append(marker)
@@ -605,7 +626,8 @@ class AskService:
         ev = payload["evidence"]
         lines = [
             "Answer strictly from the records below.",
-            "Cite each claim as [REF] where REF is a record id from the list; never invent a REF.",
+            "Cite each claim by writing the record id after REF in square brackets, exactly like [REF mail-1234abcd] (several: [REF id1] [REF id2]).",
+            "Use only ids that appear as \"REF <id>:\" in the list below; never invent an id.",
             "If the records do not contain the answer, say so plainly instead of guessing.",
             f"Question: {question}",
         ]
@@ -810,9 +832,7 @@ class AskService:
         subject = ", ".join(intent.search_terms[:4])
         where = ", ".join(d.replace("_", " ") for d in retrieval.searched) or "any connected source"
         answer = f"I found nothing about {subject} in {where}."
-        if retrieval.skipped:
-            answer += " I could not search " + ", ".join(
-                d.replace("_", " ") for d in retrieval.skipped) + " just now."
+        answer += _skipped_notice(retrieval)
         body: dict[str, Any] = {
             "accepted": True,
             "executed": True,
@@ -1039,6 +1059,7 @@ class AskService:
                 cite.update(title=rec.title, domain=rec.domain, link=rec.link, when=rec.when)
                 cited_records.append(rec.public())
         fixture = bool(self._transport and self._transport.fixture_mode)
+        shown = content + _skipped_notice(retrieval)
         body: dict[str, Any] = {
             "accepted": True,
             "executed": True,
@@ -1047,7 +1068,7 @@ class AskService:
             "timestamp": datetime.now(UTC).isoformat(),
             "status": "answered",
             "request_status": "answered",
-            "answer": content,
+            "answer": shown,
             "grounded": grounded,
             "citations": citations,
             "records": cited_records,

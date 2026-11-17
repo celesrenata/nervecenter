@@ -47,6 +47,9 @@ from typing import Any
 #: half is kept — it is the account name, not a secret. The optional scheme
 #: is preserved verbatim.
 _URL_CRED_RE = re.compile(
+    # The lookbehind starts a match only at the beginning of a token. Without
+    # it every offset inside a long unbroken run rescans the run (quadratic).
+    r"(?<![^\s:/@])"
     r"(?P<scheme>[A-Za-z][A-Za-z0-9+.-]*://)?"
     r"(?P<user>[^:/@\s]+):(?P<password>[^@/\s\"']+)@"
 )
