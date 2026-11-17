@@ -10,7 +10,7 @@ import NerveDesign
 /// `UserDefaults` is the honest store. Absent → the app default.
 enum ServerConfigStore {
     private static let key = "nerve.serverConfig.v1"
-    static let defaultConfig = ServerConfig(host: "nerv.celestium.life")
+    static let defaultConfig = ServerConfig(host: "nervecenter.celestium.life")
 
     static func load() -> ServerConfig {
         guard

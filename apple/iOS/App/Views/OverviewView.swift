@@ -209,5 +209,5 @@ extension OverviewView {
 
 #Preview {
     OverviewView(store: PhoneDataStore())
-        .environmentObject(PhoneEnvironment(server: ServerConfig(host: "nerv.celestium.life")))
+        .environmentObject(PhoneEnvironment(server: ServerConfig(host: "nervecenter.celestium.life")))
 }

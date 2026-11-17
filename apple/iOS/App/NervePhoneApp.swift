@@ -20,9 +20,9 @@ struct NervePhoneApp: App {
     /// §70 manual server configuration. Defaults to the live NerveCenter
     /// server; overridable at launch with `--nerve-server=<scheme://host:port>`
     /// (T003-06 harness / local backend) and persistently in production.
-    @State private var server = ServerConfig(host: "nerv.celestium.life")
+    @State private var server = ServerConfig(host: "nervecenter.celestium.life")
     @StateObject private var environment = PhoneEnvironment(
-        server: ServerConfig(host: "nerv.celestium.life")
+        server: ServerConfig(host: "nervecenter.celestium.life")
     )
     @StateObject private var store = PhoneDataStore()
     @StateObject private var personalStore = PersonalDataStore()
