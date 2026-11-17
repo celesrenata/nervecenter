@@ -33,7 +33,8 @@ WORKDIR /app
 # Dependencies from the monorepo manifest, then the mcp package itself.
 # (No schemas COPY needed: mcp/ does not import schemas.)
 COPY pyproject.toml README.md ./
-COPY mcp/ ./mcp/
+# Readable by the app user whatever the local file modes were.
+COPY --chown=nervcenter:nervcenter --chmod=u=rwX,go=rX mcp/ ./mcp/
 RUN pip install --no-deps . && pip install "fastapi" "uvicorn[standard]" "httpx"
 
 USER nervcenter
