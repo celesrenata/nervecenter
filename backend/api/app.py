@@ -329,6 +329,10 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                         key_store = getattr(app.state, "omniroute_key_store", None)
                         if key_store is not None:  # NS-ADR-117: pick up key changes made elsewhere
                             runner.add_tick_hook(key_store.refresh)
+                        from backend.pentest.sweep import get_sweep
+                        pentest_sweep = get_sweep(app)
+                        if pentest_sweep is not None:  # NS-ADR-125: daily advisory sweep
+                            runner.add_tick_hook(pentest_sweep.tick)
                         runner.start()
                         log.debug("api.agent_runner_started")
                         from backend.research import get_engine

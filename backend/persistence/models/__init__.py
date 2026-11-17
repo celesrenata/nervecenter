@@ -43,6 +43,7 @@ from .handoffs import CodingHandoff
 from .health import HealthSampleRow
 from .incidents_agents import Agent, Incident
 from .inference import InferenceCombo, InferenceProvider
+from .infra import InfraConnector, InfraPlan
 from .mental_health import MhFormRow
 from .obligations import (
     OBLIGATION_ORIGINS,
@@ -50,15 +51,21 @@ from .obligations import (
     OBLIGATION_TYPES,
     ObligationRow,
 )
-from .infra import InfraConnector, InfraPlan
 from .omniroute_keys import OmniRouteKeyAudit
 from .openai_usage import EscalationGrant, OpenAICall
-from .pentest import PentestAllowlist, PentestFirewallSnapshot, PentestScan, PentestSettings
+from .pentest import (
+    PentestAdvisoryCache,
+    PentestAllowlist,
+    PentestFinding,
+    PentestFirewallSnapshot,
+    PentestScan,
+    PentestSettings,
+)
 from .planned_changes import PlannedChange
 from .projects import ProjectContext, ProjectContextNote
 from .relationships import Relationship
-from .resources import AgentResourceLink, Resource
 from .research import ResearchCheckpoint, ResearchProject, ResearchStep
+from .resources import AgentResourceLink, Resource
 from .tasks import Task, TaskRun
 
 __all__ = [
@@ -87,7 +94,9 @@ __all__ = [
     "AgentResourceLink",
     "InfraConnector",
     "InfraPlan",
+    "PentestAdvisoryCache",
     "PentestAllowlist",
+    "PentestFinding",
     "PentestFirewallSnapshot",
     "PentestScan",
     "PentestSettings",
