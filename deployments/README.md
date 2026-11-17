@@ -294,3 +294,22 @@ token) unless it is on the allowlist in `backend/api/public_routes.py`.
 4. Settings, Access: create a token, copy it, run the `curl` above (200); revoke it and run it
    again (401).
 5. Settings, Access, "Sign out everywhere": every browser session of your account ends.
+
+## Pentest (NS-ADR-125)
+
+The Penetration Tester agent (`pentest`) and the page at `/pentest`. Nothing here scans until the
+owner has approved an allowlist.
+
+1. Upload the pfSense config XML on the Resources page with sensitivity `secret`, then import it
+   (`POST /api/pentest/firewall/import`). Agents can never read it.
+2. Open Pentest, review the computed allowlist (private ranges only; public ones are listed as
+   never scanned) and press "Approve allowlist". Any later change needs a new approval.
+3. Deploy cmap yourself, in this order, from `deployments/pentest/README.md`: Secrets
+   `nervecenter-cmap` (token) and `nervecenter-cmap-ssh` (key), then `cmap-deployment.yaml`.
+   The api reads the token from `NERVE_CMAP_TOKEN`. Nothing in the repo applies these for you.
+4. Run the agent from Pentest ("Run agent") or schedule it weekly on the Agents page. Limits: 4
+   agent runs per rolling 24 h (HTTP 429 after that), 1 scan at a time, 6 h between scans of the
+   same targets, 2 scan starts a day. The daily advisory sweep needs no model and no scan.
+5. Findings carry an exposure tier (internet open, internet behind SSO, LAN, internal fabric,
+   unknown). Fixes arrive as DRAFT tasks (accept them on Tasks) and as plans on Infrastructure
+   (approve them there). The agent changes nothing itself.

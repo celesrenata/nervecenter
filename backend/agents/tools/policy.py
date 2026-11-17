@@ -93,6 +93,11 @@ NERVE_AGENT_TOOLS: MappingProxyType[str, frozenset[str]] = MappingProxyType(
             {"goals_list", "tasks_list", "evidence_search", "resources_list", "resources_read"}
         ),
         "research_agent": frozenset({"resources_list", "resources_read"}),
+        "pentest": frozenset(
+            {"pentest_scope", "pentest_exposure", "pentest_findings", "pentest_scan_start",
+             "pentest_scan_status", "resources_list", "resources_read", "task_create",
+             "task_update"}
+        ),
     }
 )
 NERVE_TOOLS = frozenset().union(*NERVE_AGENT_TOOLS.values())

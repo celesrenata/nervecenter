@@ -164,6 +164,20 @@ class RunnerStore:
             )
             return [run_to_dict(r) for r in result.scalars().all()]
 
+    async def count_runs_since(self, agent_id: str, since: datetime) -> int:
+        """Runs that started at or after ``since`` (skipped runs do not count)."""
+        async with self._factory() as session:
+            result = await session.execute(
+                select(func.count())
+                .select_from(AgentRun)
+                .where(
+                    AgentRun.agent_id == agent_id,
+                    AgentRun.started_at >= since,
+                    AgentRun.status != "skipped",
+                )
+            )
+            return int(result.scalar() or 0)
+
     async def counts(self, agent_ids: list[str]) -> dict[str, tuple[int, int]] | None:
         """``{agent_id: (completed, failed)}``; ``None`` when the table is unavailable."""
         if not agent_ids:

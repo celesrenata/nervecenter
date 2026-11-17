@@ -67,7 +67,7 @@ def test_verifier_gets_infra_and_others_keep_defaults() -> None:
     verifier = next(m for m in MANIFESTS if m.agent_type == "verifier")
     assert policy.infra_allowed(SimpleNamespace(type="verifier", tools=verifier.tools))
     for m in MANIFESTS:
-        if m.agent_type in policy.INFRA_AGENT_TYPES or m.agent_type == "verifier":
+        if m.agent_type in policy.INFRA_AGENT_TYPES or m.agent_type in ("verifier", "pentest"):
             continue
         assert not policy.infra_allowed(SimpleNamespace(type=m.agent_type, tools=m.tools))
 

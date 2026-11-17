@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from backend.agents.runner import AgentBusyError, AgentMissingError, get_runner
+from backend.agents.runner.runner import AgentRunCapError
 from backend.agents.tools import ToolGateway
 
 router = APIRouter(tags=["agent-runner"])
@@ -80,6 +81,10 @@ async def run_agent_now(
         raise HTTPException(status_code=404, detail="Agent not found") from None
     except AgentBusyError:
         raise HTTPException(status_code=409, detail="This agent is already running.") from None
+    except AgentRunCapError:
+        raise HTTPException(
+            status_code=429, detail="This agent reached its daily run limit; try again later."
+        ) from None
 
 
 @router.get("/api/agents/{agent_id}/runs")

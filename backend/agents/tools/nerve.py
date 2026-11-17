@@ -27,6 +27,8 @@ MAX_LIST = 50
 LIVE_TASKS_ENV = "NERVE_PLANNER_LIVE_TASKS"
 MAX_TASKS_PER_RUN = 10
 PLANNER_MARK = "agent:planner"
+PENTEST_MARK = "agent:pentest"
+PENTEST_ACTOR = "agent:pentest"
 ES_URL_ENV = "NERVE_LOGS_ES_URL"
 ES_USER_ENV = "NERVE_LOGS_ES_USER"
 ES_PASSWORD_ENV = "NERVE_LOGS_ES_PASSWORD"
@@ -35,6 +37,11 @@ DEFAULT_ES_INDEX = "logs-*"
 MAX_OPEN_HANDOFFS = 3
 MAX_QUESTION = 1_500
 RESOURCE_PAGE = 5_000
+
+
+def task_mark(agent: Any) -> str:
+    """Draft tasks carry the mark of the agent type that wrote them (planner by default)."""
+    return PENTEST_MARK if str(getattr(agent, "type", "") or "") == "pentest" else PLANNER_MARK
 
 
 class NerveToolError(Exception):
@@ -119,7 +126,7 @@ class NerveTools:
             raise NerveToolError("tool_not_allowed")
         if tool in ("task_create", "task_update"):
             return await handler(agent, args, run_key)
-        if tool in ("repo_ask", "resources_list", "resources_read"):
+        if tool in ("repo_ask", "resources_list", "resources_read", "pentest_scan_start"):
             return await handler(agent, args)
         return await handler(args)
 
@@ -165,7 +172,7 @@ class NerveTools:
             "priority": _int(args, "priority", 3, 0, 10),
             "goal_id": _text(args, "goal_id", limit=64) or None,
             "dependencies": deps,
-            "inputs": {"origin": PLANNER_MARK, "tag": PLANNER_MARK},
+            "inputs": {"origin": task_mark(agent), "tag": task_mark(agent)},
         }
         task = await self._service("tasks").create(payload)
         self._created[run_key] = used + 1
@@ -177,7 +184,7 @@ class NerveTools:
         svc = self._service("tasks")
         task_id = _text(args, "task_id", required=True, limit=64)
         current = await svc.get(task_id)
-        if (current.inputs or {}).get("origin") != PLANNER_MARK or current.status != "draft":
+        if (current.inputs or {}).get("origin") != task_mark(agent) or current.status != "draft":
             raise NerveToolError("only_own_draft_tasks")
         changes: dict[str, Any] = {}
         for key, limit in (("title", 200), ("description", 4_000)):
@@ -238,6 +245,124 @@ class NerveTools:
         return {"id": rid, "name": _clip(view["name"], 100), "offset": offset,
                 "total_chars": len(text), "next_offset": end if end < len(text) else None,
                 "text": page}
+
+    # -- pentest digests (NS-ADR-125); scoring and scoping happen in the backend ---------------
+    def _pentest(self, getter: Any) -> Any:
+        svc = getter(self._app) if self._app is not None else None
+        if svc is None:
+            raise NerveToolError("unconfigured")
+        return svc
+
+    @staticmethod
+    def _shrink(out: dict[str, Any], keys: tuple[str, ...], budget: int = RESULT_BUDGET) -> Any:
+        """Drop trailing rows from the named lists until the JSON fits the budget."""
+        while len(json.dumps(out, default=str)) > budget:
+            key = max(keys, key=lambda k: len(out.get(k) or []))
+            if not out.get(key):
+                break
+            out[key] = out[key][:-1]
+            out["truncated"] = True
+        return out
+
+    async def _t_pentest_scope(self, args: dict[str, Any]) -> Any:
+        from backend.pentest.store import get_service
+
+        row = await self._pentest(get_service).current_allowlist()
+        out_of_scope = row.get("out_of_scope") or []
+        return self._shrink({
+            "status": row.get("status"), "approved": bool(row.get("approved")),
+            "fingerprint": _clip(row.get("fingerprint"), 12), "approved_by": row.get("approved_by"),
+            "approved_at": row.get("approved_at"), "target_count": len(row.get("targets") or []),
+            "targets": [_clip(t, 40) for t in (row.get("targets") or [])[:60]],
+            "out_of_scope_count": len(out_of_scope),
+            "out_of_scope": [_clip(o.get("cidr"), 40) for o in out_of_scope[:15]],
+            "note": "Only the approved allowlist may be scanned; the owner approves it.",
+        }, ("targets", "out_of_scope"))
+
+    async def _t_pentest_exposure(self, args: dict[str, Any]) -> Any:
+        from backend.pentest.findings import get_store
+        from backend.pentest.store import get_service
+
+        limit = _int(args, "limit", 20, 1, MAX_LIST)
+        overview = await self._pentest(get_service).overview()
+        snap = overview.get("snapshot")
+        by_tier: dict[str, int] = {}
+        store = get_store(self._app) if self._app is not None else None
+        if store is not None:
+            for f in await store.list("open", None, 500, 0):
+                by_tier[str(f.get("tier"))] = by_tier.get(str(f.get("tier")), 0) + 1
+        risks = overview.get("risks") or []
+        order = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+        risks = sorted(risks, key=lambda r: order.get(str(r.get("severity")), 5))
+        return self._shrink({
+            "firewall_imported": snap is not None,
+            "pfsense_version": (snap or {}).get("pfsense_version"),
+            "risk_count": len(risks),
+            "risks": [{"rule_id": _clip(r.get("rule_id"), 40), "severity": r.get("severity"),
+                       "title": _clip(r.get("title"), 120),
+                       "evidence": _clip(r.get("evidence"), 160)}
+                      for r in risks[:limit]],
+            "internet_hosts": [
+                {"frontend": _clip(h.get("frontend"), 40), "hosts": [_clip(x, 80) for x in
+                                                                     (h.get("hosts") or [])[:6]],
+                 "has_host_acl": h.get("has_host_acl"), "ssl": h.get("ssl")}
+                for h in (overview.get("haproxy_hosts") or [])[:15]],
+            "open_findings_by_tier": by_tier,
+            "note": "" if snap else "No firewall config imported: exposure tiers are unknown.",
+        }, ("risks", "internet_hosts"))
+
+    async def _t_pentest_findings(self, args: dict[str, Any]) -> Any:
+        from backend.pentest.findings import get_store
+
+        status = _text(args, "status", limit=16) or "open"
+        severity = _text(args, "severity", limit=16) or None
+        limit = _int(args, "limit", 12, 1, 25)
+        offset = _int(args, "offset", 0, 0, 10_000)
+        rows = await self._pentest(get_store).list(status, severity, limit, offset)
+        out = self._shrink({"offset": offset, "findings": [
+            {"id": f["id"], "severity": f["severity"], "tier": f["tier"], "kind": f["kind"],
+             "title": _clip(f["title"], 140), "subject": _clip(f["subject"], 100),
+             "evidence": _clip(f["evidence"], 200), "advisory": f.get("advisory_id"),
+             "labels": f.get("labels"), "sources": [_clip(x, 120) for x in f["sources"][:3]]}
+            for f in rows]}, ("findings",))
+        out["shown"] = len(out["findings"])
+        out["next_offset"] = offset + out["shown"] if out["shown"] == limit else None
+        return out
+
+    async def _t_pentest_scan_start(self, agent: Any, args: dict[str, Any]) -> Any:
+        from backend.pentest.scans import ScanRefused, get_service
+
+        targets = args.get("targets")
+        if not isinstance(targets, list) or not targets or len(targets) > 16 \
+                or not all(isinstance(t, str) and len(t) <= 64 for t in targets):
+            raise NerveToolError("bad_arguments")
+        ports = args.get("scan_tcp_ports")
+        if ports is not None and not isinstance(ports, bool):
+            raise NerveToolError("bad_arguments")
+        try:
+            row = await self._pentest(get_service).start(PENTEST_ACTOR, targets, ports)
+        except ScanRefused as exc:
+            raise NerveToolError(f"scan_refused_{exc.kind}") from None
+        return {"scan_id": row.get("id"), "status": row.get("status"),
+                "targets": row.get("targets"),
+                "note": "Started. Poll pentest_scan_status; do not start another."}
+
+    async def _t_pentest_scan_status(self, args: dict[str, Any]) -> Any:
+        from backend.pentest.scans import get_service
+
+        svc = self._pentest(get_service)
+        scan_id = _text(args, "scan_id", limit=64)
+        keep = ("id", "status", "actor", "targets", "reason", "created_at", "finished_at")
+        if scan_id:
+            row = await svc.get(scan_id)
+            if row is None:
+                raise NerveToolError("not_found")
+            return {k: row.get(k) for k in keep}
+        rows = await svc.list(10)
+        return self._shrink({"scans": [
+            {k: (_clip(r.get(k), 160) if k == "reason" else r.get(k)) for k in keep}
+            | {"targets": (r.get("targets") or [])[:4]} for r in rows],
+            "limits": await svc.settings()}, ("scans",))
 
     # -- incidents, events, changes ----------------------------------------------------------
     async def _t_incidents_list(self, args: dict[str, Any]) -> Any:

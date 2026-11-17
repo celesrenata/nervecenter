@@ -52,7 +52,7 @@ interface Agent {
   skills?: string[]
 }
 
-// The 14 native agent types (spec §26), from backend/agents/registry.py.
+// The 15 native agent types (spec §26), from backend/agents/registry.py.
 // Used as the options for the create form's type <select>.
 const NATIVE_AGENT_TYPES = [
   'planner',
@@ -69,6 +69,7 @@ const NATIVE_AGENT_TYPES = [
   'verifier',
   'context_critic',
   'route_critic',
+  'pentest',
 ] as const
 
 const AgentsView = () => {

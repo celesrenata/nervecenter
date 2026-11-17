@@ -50,11 +50,17 @@ class AgentBusyError(Exception):
     """The agent already has a run in flight."""
 
 
+class AgentRunCapError(Exception):
+    """The agent type reached its per-day run cap (``RUN_CAPS``)."""
+
+
 class InferenceThrottled(Exception):
     """Inference failed in a way that signals queueing or overload."""
 
 
 MAX_RUN_CONTEXT = 20_000
+#: Runs per rolling 24 h by agent type (NS-ADR-125: the pentest agent costs scans and tokens).
+RUN_CAPS: dict[str, int] = {"pentest": 4}
 
 
 def utcnow() -> datetime:
@@ -208,6 +214,11 @@ class AgentRunner:
             raise AgentMissingError(agent_id)
         if agent_id in self._inflight:
             raise AgentBusyError(agent_id)
+        cap = RUN_CAPS.get(str(getattr(agent, "type", "") or ""))
+        if cap is not None and await self.store.count_runs_since(
+            agent_id, self._clock() - timedelta(hours=24)
+        ) >= cap:
+            raise AgentRunCapError(agent_id)
         self._inflight.add(agent_id)
         started = self._clock()
         live = self.live.start(agent_id, trigger)
@@ -336,6 +347,9 @@ class AgentRunner:
             try:
                 run = await self.run_agent(sched.agent_id, "schedule")
             except (AgentMissingError, AgentBusyError):
+                continue
+            except AgentRunCapError:
+                await self.store.defer(sched.agent_id, now + timedelta(hours=1))
                 continue
             performed.append(run)
             after = self._clock()

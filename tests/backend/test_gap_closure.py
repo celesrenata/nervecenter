@@ -7,7 +7,7 @@ Covers the four repaired defects:
 - **OV-1** ``GET /api/overview`` — 200 with real counts when the goals/tasks
   services are wired; 501 when genuinely unwired.
 - **AG-1** ``GET /api/agents``   — hardcoded ``agent-1``/``agent-2`` fixture is
-  gone; the real 14 native agent types are served; unknown id → 404.
+  gone; the real 15 native agent types are served; unknown id → 404.
 - **U-6 / CC-1** ``GET /api/events/ws`` — the realtime WebSocket route exists
   and degrades honestly (error frame + close) when the event bus is absent.
 
@@ -25,7 +25,7 @@ from backend.api.app import create_app
 from backend.services.systems import SystemsService
 
 # ---------------------------------------------------------------------------
-# Native agent-type ids the registry must serve (spec §26, 14 types).
+# Native agent-type ids the registry must serve (spec §26, 15 types).
 # ---------------------------------------------------------------------------
 NATIVE_AGENT_TYPES = {
     "planner",
@@ -42,6 +42,7 @@ NATIVE_AGENT_TYPES = {
     "verifier",
     "context_critic",
     "route_critic",
+    "pentest",
 }
 
 # The two ids from the removed hardcoded fixture — must NOT appear now.
@@ -248,18 +249,18 @@ class TestOverviewAgentsCountMatchesAgentsEndpoint:
         self._wire(app, persisted_count=0)
         agent_list = client.get("/api/agents")
         assert agent_list.status_code == 200
-        assert len(agent_list.json()["data"]) == 14
+        assert len(agent_list.json()["data"]) == 15
         overview = client.get("/api/overview").json()
-        assert overview["counts"]["agents"] == 14
-        assert len(overview["runningAgents"]) == 14
+        assert overview["counts"]["agents"] == 15
+        assert len(overview["runningAgents"]) == 15
 
     def test_counts_equal_agents_endpoint_total_with_persisted(self, client, app):
-        # The walk-observed regression shape: 14 native + N persisted.
+        # The walk-observed regression shape: 15 native + N persisted.
         self._wire(app, persisted_count=4)
         agent_list = client.get("/api/agents")
         assert agent_list.status_code == 200
         agent_total = len(agent_list.json()["data"])
-        assert agent_total == 18  # 14 native registry + 4 persisted instances
+        assert agent_total == 19  # 15 native registry + 4 persisted instances
         overview = client.get("/api/overview").json()
         assert overview["counts"]["agents"] == agent_total
         assert len(overview["runningAgents"]) == agent_total
