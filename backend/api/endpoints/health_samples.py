@@ -53,7 +53,12 @@ async def health_ingest(
     if batch.device_id != device_id:
         raise HTTPException(status_code=422, detail="invalid health batch")
     result = await ingest_batch(engine, batch)
-    return result.as_dict()
+    counts = result.as_dict()
+    try:
+        await plane.relay_mark_synced(device_id=device_id, stored_count=counts.get("stored", 0))
+    except Exception:  # noqa: BLE001 - bookkeeping must not fail a stored batch
+        pass
+    return counts
 
 
 @router.get("/samples")

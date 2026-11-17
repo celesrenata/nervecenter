@@ -27,6 +27,11 @@ class FakePlane:
     async def relay_verify_token(self, *, device_id: str, token: str) -> bool:
         return device_id == DEVICE and token == TOKEN
 
+    synced: list[tuple[str, int]] = []
+
+    async def relay_mark_synced(self, *, device_id: str, stored_count: int = 0) -> None:
+        self.synced.append((device_id, stored_count))
+
 
 @pytest.fixture
 async def engine():
@@ -171,3 +176,13 @@ def test_reads_degrade_without_engine():
     assert c.get("/api/health/samples").json()["samples"] == []
     r = c.post("/api/health/ingest", json=_batch(_sample()), headers=_auth())
     assert r.status_code == 503
+
+
+def test_ingest_marks_the_device_paired_and_synced(client):
+    plane = client.app.state.connection_control_plane
+    plane.synced = []
+    client.post("/api/health/ingest", json=_batch(_sample()))
+    assert plane.synced == []
+    r = client.post("/api/health/ingest", json=_batch(_sample()), headers=_auth())
+    assert r.status_code == 200
+    assert plane.synced == [(DEVICE, 1)]

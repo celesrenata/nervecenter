@@ -1118,6 +1118,18 @@ class ConnectionControlPlane:
         updated = await self._registry.connections.get_connection(conn.id)
         return _public(updated)
 
+    async def relay_mark_synced(self, *, device_id: str, stored_count: int = 0) -> None:
+        """After a token-verified ingest: paired + healthy (the iPhone never calls register)."""
+        conn = await self._find_relay_connection(device_id)
+        if conn is None:
+            return
+        if conn.auth_status != "authenticated":
+            await self._registry.connections.update_connection(
+                conn.id, auth_status="authenticated", last_attempt_at=_now()
+            )
+        await self.record_sync_success(conn.id, ingested_count=stored_count)
+        await self.relay_touch(device_id=device_id)
+
     async def relay_register(self, *, device_id: str, token: str) -> dict[str, Any]:
         """POST /api/relay/register — authenticate with the pairing token."""
         conn = await self._find_relay_connection(device_id)
