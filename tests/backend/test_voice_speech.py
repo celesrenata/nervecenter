@@ -149,3 +149,12 @@ async def test_key_never_logged(capsys) -> None:
         await _client(handler).tts("hi", "af_sarah")
     out = capsys.readouterr()
     assert KEY not in out.out and KEY not in out.err
+
+
+def test_bare_whisper_name_is_refused_because_omniroute_routes_it_to_the_cloud() -> None:
+    from backend.voice.speech import DEFAULT_STT_MODEL, check_stt_model
+
+    assert DEFAULT_STT_MODEL == "arcforge-stt/whisper-large-v3"
+    assert check_stt_model(DEFAULT_STT_MODEL) == DEFAULT_STT_MODEL
+    with pytest.raises(SpeechPolicyError):
+        check_stt_model("whisper-large-v3")

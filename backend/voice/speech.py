@@ -23,8 +23,9 @@ log = structlog.get_logger(__name__)
 
 TTS_MODEL_PREFIX = "arcforge-tts/"
 TTS_MODEL_BASE = "arcforge-tts/kokoro-v1.0/"
-STT_ALLOWED_MODELS = frozenset({"whisper-large-v3", "arcforge-stt/whisper-large-v3"})
-DEFAULT_STT_MODEL = "whisper-large-v3"
+# Bare "whisper-large-v3" resolves to a cloud provider (groq) in OmniRoute.
+STT_ALLOWED_MODELS = frozenset({"arcforge-stt/whisper-large-v3"})
+DEFAULT_STT_MODEL = "arcforge-stt/whisper-large-v3"
 ATTEMPTS = 3
 BACKOFF_SECONDS = (0.4, 1.2)
 TTS_FORMATS = ("mp3", "wav")
