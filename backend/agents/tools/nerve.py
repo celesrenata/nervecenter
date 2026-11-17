@@ -355,7 +355,9 @@ class NerveTools:
         try:
             row = await svc.start(PENTEST_ACTOR, targets, ports)
         except ScanRefused as exc:
-            raise NerveToolError(f"scan_refused_{exc.kind}") from None
+            # cmap's own (redacted, short) rejection text is surfaced; other kinds stay coded.
+            detail = f": {exc.reason[:240]}" if exc.kind == "cmap" else ""
+            raise NerveToolError(f"scan_refused_{exc.kind}{detail}") from None
         return {"scan_id": row.get("id"), "status": row.get("status"),
                 "targets": row.get("targets"),
                 "note": "Started. Poll pentest_scan_status; do not start another."}
