@@ -2,11 +2,13 @@
  * Ask sessions live here, outside the React tree, so a conversation and any
  * answer still streaming survive leaving the Ask page. Each session is a tab.
  *
- * Message history is mirrored to sessionStorage (cleared when the browser tab
- * closes) so a reload keeps the conversations; an answer that was streaming
- * during a reload cannot resume and is marked as interrupted.
+ * Chats are saved to the account (``PUT /api/ask/sessions``, debounced) so they
+ * survive closing the browser and follow the account to other devices, and
+ * mirrored to sessionStorage so a reload shows them before the server answers.
+ * An answer that was streaming during a reload cannot resume and is marked as
+ * interrupted.
  */
-import { ApiError } from '../../api/client'
+import { ApiError, apiFetch } from '../../api/client'
 import { postAskStream } from '../../api/askStream'
 import { voiceApi, VoiceApiError } from '../../api/voice'
 import type { CalendarProposal } from '../../api/calendar'
@@ -45,6 +47,8 @@ export interface AskSession {
   input: string
   loading: boolean
   speechError: string | null
+  /** ISO time of the last change; the newer copy wins when merging. */
+  updatedAt?: string
 }
 
 export interface AskOverrides {
@@ -168,14 +172,91 @@ function persist(): void {
   }
 }
 
-function set(next: State): void {
+const SAVE_DEBOUNCE_MS = 1500
+let saveTimer: ReturnType<typeof setTimeout> | null = null
+let hydrated = false
+
+/** Server copy: no draft input, no transient flags. */
+function serverDocument() {
+  return {
+    active_id: state.activeId,
+    sessions: state.sessions
+      .filter((s) => s.messages.some((m) => m.role === 'user'))
+      .slice(-50)
+      .map((s) => ({
+        id: s.id,
+        title: s.title,
+        updated_at: s.updatedAt ?? null,
+        messages: s.messages.slice(-400).map((m) => ({ ...m, content: m.content.slice(0, 50_000) })),
+      })),
+  }
+}
+
+async function saveNow(): Promise<void> {
+  saveTimer = null
+  try {
+    await apiFetch('/api/ask/sessions', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(serverDocument()),
+    })
+  } catch {
+    /* offline: the next change retries; sessionStorage still has the chats */
+  }
+}
+
+function scheduleSave(): void {
+  if (!hydrated) return
+  if (saveTimer !== null) clearTimeout(saveTimer)
+  saveTimer = setTimeout(() => void saveNow(), SAVE_DEBOUNCE_MS)
+}
+
+function set(next: State, opts: { save?: boolean } = {}): void {
   state = next
   persist()
+  if (opts.save !== false) scheduleSave()
   listeners.forEach((l) => l())
 }
 
-function patchSession(id: string, fn: (s: AskSession) => AskSession): void {
-  set({ ...state, sessions: state.sessions.map((s) => (s.id === id ? fn(s) : s)) })
+function patchSession(id: string, fn: (s: AskSession) => AskSession, opts: { save?: boolean } = {}): void {
+  set(
+    {
+      ...state,
+      sessions: state.sessions.map((s) =>
+        s.id === id ? { ...fn(s), ...(opts.save === false ? {} : { updatedAt: new Date().toISOString() }) } : s,
+      ),
+    },
+    opts,
+  )
+}
+
+interface ServerSession {
+  id: string
+  title: string
+  messages: ChatMessage[]
+  updated_at?: string | null
+}
+
+/** Union by id; for a session on both sides the newer copy wins. */
+function merge(local: AskSession[], remote: ServerSession[]): AskSession[] {
+  const byId = new Map(local.map((s) => [s.id, s]))
+  for (const r of remote) {
+    const mine = byId.get(r.id)
+    if (mine && (mine.loading || (mine.updatedAt ?? '') >= (r.updated_at ?? ''))) continue
+    byId.set(r.id, {
+      id: r.id,
+      title: r.title,
+      messages: r.messages,
+      input: mine?.input ?? '',
+      loading: false,
+      speechError: null,
+      updatedAt: r.updated_at ?? undefined,
+    })
+  }
+  const merged = [...byId.values()]
+  // Drop the untouched greeting-only tab when saved chats exist.
+  const used = merged.filter((s) => s.loading || s.input || s.messages.some((m) => m.role === 'user'))
+  return used.length > 0 ? used : merged.slice(0, 1)
 }
 
 function patchMessage(sessionId: string, messageId: string, fn: (m: ChatMessage) => ChatMessage): void {
@@ -217,10 +298,36 @@ export const askSessions = {
     set({ sessions: rest, activeId })
   },
   setInput(id: string, input: string): void {
-    patchSession(id, (s) => ({ ...s, input }))
+    patchSession(id, (s) => ({ ...s, input }), { save: false })
   },
   setSpeechError(id: string, speechError: string | null): void {
-    patchSession(id, (s) => ({ ...s, speechError }))
+    patchSession(id, (s) => ({ ...s, speechError }), { save: false })
+  },
+  /** Load the account's saved chats once (the Ask view calls this on mount). */
+  async hydrate(): Promise<void> {
+    if (hydrated) return
+    try {
+      const res = await apiFetch('/api/ask/sessions')
+      if (res.ok) {
+        const doc = (await res.json()) as { sessions?: ServerSession[]; active_id?: string | null }
+        const remote = Array.isArray(doc.sessions) ? doc.sessions : []
+        if (remote.length > 0) {
+          const sessions = merge(state.sessions, remote)
+          const activeId = sessions.some((x) => x.id === state.activeId)
+            ? state.activeId
+            : sessions.some((x) => x.id === doc.active_id)
+              ? (doc.active_id as string)
+              : sessions[0].id
+          hydrated = true
+          set({ sessions, activeId })
+          return
+        }
+      }
+    } catch {
+      /* offline: keep the local copy; saving starts anyway */
+    }
+    hydrated = true
+    scheduleSave()
   },
   /** Mute/unmute whatever is speaking now (the server is told per session). */
   setSpoken(spoken: boolean): void {
@@ -366,6 +473,9 @@ export const askSessions = {
   },
   /** Test hook: forget everything (aborts streams, clears storage). */
   reset(): void {
+    if (saveTimer !== null) clearTimeout(saveTimer)
+    saveTimer = null
+    hydrated = false
     aborts.forEach((a) => a.abort())
     aborts.clear()
     queue?.stop()

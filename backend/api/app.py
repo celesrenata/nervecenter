@@ -107,6 +107,7 @@ from backend.api.endpoints import (
     systems,
     tasks,
     today,
+    ask_sessions,
     voice,
     wellness,
 )
@@ -130,6 +131,7 @@ ALL_ROUTERS = (
     mail_security_confirmations.router,
     messages.router,
     voicemail.router,
+    ask_sessions.router,
     voice.router,
     waiting_on.router,
     calendar.router,

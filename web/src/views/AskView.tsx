@@ -64,6 +64,10 @@ const AskView = () => {
   }
 
   useEffect(() => {
+    void askSessions.hydrate()
+  }, [])
+
+  useEffect(() => {
     let cancelled = false
     voiceApi
       .getSettings()

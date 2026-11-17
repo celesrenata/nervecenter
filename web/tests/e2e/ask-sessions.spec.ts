@@ -36,6 +36,12 @@ async function installStreamFake(page: Page) {
     route.fulfill({ json: { tts_voice: 'af_sarah', spoken_replies: false } }),
   )
   await page.route('**/api/voice/sessions/*/mute', (route) => route.fulfill({ json: { ok: true } }))
+  // Isolated from the shared mock backend; a test may register its own store.
+  await page.route('**/api/ask/sessions', (route) =>
+    route.request().method() === 'PUT'
+      ? route.fulfill({ json: { saved_at: 'now', sessions: 0 } })
+      : route.fulfill({ json: { sessions: [], active_id: null, saved_at: null } }),
+  )
 }
 
 const push = (page: Page, i: number, ev: string, data: unknown) =>
@@ -125,4 +131,44 @@ test('tabs hold separate conversations that stream in parallel and survive a rel
   await expect(page.getByTestId('ask-tab-0')).toHaveText('second question')
   await expect(page.getByTestId('ask-tab-1')).toHaveCount(0)
   await expect(bubble(page, 'Second answer.')).toBeVisible()
+})
+
+test('chats are saved to the account and come back in a new browser session', async ({ browser }) => {
+  let saved: Record<string, unknown> = { sessions: [], active_id: null, saved_at: null }
+  const puts: number[] = []
+  const open = async () => {
+    const context = await browser.newContext()
+    const page = await context.newPage()
+    await installStreamFake(page)
+    await page.route('**/api/ask/sessions', async (route) => {
+      if (route.request().method() === 'PUT') {
+        saved = { ...(route.request().postDataJSON() as Record<string, unknown>), saved_at: 'now' }
+        puts.push(Date.now())
+        await route.fulfill({ json: { saved_at: 'now', sessions: 1 } })
+      } else {
+        await route.fulfill({ json: saved })
+      }
+    })
+    await seedBreakGlassSession(page)
+    await page.goto('/ask', { waitUntil: 'domcontentloaded' })
+    await expect(page.locator('main h1')).toHaveText('Ask NerveCenter')
+    return { context, page }
+  }
+
+  const first = await open()
+  await ask(first.page, 'remember this chat')
+  await expect.poll(() => streams(first.page)).toBe(1)
+  await push(first.page, 0, 'done', { answer: 'Saved answer.', status: 'answered' })
+  await closeStream(first.page, 0)
+  await expect(bubble(first.page, 'Saved answer.')).toBeVisible()
+  await expect
+    .poll(() => JSON.stringify(saved), { timeout: 10_000 })
+    .toContain('Saved answer.')
+  await first.context.close()
+
+  // A fresh context has empty sessionStorage: the chat must come from the server.
+  const second = await open()
+  await expect(second.page.getByTestId('ask-tab-0')).toHaveText('remember this chat')
+  await expect(bubble(second.page, 'Saved answer.')).toBeVisible()
+  await second.context.close()
 })
