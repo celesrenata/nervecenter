@@ -77,6 +77,17 @@ async def list_runs(request: Request, agent_id: str, limit: int = 25) -> dict[st
     return {"data": await runner.store.runs(agent_id, limit)}
 
 
+@router.get("/api/agents/{agent_id}/live")
+async def live_log(
+    request: Request, agent_id: str, after: int = 0, run_key: int | None = None
+) -> dict[str, Any]:
+    """Live progress of the agent's recent runs (in memory; poll with ``after``)."""
+    runner = _runner(request)
+    if await runner.store.get_agent(agent_id) is None:
+        raise HTTPException(status_code=404, detail="Agent not found")
+    return runner.live.view(agent_id, after=max(0, after), run_key=run_key)
+
+
 @router.get("/api/agents/{agent_id}/schedule")
 async def get_schedule(request: Request, agent_id: str) -> dict[str, Any]:
     runner = _runner(request)

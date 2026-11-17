@@ -1,6 +1,7 @@
 import { useState, useEffect, type FormEvent } from 'react'
 import { agentsApi, type AgentUpdatePayload, type RunnerStatus } from '../api/agents'
 import { AgentRunnerPanel } from './AgentRunnerPanel'
+import { AgentLiveLog } from './AgentLiveLog'
 import { CatalogPicker } from '../components/CatalogPicker'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import {
@@ -355,6 +356,8 @@ const AgentsView = () => {
   const [runnerStatus, setRunnerStatus] = useState<RunnerStatus | null>(null)
   const [runnerOpenId, setRunnerOpenId] = useState<string | null>(null)
   const [runnerKey, setRunnerKey] = useState(0)
+  // Agent whose live log is open (clicking the card toggles it).
+  const [liveOpenId, setLiveOpenId] = useState<string | null>(null)
   const [deleteError, setDeleteError] = useState<string | null>(null)
   useEffect(() => {
     agentsApi.runnerStatus().then(setRunnerStatus).catch(() => setRunnerStatus(null))
@@ -403,6 +406,8 @@ const AgentsView = () => {
   }
   const runAgentNow = async (agent: Agent) => {
     setDeleteError(null)
+    // The POST returns only when the run ends; show its progress meanwhile.
+    setLiveOpenId(agent.id)
     try {
       await agentsApi.run(agent.id)
     } catch (error) {
@@ -1014,7 +1019,16 @@ const AgentsView = () => {
               key={agent.id}
               data-testid="agent-card"
               data-agent-id={agent.id}
-              className="bg-elevated p-6 rounded-lg shadow-lg"
+              aria-expanded={liveOpenId === agent.id}
+              title="Click to show or hide this agent's live log"
+              onClick={(e) => {
+                // Buttons, links and fields inside the card keep their own behaviour.
+                if ((e.target as HTMLElement).closest('button, a, input, select, textarea, label, [role="dialog"], [data-no-card-toggle]')) return
+                setLiveOpenId(liveOpenId === agent.id ? null : agent.id)
+              }}
+              className={`bg-elevated p-6 rounded-lg shadow-lg cursor-pointer ${
+                liveOpenId === agent.id ? 'md:col-span-2 lg:col-span-3 ring-2 ring-blue-500/40' : ''
+              }`}
             >
               <div className="flex items-start justify-between gap-3 mb-4">
                 <div>
@@ -1203,6 +1217,7 @@ const AgentsView = () => {
                   Last heartbeat: {agent.lastHeartbeat ?? 'none'}
                 </div>
               </div>
+              {liveOpenId === agent.id && <AgentLiveLog agentId={agent.id} agentName={agent.name} />}
               {runnerOpenId === agent.id && (
                 <AgentRunnerPanel
                   key={`${agent.id}-${runnerKey}`}

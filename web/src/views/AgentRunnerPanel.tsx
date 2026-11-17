@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
+import { Markdown } from '../components/Markdown'
+import { MaximizeOverlay } from '../components/MaximizeOverlay'
 import { agentsApi, type AgentRun, type AgentSchedule } from '../api/agents'
 import { ApiError } from '../api/client'
 
@@ -32,6 +34,7 @@ export function AgentRunnerPanel({
   const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [saved, setSaved] = useState(false)
+  const [maximizedRun, setMaximizedRun] = useState<AgentRun | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -85,7 +88,8 @@ export function AgentRunnerPanel({
   return (
     <div
       data-testid="agent-runner-panel"
-      className="mt-4 border-t border-gray-200 dark:border-gray-700 pt-4 space-y-4"
+      data-no-card-toggle
+      className="cursor-auto mt-4 border-t border-gray-200 dark:border-gray-700 pt-4 space-y-4"
     >
       {error && (
         <div role="alert" data-testid="agent-runner-error" className="text-sm text-red-600">
@@ -212,16 +216,40 @@ export function AgentRunnerPanel({
                       ` · ${(r.skills ?? []).map((s) => `${s.id}@${s.revision}`).join(', ')}`}
                   </div>
                 )}
-                {(r.output || r.error) && (
-                  <pre className="whitespace-pre-wrap text-xs mt-1 max-h-40 overflow-auto">
-                    {r.error ?? r.output}
+                {r.error ? (
+                  <pre className="whitespace-pre-wrap text-xs mt-1 max-h-40 overflow-auto text-red-700 dark:text-red-300">
+                    {r.error}
                   </pre>
-                )}
+                ) : r.output ? (
+                  <div className="mt-1">
+                    <div data-testid="agent-run-output" className="max-h-64 overflow-auto rounded bg-hover px-2">
+                      <Markdown text={r.output} />
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="agent-run-maximize"
+                      onClick={() => setMaximizedRun(r)}
+                      className="mt-1 text-xs font-medium text-blue-600 dark:text-blue-400 hover:underline"
+                    >
+                      Maximize
+                    </button>
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>
         )}
       </div>
+      {maximizedRun && (
+        <MaximizeOverlay
+          title={`${agentName} · ${maximizedRun.status} · ${maximizedRun.started_at ?? ''}`}
+          onClose={() => setMaximizedRun(null)}
+        >
+          <div className="mx-auto max-w-4xl">
+            <Markdown text={maximizedRun.output ?? ''} className="text-base" />
+          </div>
+        </MaximizeOverlay>
+      )}
     </div>
   )
 }

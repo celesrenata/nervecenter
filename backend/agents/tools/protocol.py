@@ -102,28 +102,62 @@ async def run_with_tools(
     prompt: str,
     gateway: Any,
     agent: Any,
+    on_event: Callable[[str, str, dict[str, Any] | None], None] | None = None,
 ) -> dict[str, Any]:
     """Run ``infer_once`` and serve its tool calls through ``gateway`` (bounded).
 
     Token counts and latency are summed over the rounds. Without a configured
-    gateway this is exactly one call with the original prompt.
+    gateway this is exactly one call with the original prompt. ``on_event``
+    (kind, text, data) reports progress for the live log; it never raises.
     """
+    def emit(kind: str, text: str, data: dict[str, Any] | None = None) -> None:
+        if on_event is not None:
+            try:
+                on_event(kind, text, data)
+            except Exception:  # noqa: BLE001 - progress reporting is best-effort
+                pass
+
+    async def call_model(text: str, round_no: int) -> dict[str, Any]:
+        emit("model_call", f"Model round {round_no}: waiting for a reply", {"round": round_no})
+        reply = await infer_once(text)
+        emit(
+            "model_reply",
+            str(reply.get("content", "")),
+            {
+                "round": round_no,
+                "input_tokens": reply.get("input_tokens"),
+                "output_tokens": reply.get("output_tokens"),
+                "latency_ms": reply.get("e2e_latency_ms"),
+            },
+        )
+        return reply
+
     if gateway is None or not gateway.configured:
-        return await infer_once(prompt)
+        return await call_model(prompt, 1)
     current = prompt + "\n\n" + instructions(agent)
-    result = await infer_once(current)
+    result = await call_model(current, 1)
+    round_no = 1
     totals = {k: int(result.get(k) or 0) for k in ("input_tokens", "output_tokens")}
     latency = float(result.get("e2e_latency_ms") or 0)
     for _ in range(MAX_ROUNDS):
         calls = parse_calls(str(result.get("content", "")))
         if not calls:
             break
-        lines = [
-            format_result(c, await gateway.call(agent, c.server, c.tool, c.args, context=prompt))
-            for c in calls
-        ]
+        lines = []
+        for c in calls:
+            emit(
+                "tool_call",
+                f"{c.server}.{c.tool}",
+                {"server": c.server, "tool": c.tool, "args": c.args},
+            )
+            line = format_result(
+                c, await gateway.call(agent, c.server, c.tool, c.args, context=prompt)
+            )
+            emit("tool_result", line, {"server": c.server, "tool": c.tool})
+            lines.append(line)
         current = f"{current}\n\n{result.get('content', '')}\n\n" + "\n".join(lines)
-        result = await infer_once(current)
+        round_no += 1
+        result = await call_model(current, round_no)
         for k in totals:
             totals[k] += int(result.get(k) or 0)
         latency += float(result.get("e2e_latency_ms") or 0)

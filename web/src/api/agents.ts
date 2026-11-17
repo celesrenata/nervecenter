@@ -144,6 +144,32 @@ export interface AgentRun {
 }
 
 /** `GET /api/agents/runner/status` — adaptive back-off state. */
+export interface AgentLiveEvent {
+  seq: number
+  run_key: number
+  at: string
+  kind: 'run_started' | 'skills' | 'model_call' | 'model_reply' | 'tool_call' | 'tool_result' | 'run_finished' | string
+  text: string
+  data?: Record<string, unknown>
+}
+
+export interface AgentLiveRun {
+  run_key: number
+  started_at: string
+  finished_at: string | null
+  trigger: string
+  status: 'running' | 'completed' | 'failed' | 'skipped' | 'interrupted' | string
+  events: number
+}
+
+export interface AgentLiveView {
+  running: boolean
+  run: AgentLiveRun | null
+  runs: AgentLiveRun[]
+  events: AgentLiveEvent[]
+  last_seq: number
+}
+
 export interface RunnerStatus {
   state: 'normal' | 'degraded' | 'backed_off'
   stretch: Record<string, number>
@@ -236,6 +262,14 @@ export const agentsApi = {
     return body.data ?? []
   },
 
+  /** `GET /api/agents/{id}/live` — in-memory progress of recent runs. */
+  live: async (agentId: string, after = 0, runKey?: number): Promise<AgentLiveView> => {
+    const q = new URLSearchParams({ after: String(after) })
+    if (runKey != null) q.set('run_key', String(runKey))
+    const res = await apiFetch(`/api/agents/${agentId}/live?${q}`)
+    if (!res.ok) throw await apiErrorFromResponse(res)
+    return (await res.json()) as AgentLiveView
+  },
   getSchedule: async (agentId: string): Promise<AgentSchedule> => {
     const res = await apiFetch(`/api/agents/${agentId}/schedule`)
     if (!res.ok) throw await apiErrorFromResponse(res)

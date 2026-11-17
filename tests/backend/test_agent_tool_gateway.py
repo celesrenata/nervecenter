@@ -238,3 +238,31 @@ def test_tools_endpoints() -> None:
             ).status_code
             == 503
         )
+
+
+async def test_tool_loop_reports_progress_events_in_order() -> None:
+    mcp = Mcp()
+    replies = iter(
+        [
+            'TOOL_CALL {"server":"fetch","tool":"fetch","args":{"url":"https://example.org/a"}}',
+            "done",
+        ]
+    )
+
+    async def infer(prompt: str) -> dict[str, Any]:
+        return {"content": next(replies), "input_tokens": 1, "output_tokens": 1}
+
+    events: list[tuple[str, str]] = []
+
+    def on_event(kind: str, text: str, data: dict[str, Any] | None) -> None:
+        events.append((kind, text))
+        if kind == "tool_result":
+            raise RuntimeError("a broken listener must not break the run")
+
+    result = await run_with_tools(infer, "p", mcp.gateway(), AGENT, on_event)
+    assert result["content"] == "done"
+    kinds = [k for k, _ in events]
+    assert kinds == [
+        "model_call", "model_reply", "tool_call", "tool_result", "model_call", "model_reply"
+    ]
+    assert events[2][1] == "fetch.fetch" and events[-1][1] == "done"

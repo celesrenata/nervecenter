@@ -382,3 +382,39 @@ async def test_unavailable_skill_hub_still_completes_the_run(engine):
     run = await runner.run_agent(agent_id, "manual")
     assert run["status"] == "completed"
     assert run["skills_status"] == "unavailable" and run["skills"] == []
+
+
+async def test_live_log_follows_a_run_and_polls_incrementally(engine):
+    async def infer(agent, prompt):
+        return {"content": "## Report\n\n- all good", "input_tokens": 1, "output_tokens": 1}
+
+    runner = _runner(engine, infer, FakeClock())
+    agent_id = await _make_agent(engine)
+    assert runner.live.view(agent_id) == {
+        "running": False, "run": None, "runs": [], "events": [], "last_seq": 0
+    }
+    await runner.run_agent(agent_id, "on_demand")
+    view = runner.live.view(agent_id)
+    kinds = [e["kind"] for e in view["events"]]
+    assert kinds[0] == "run_started" and kinds[-1] == "run_finished"
+    assert "model_reply" in kinds and "skills" in kinds
+    assert view["run"]["status"] == "completed" and view["running"] is False
+    reply = next(e for e in view["events"] if e["kind"] == "model_reply")
+    assert reply["text"].startswith("## Report")
+    last = view["last_seq"]
+    assert runner.live.view(agent_id, after=last)["events"] == []
+
+
+async def test_live_log_records_failures_and_keeps_recent_runs(engine):
+    async def infer(agent, prompt):
+        raise RuntimeError("model exploded")
+
+    runner = _runner(engine, infer, FakeClock())
+    agent_id = await _make_agent(engine)
+    for _ in range(7):
+        await runner.run_agent(agent_id, "on_demand")
+    view = runner.live.view(agent_id)
+    assert len(view["runs"]) == 5 and view["run"]["status"] == "failed"
+    assert "model exploded" in view["events"][-1]["text"]
+    older = view["runs"][-1]["run_key"]
+    assert runner.live.view(agent_id, run_key=older)["run"]["run_key"] == older

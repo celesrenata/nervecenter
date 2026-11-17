@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 import structlog
 
 from backend.agents.runner.backoff import BACKED_OFF, BackoffController
+from backend.agents.runner.live import LiveLog
 from backend.agents.runner.skillhub import SkillHubClient, SkillSelection
 from backend.agents.runner.store import (
     MIN_INTERVAL_SECONDS,
@@ -147,6 +148,7 @@ class AgentRunner:
         self._tick_hooks: list[Callable[[], Awaitable[Any]]] = []
         self._task: asyncio.Task[None] | None = None
         self._stopping = False
+        self.live = LiveLog()
 
     # -- running one agent -----------------------------------------------------
 
@@ -172,8 +174,16 @@ class AgentRunner:
             raise AgentBusyError(agent_id)
         self._inflight.add(agent_id)
         started = self._clock()
+        live = self.live.start(agent_id, trigger)
+
+        def on_event(kind: str, text: str, data: dict[str, Any] | None) -> None:
+            self.live.emit(agent_id, live, kind, text, data)
+
         try:
             if agent.status != "active":
+                self.live.finish(
+                    agent_id, live, "skipped", f"Skipped: agent status is {agent.status}"
+                )
                 return await self.store.record_run(
                     agent_id=agent_id,
                     started_at=started,
@@ -185,8 +195,14 @@ class AgentRunner:
             selection = SkillSelection(status="none")
             try:
                 prompt, selection = await self._build_prompt(agent, started)
+                on_event(
+                    "skills",
+                    f"Skills: {', '.join(selection.used) if selection.used else 'none'}"
+                    f" ({selection.status})",
+                    {"skills": list(selection.used), "status": selection.status},
+                )
                 result = await run_with_tools(
-                    lambda text: self.infer(agent, text), prompt, self.tools, agent
+                    lambda text: self.infer(agent, text), prompt, self.tools, agent, on_event
                 )
             except Exception as exc:  # noqa: BLE001 - recorded, never raised
                 finished = self._clock()
@@ -194,6 +210,9 @@ class AgentRunner:
                     self.backoff.record_throttle(finished)
                 # Reason class only: never the prompt, key or response body.
                 log.warning("agent_runner.run_failed", agent_id=agent_id, error=type(exc).__name__)
+                self.live.finish(
+                    agent_id, live, "failed", f"Failed: {type(exc).__name__}: {str(exc)[:300]}"
+                )
                 return await self.store.record_run(
                     agent_id=agent_id,
                     started_at=started,
@@ -210,6 +229,7 @@ class AgentRunner:
             if latency is None:
                 latency = (finished - started).total_seconds() * 1000
             self.backoff.record_latency(finished, float(latency))
+            self.live.finish(agent_id, live, "completed", f"Completed in {int(latency)} ms")
             return await self.store.record_run(
                 agent_id=agent_id,
                 started_at=started,
@@ -224,6 +244,8 @@ class AgentRunner:
                 skills_status=selection.status,
             )
         finally:
+            if live.status == "running":  # cancelled or the store write failed
+                self.live.finish(agent_id, live, "interrupted", "Run interrupted")
             self._inflight.discard(agent_id)
 
     def add_tick_hook(self, hook: Callable[[], Awaitable[Any]]) -> None:
