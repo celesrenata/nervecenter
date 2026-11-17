@@ -405,6 +405,82 @@ class GoogleCalendarProvider:
             raise TransportError("upstream_error", f"HTTP {resp.status} from Google")
         return True
 
+    # -- read / modify for deletion (Ask) -------------------------------------
+    def _cal_url(self, calendar_id: str) -> str:
+        return self.EVENTS_URL_TMPL.format(cal=urllib.parse.quote(calendar_id or "primary", safe="@."))
+
+    async def list_upcoming(
+        self,
+        calendar_id: str,
+        *,
+        q: str,
+        time_min: datetime,
+        time_max: datetime | None = None,
+        max_results: int = 250,
+        max_pages: int = 4,
+    ) -> list[ProviderEvent]:
+        """Live, unexpanded search (``singleEvents=false``): series masters and
+        single events whose occurrences end after ``time_min``. Bounded."""
+        events: list[ProviderEvent] = []
+        page_token: str | None = None
+        for _ in range(max_pages):
+            params = {
+                "q": q,
+                "timeMin": time_min.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                "maxResults": str(min(max_results, 250)),
+                "singleEvents": "false",
+                "showDeleted": "false",
+            }
+            if time_max is not None:
+                params["timeMax"] = time_max.astimezone(UTC).isoformat().replace("+00:00", "Z")
+            if page_token:
+                params["pageToken"] = page_token
+            data = await self._get_json(self._cal_url(calendar_id), params)
+            events.extend(self._normalize(i) for i in data.get("items", []))
+            page_token = data.get("nextPageToken")
+            if not page_token or len(events) >= max_results:
+                break
+        return [e for e in events if not e.deleted][:max_results]
+
+    async def get_event(self, calendar_id: str, event_id: str) -> ProviderEvent | None:
+        url = self._cal_url(calendar_id) + "/" + urllib.parse.quote(event_id, safe="")
+        resp = await self._write_request("GET", url, None)
+        if resp.status in (404, 410):
+            return None
+        if resp.status >= 300:
+            raise TransportError("upstream_error", f"HTTP {resp.status} from Google")
+        return self._normalize(resp.json())
+
+    async def list_instances(
+        self,
+        calendar_id: str,
+        event_id: str,
+        *,
+        time_min: datetime,
+        time_max: datetime,
+        limit: int,
+    ) -> list[ProviderEvent]:
+        """Occurrences of one series inside a hard window and count (never unbounded)."""
+        url = self._cal_url(calendar_id) + "/" + urllib.parse.quote(event_id, safe="") + "/instances"
+        params = {
+            "timeMin": time_min.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "timeMax": time_max.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+            "maxResults": str(max(1, min(limit, 250))),
+            "showDeleted": "false",
+        }
+        data = await self._get_json(url, params)
+        items = [self._normalize(i) for i in data.get("items", [])]
+        return [e for e in items if not e.deleted][:limit]
+
+    async def patch_event(self, calendar_id: str, event_id: str, body: dict[str, Any]) -> ProviderEvent:
+        import json
+
+        url = self._cal_url(calendar_id) + "/" + urllib.parse.quote(event_id, safe="")
+        resp = await self._write_request("PATCH", url, json.dumps(body).encode("utf-8"))
+        if resp.status >= 300:
+            raise TransportError("upstream_error", f"HTTP {resp.status} from Google")
+        return self._normalize(resp.json())
+
     # -- normalization -------------------------------------------------------
     def _normalize(self, item: dict[str, Any]) -> ProviderEvent:
         all_day = item.get("start", {}).get("date") is not None
@@ -434,6 +510,13 @@ class GoogleCalendarProvider:
                     if isinstance(a, dict)
                 ],
                 "recurrence": item.get("recurrence"),
+                "recurring_event_id": item.get("recurringEventId"),
+                "organizer_self": bool((item.get("organizer") or {}).get("self", True)),
+                "attendee_names": [
+                    a.get("displayName")
+                    for a in item.get("attendees", [])
+                    if isinstance(a, dict) and a.get("displayName")
+                ],
             },
         )
 

@@ -37,6 +37,7 @@ from backend.agents.registry import get_agent_registry
 from backend.api.endpoints._helpers import make_read_router
 from backend.context.ask import AskInference, AskRequest, AskService, get_ask_service
 from backend.context.ask_actions import build_calendar_context, looks_like_calendar_create
+from backend.context.ask_delete import looks_like_calendar_delete
 from backend.context.retrieval import RetrievalResult, retrieve
 
 log = structlog.get_logger(__name__)
@@ -137,7 +138,7 @@ def _sub(request: Request) -> str:
 async def _calendar_context(request: Request, question: str, account_id: str | None) -> Any:
     """Calendar-action context, built only when the cheap gate matches so an
     ordinary question reads nothing extra."""
-    if not looks_like_calendar_create(question):
+    if not (looks_like_calendar_delete(question) or looks_like_calendar_create(question)):
         return None
     return await build_calendar_context(request.app.state, sub=_sub(request), account_id=account_id)
 

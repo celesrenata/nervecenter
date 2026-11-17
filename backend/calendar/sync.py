@@ -372,6 +372,86 @@ class CalendarSyncRunner:
         )
         return removed
 
+    # -- deletion by series (Ask) ----------------------------------------------
+    async def search_upcoming(
+        self, account_id: str, q: str, *, time_min: datetime, max_results: int = 100
+    ) -> list[ProviderEvent]:
+        """Live Google search for upcoming events and series masters."""
+        _, provider, calendar_id = await self._writable_provider(account_id)
+        return await provider.list_upcoming(
+            calendar_id, q=q, time_min=time_min, max_results=max_results
+        )
+
+    async def list_instances(
+        self, account_id: str, master: ProviderEvent, *, time_min: datetime,
+        time_max: datetime, limit: int,
+    ) -> list[ProviderEvent]:
+        _, provider, calendar_id = await self._writable_provider(account_id)
+        return await provider.list_instances(
+            calendar_id, master.ical_uid, time_min=time_min, time_max=time_max, limit=limit
+        )
+
+    async def _drop_local_instances(self, account: Any, master_uid: str, since: datetime) -> int:
+        """Mark durable/in-memory expanded copies of a series deleted from ``since``."""
+        rows = await self.registry.calendar.list_events(
+            start=since, account_id=account.id, include_deleted=False, limit=1000
+        )
+        dropped = 0
+        for row in rows:
+            if row.ical_uid.startswith(f"{master_uid}_"):
+                await self._ingest_both_planes(account, ProviderEvent(
+                    ical_uid=row.ical_uid, title=row.title, start=row.start, end=row.end,
+                    all_day=row.all_day, timezone=row.timezone, deleted=True, status="cancelled"))
+                dropped += 1
+        return dropped
+
+    async def end_series(self, account_id: str, master: ProviderEvent, cutoff: datetime) -> list[str]:
+        """Stop a series at ``cutoff`` with one PATCH (past occurrences stay)."""
+        from backend.calendar.series import end_recurrence_at
+
+        account, provider, calendar_id = await self._writable_provider(account_id)
+        rule = end_recurrence_at(list((master.extra or {}).get("recurrence") or []), cutoff, master.all_day)
+        await provider.patch_event(calendar_id, master.ical_uid, {"recurrence": rule})
+        await self._drop_local_instances(account, master.ical_uid, cutoff)
+        return rule
+
+    async def delete_series(self, account_id: str, master: ProviderEvent, since: datetime) -> bool:
+        """Delete a whole series (organiser) or remove it from this calendar (attendee)."""
+        account, provider, calendar_id = await self._writable_provider(account_id)
+        removed = await provider.delete_event(calendar_id, master.ical_uid)
+        await self._ingest_both_planes(
+            account, dataclasses.replace(master, deleted=True, status="cancelled"))
+        await self._drop_local_instances(account, master.ical_uid, since)
+        return removed
+
+    async def delete_instances(
+        self, account_id: str, master: ProviderEvent, *, since: datetime,
+        max_instances: int, horizon: timedelta,
+    ) -> dict[str, Any]:
+        """Bounded per-occurrence fallback. Lists at most ``max_instances`` + 1
+        occurrences inside ``horizon`` (one call), deletes at most
+        ``max_instances``, then asks once whether anything exists past the last
+        deleted one. Never loops over an open-ended series."""
+        account, provider, calendar_id = await self._writable_provider(account_id)
+        found = await provider.list_instances(
+            calendar_id, master.ical_uid, time_min=since, time_max=since + horizon,
+            limit=max_instances + 1,
+        )
+        batch = found[:max_instances]
+        for inst in batch:
+            await provider.delete_event(calendar_id, inst.ical_uid)
+            await self._ingest_both_planes(
+                account, dataclasses.replace(inst, deleted=True, status="cancelled"))
+        last = batch[-1] if batch else None
+        until = (last.end or last.start) if last else since
+        beyond = False
+        if last is not None and until is not None:
+            more = await provider.list_instances(
+                calendar_id, master.ical_uid, time_min=until, time_max=until + timedelta(days=3650),
+                limit=1)
+            beyond = bool(more)
+        return {"deleted": len(batch), "until": until, "still_open": beyond}
+
     # -- dual-plane ingest ----------------------------------------------------
     async def _ingest_both_planes(self, account: Any, ev: ProviderEvent) -> int:
         """(a) upsert the durable row by ``(account_id, ical_uid)`` and

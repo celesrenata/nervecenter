@@ -912,6 +912,8 @@ class AskService:
             yield "delta", {"text": action.body["answer"]}
             if "proposal" in action.body:
                 yield "proposal", action.body["proposal"]
+            if "delete_proposal" in action.body:
+                yield "delete_proposal", action.body["delete_proposal"]
             yield "done", action.body
             return
 
@@ -1102,11 +1104,16 @@ class AskService:
         ``None`` falls through to the normal grounded answer: not a calendar
         request, extraction failed, or no calendar context is available.
         """
-        from backend.context import ask_actions
+        from backend.context import ask_actions, ask_delete
 
-        if calendar is None or not ask_actions.looks_like_calendar_create(question):
+        if calendar is None:
             return None
-        action = ask_actions.propose_calendar_event(self._transport, model, question, calendar)
+        if ask_delete.looks_like_calendar_delete(question):
+            action = ask_delete.propose_calendar_delete(self._transport, model, question, calendar)
+        elif ask_actions.looks_like_calendar_create(question):
+            action = ask_actions.propose_calendar_event(self._transport, model, question, calendar)
+        else:
+            return None
         if action is None:
             return None
         status = action["status"]
@@ -1117,7 +1124,7 @@ class AskService:
             "request_id": request_id,
             "timestamp": datetime.now(UTC).isoformat(),
             "status": status,
-            "request_status": "answered" if status != "proposal" else "proposed",
+            "request_status": "proposed" if status in ("proposal", "delete_proposal") else "answered",
             "answer": action["answer"],
             "grounded": False,
             "citations": [],
@@ -1135,7 +1142,8 @@ class AskService:
             },
             "result": None,
         }
-        for key in ("proposal", "event", "undo", "conflicts", "warnings", "assumptions"):
+        for key in ("proposal", "delete_proposal", "event", "undo", "conflicts", "warnings",
+                    "assumptions"):
             if key in action:
                 body[key] = action[key]
         return AskOutcome(200, body)
