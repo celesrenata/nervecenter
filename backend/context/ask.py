@@ -44,6 +44,8 @@ from uuid import uuid4
 
 import os
 import threading
+import time
+from collections.abc import Iterator
 
 import structlog
 from pydantic import BaseModel, Field
@@ -161,6 +163,14 @@ class AskRequest(BaseModel):
     inference: AskInference | None = Field(
         default=None,
         description="Explicit per-request inference override; highest priority (contract §2).",
+    )
+    account_id: str | None = Field(
+        default=None,
+        description="Calendar account chosen in the UI for a calendar request (overrides the default).",
+    )
+    session_id: str | None = Field(
+        default=None,
+        description="Optional client conversation id (echoed in the stream meta event).",
     )
 
 
@@ -558,7 +568,7 @@ class AskService:
 
     # -- pipeline ------------------------------------------------------------
 
-    def ask(self, request: AskRequest) -> AskOutcome:
+    def ask(self, request: AskRequest, *, calendar: Any = None) -> AskOutcome:
         """Run the full grounded ask pipeline (offline under fixture mode).
 
         Order of operations (T003.AC9):
@@ -618,6 +628,18 @@ class AskService:
             outcome.body["inference"] = audit
             return outcome
 
+        calendar_outcome = self._calendar_outcome(
+            request_id=request_id,
+            question=question,
+            model=model,
+            audit=audit,
+            decision=decision,
+            package=package,
+            calendar=calendar,
+        )
+        if calendar_outcome is not None:
+            return calendar_outcome
+
         evidence = _package_refs(package)
         payload = self._remote_payload(question, ctx, evidence)
         prompt = self._prompt(question, payload)
@@ -646,9 +668,163 @@ class AskService:
             outcome.body["inference"] = audit
             return outcome
 
-        citations, ungrounded, grounded = _grounded_citations(response.content, package)
+        outcome = self._answered_outcome(
+            request_id=request_id,
+            question=question,
+            content=response.content,
+            model_name=response.model,
+            provider_name=response.provider,
+            usage={
+                "input_tokens": response.input_tokens,
+                "output_tokens": response.output_tokens,
+                "ttft_ms": response.ttft_ms,
+                "e2e_latency_ms": response.e2e_latency_ms,
+            },
+            audit=audit,
+            request_key=route.request_key,
+            decision=decision,
+            package=package,
+            evidence=evidence,
+        )
+        return outcome
+
+    def ask_stream(
+        self, request: AskRequest, *, calendar: Any = None
+    ) -> Iterator[tuple[str, dict[str, Any]]]:
+        """Streaming twin of :meth:`ask`: yields ``(event, data)`` pairs.
+
+        Events: ``meta`` {request_id}, ``delta`` {text}, ``proposal`` {...},
+        ``done`` {the same body ``ask`` returns} and ``error`` {code, message}.
+        Compile, PDP, denial and unavailable handling are shared with ``ask``;
+        the secure route guard runs inside ``transport.generate_stream`` for
+        every streamed ask, and citations are verified once the stream ends.
+        """
+        from backend.inference.secure_client import SecureRouteDenied
+
+        question = (request.question or "").strip()
+        request_id = str(uuid4())
+        yield "meta", {"request_id": request_id, "session_id": request.session_id}
+        if not question:
+            yield "error", {
+                "code": "invalid_request",
+                "message": "'question' is required and must be non-empty.",
+            }
+            return
+        ctx = request.context
+        audit = self._resolve_inference(request.agent, request.inference)
+        provider, model = audit["provider"], audit["model"]
+        package = self._compile(question, ctx, request_id)
+        decision = self._preflight(ctx)
+
+        if not decision.remote_allowed:
+            outcome = self._denial_body(request_id, decision, package)
+            outcome.body["inference"] = audit
+            yield "done", outcome.body
+            return
+        if not self.transport_available:
+            exc = OmniRouteUnavailableError(
+                [(provider, model)], {(provider, model): "no transport configured"}
+            )
+            outcome = self._unavailable_body(request_id, exc, package)
+            outcome.body["inference"] = audit
+            yield "done", outcome.body
+            return
+
+        try:
+            action = self._calendar_outcome(
+                request_id=request_id,
+                question=question,
+                model=model,
+                audit=audit,
+                decision=decision,
+                package=package,
+                calendar=calendar,
+            )
+        except SecureRouteDenied as exc:
+            yield "error", {"code": "secure_route_denied", "message": exc.reason}
+            return
+        if action is not None:
+            yield "delta", {"text": action.body["answer"]}
+            if "proposal" in action.body:
+                yield "proposal", action.body["proposal"]
+            yield "done", action.body
+            return
+
+        evidence = _package_refs(package)
+        prompt = self._prompt(question, self._remote_payload(question, ctx, evidence))
+        parts: list[str] = []
+        started = time.monotonic()
+        try:
+            transport = self._transport
+            if hasattr(transport, "generate_stream"):
+                for chunk in transport.generate_stream(model, prompt):
+                    parts.append(chunk)
+                    yield "delta", {"text": chunk}
+            else:
+                text = str(transport.generate(model, prompt).get("content", ""))
+                parts.append(text)
+                if text:
+                    yield "delta", {"text": text}
+            if not "".join(parts).strip():
+                raise OmniRouteUnavailableError([(provider, model)], {(provider, model): "empty"})
+        except SecureRouteDenied as exc:
+            yield "error", {"code": "secure_route_denied", "message": exc.reason}
+            return
+        except OmniRouteUnavailableError as exc:
+            if parts and "".join(parts).strip():
+                yield "error", {
+                    "code": "stream_interrupted",
+                    "message": "The answer stopped before it finished.",
+                }
+                return
+            outcome = self._unavailable_body(request_id, exc, package)
+            outcome.body["inference"] = audit
+            yield "done", outcome.body
+            return
+        except Exception as exc:  # noqa: BLE001 - one safe error event, no detail
+            log.warning("ask.stream_failed", error=type(exc).__name__)
+            yield "error", {"code": "ask_failed", "message": "The answer could not be produced."}
+            return
+
+        outcome = self._answered_outcome(
+            request_id=request_id,
+            question=question,
+            content="".join(parts),
+            model_name=model,
+            provider_name=provider,
+            usage={
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "ttft_ms": None,
+                "e2e_latency_ms": (time.monotonic() - started) * 1000.0,
+            },
+            audit=audit,
+            request_key=f"ask-{request_id}",
+            decision=decision,
+            package=package,
+            evidence=evidence,
+        )
+        yield "done", outcome.body
+
+    def _answered_outcome(
+        self,
+        *,
+        request_id: str,
+        question: str,
+        content: str,
+        model_name: str,
+        provider_name: str,
+        usage: dict[str, Any],
+        audit: dict[str, str],
+        request_key: str,
+        decision: InferRouteDecision,
+        package: ContextPackage,
+        evidence: list[str],
+    ) -> AskOutcome:
+        """The 200 ``answered`` body (shared by ``ask`` and ``ask_stream``)."""
+        citations, ungrounded, grounded = _grounded_citations(content, package)
         fixture = bool(self._transport and self._transport.fixture_mode)
-        body = {
+        body: dict[str, Any] = {
             "accepted": True,
             "executed": True,
             "service": "context",
@@ -656,27 +832,20 @@ class AskService:
             "timestamp": datetime.now(UTC).isoformat(),
             "status": "answered",
             "request_status": "answered",
-            "answer": response.content,
+            "answer": content,
             "grounded": grounded,
             "citations": citations,
             "ungrounded_claims": ungrounded,
-            "model": response.model,
-            "provider": response.provider,
+            "model": model_name,
+            "provider": provider_name,
             "inference": audit,
             "route": {
                 "model": self._model,
                 "provider": self._provider,
-                "request_key": route.request_key,
+                "request_key": request_key,
             },
-            "usage": {
-                "input_tokens": response.input_tokens,
-                "output_tokens": response.output_tokens,
-                "ttft_ms": response.ttft_ms,
-                "e2e_latency_ms": response.e2e_latency_ms,
-            },
-            "fixture_marker": (
-                _stable_marker(response.model, response.content) if fixture else None
-            ),
+            "usage": usage,
+            "fixture_marker": _stable_marker(model_name, content) if fixture else None,
             "policy": {
                 "denied": False,
                 "model_tier": decision.model_tier,
@@ -702,6 +871,60 @@ class AskService:
             # (deterministic; the corpus is read-only here — T003.AC10 owns
             # the corpus and this only annotates provenance).
             self._annotate_synthetic_case(question, body)
+        return AskOutcome(200, body)
+
+    def _calendar_outcome(
+        self,
+        *,
+        request_id: str,
+        question: str,
+        model: str,
+        audit: dict[str, str],
+        decision: InferRouteDecision,
+        package: ContextPackage,
+        calendar: Any,
+    ) -> AskOutcome | None:
+        """Calendar-create action (kept out of the grounded citation flow).
+
+        ``None`` falls through to the normal grounded answer: not a calendar
+        request, extraction failed, or no calendar context is available.
+        """
+        from backend.context import ask_actions
+
+        if calendar is None or not ask_actions.looks_like_calendar_create(question):
+            return None
+        action = ask_actions.propose_calendar_event(self._transport, model, question, calendar)
+        if action is None:
+            return None
+        status = action["status"]
+        body: dict[str, Any] = {
+            "accepted": True,
+            "executed": status == "created",
+            "service": "context",
+            "request_id": request_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "status": status,
+            "request_status": "answered" if status != "proposal" else "proposed",
+            "answer": action["answer"],
+            "grounded": False,
+            "citations": [],
+            "inference": audit,
+            "policy": {
+                "denied": False,
+                "model_tier": decision.model_tier,
+                "remote_allowed": True,
+                "policy_id": decision.policy_id,
+                "sensitivity_class": decision.sensitivity_class,
+            },
+            "provenance": {
+                "context_package_id": package.id,
+                "context_records": [],
+            },
+            "result": None,
+        }
+        for key in ("proposal", "event", "undo", "conflicts", "warnings", "assumptions"):
+            if key in action:
+                body[key] = action[key]
         return AskOutcome(200, body)
 
     @staticmethod

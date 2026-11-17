@@ -30,7 +30,9 @@ installed; startup never raises).
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -138,6 +140,21 @@ def to_ingest_payload(ev: ProviderEvent, *, account_id: str) -> dict[str, Any]:
         "source": f"calendar-sync:{ev.timezone or 'utc'}",
         "sync_id": ev.ical_uid,
     }
+
+
+@dataclass
+class EventWrite:
+    """One event to create in a provider calendar (Ask calendar actions)."""
+
+    summary: str
+    start: datetime
+    end: datetime | None
+    tz: str
+    location: str | None = None
+    description: str | None = None
+    all_day: bool = False
+    #: Deterministic provider event id: a repeated write is idempotent.
+    event_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -301,6 +318,59 @@ class CalendarSyncRunner:
                 "error_code": code,
                 "error": message,
             }
+
+    # -- write path (Ask calendar actions) -------------------------------------
+    async def _writable_provider(self, account_id: str) -> tuple[Any, Any, str]:
+        """Resolve account, Google provider and calendar id exactly like
+        :meth:`sync_account`. Errors propagate (the caller maps them)."""
+        from backend.calendar.providers import GoogleCalendarProvider, TransportError
+
+        account = await self.registry.calendar.get_account(account_id)
+        if account is None:
+            raise TransportError("account_not_found", "calendar account not found")
+        if account.provider != "google":
+            raise TransportError("write_unsupported", "only Google calendars can be written")
+        secret = await self._resolve_secret(account)
+        provider = build_provider(
+            account.provider,
+            self.transport,
+            config=_with_app_keys(account),
+            secret=secret,
+            account_timezone=account.timezone or "UTC",
+            sync_state=account.sync_state or {},
+        )
+        assert isinstance(provider, GoogleCalendarProvider)
+        calendar_ids = (account.config or {}).get("calendar_ids") or []
+        return account, provider, str(calendar_ids[0]) if calendar_ids else "primary"
+
+    async def write_event(self, account_id: str, write: EventWrite) -> ProviderEvent:
+        """Create the event at the provider, then ingest it into both planes so
+        Calendar and Today show it at once. ``TransportError`` propagates
+        (``consent_required`` when the Google grant lacks write scope)."""
+        account, provider, calendar_id = await self._writable_provider(account_id)
+        ev = await provider.create_event(
+            calendar_id,
+            summary=write.summary,
+            start=write.start,
+            end=write.end,
+            tz=write.tz,
+            location=write.location,
+            description=write.description,
+            event_id=write.event_id,
+            all_day=write.all_day,
+        )
+        await self._ingest_both_planes(account, ev)
+        return ev
+
+    async def delete_event(self, account_id: str, ev: ProviderEvent) -> bool:
+        """Undo: delete at the provider, mark the durable row deleted and drop
+        the in-memory copy (the audit row stays)."""
+        account, provider, calendar_id = await self._writable_provider(account_id)
+        removed = await provider.delete_event(calendar_id, ev.ical_uid)
+        await self._ingest_both_planes(
+            account, dataclasses.replace(ev, deleted=True, status="cancelled")
+        )
+        return removed
 
     # -- dual-plane ingest ----------------------------------------------------
     async def _ingest_both_planes(self, account: Any, ev: ProviderEvent) -> int:
@@ -497,6 +567,7 @@ def build_runner(
 __all__ = [
     "CalendarSyncRunner",
     "CalendarSyncSupervisor",
+    "EventWrite",
     "HttpxTransport",
     "install_calendar_sync",
     "stop_calendar_sync",

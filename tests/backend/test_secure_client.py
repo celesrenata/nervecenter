@@ -500,3 +500,48 @@ def test_planner_never_fans_out_and_coder_allows_four():
     assert peak_for("secure/planner", 4) == 1
     assert peak_for("secure/coder", 8) == 4
     assert route_semaphore("secure/reader", DEFAULT_ROUTES["secure/reader"])._initial_value == 3
+
+
+# ---- streaming ---------------------------------------------------------------------
+class StreamInner(Inner):
+    def __init__(self, chunks=("a", "b"), fail_first: int = 0) -> None:
+        super().__init__()
+        self.chunks = list(chunks)
+        self.fail_first = fail_first
+
+    def generate_stream(self, model, prompt, headers=None, max_tokens=None, timeout=None):
+        self.calls.append({"model": model, "prompt": prompt, "headers": headers})
+        if self.fail_first > 0:
+            self.fail_first -= 1
+            from backend.inference.omniroute import OmniRouteUnavailableError
+
+            raise OmniRouteUnavailableError([(model, model)], {(model, model): "http_429"})
+        yield from self.chunks
+
+
+def test_stream_uses_secure_route_headers_and_guard_each_call():
+    guard, reg = real_guard()
+    inner = StreamInner()
+    t = SecureTransport(inner, "test", guard)
+    assert list(t.generate_stream("auto/best-chat", "personal")) == ["a", "b"]
+    assert inner.calls[0]["model"] == "secure/coder"
+    assert inner.calls[0]["headers"]["x-omniroute-no-memory"] == "true"
+    assert inner.calls[0]["headers"]["x-omniroute-compression"] == "off"
+    assert reg.calls == 3
+
+
+def test_stream_guard_deny_sends_nothing(monkeypatch):
+    monkeypatch.setenv("NERVE_SECURE_MODEL", "secure/leaky")
+    guard, _ = real_guard()
+    inner = StreamInner()
+    with pytest.raises(SecureRouteDenied):
+        list(SecureTransport(inner, "test", guard).generate_stream("secure/leaky", "p"))
+    assert inner.calls == []
+
+
+def test_stream_retries_only_before_first_chunk():
+    guard, _ = real_guard()
+    inner = StreamInner(fail_first=1)
+    t = SecureTransport(inner, "test", guard, sleep=lambda _s: None)
+    assert list(t.generate_stream("secure/coder", "p")) == ["a", "b"]
+    assert len(inner.calls) == 2  # one failed open, one success

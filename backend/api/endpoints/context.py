@@ -22,15 +22,19 @@ still degrade honestly instead of 500-ing.
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import Any
 from uuid import uuid4
 
 from fastapi import Request
-from starlette.responses import JSONResponse
+from starlette.responses import JSONResponse, StreamingResponse
 
 from backend.agents.registry import get_agent_registry
 from backend.api.endpoints._helpers import make_read_router
 from backend.context.ask import AskInference, AskRequest, AskService, get_ask_service
+from backend.context.ask_actions import build_calendar_context, looks_like_calendar_create
 
 router = make_read_router(
     prefix="/api/context",
@@ -102,6 +106,7 @@ async def ask(request: Request, body: AskRequest) -> JSONResponse:
 
     # The pipeline is synchronous (15-25 s of inference); run it off the event
     # loop so the rest of the API keeps serving while it works.
+    calendar = await _calendar_context(request, question, body.account_id)
     outcome = await asyncio.to_thread(
         svc.ask,
         AskRequest(
@@ -109,9 +114,77 @@ async def ask(request: Request, body: AskRequest) -> JSONResponse:
             context=body.context,
             agent=body.agent,
             inference=body.inference,
-        )
+            account_id=body.account_id,
+            session_id=body.session_id,
+        ),
+        calendar=calendar,
     )
     return JSONResponse(status_code=outcome.status_code, content=outcome.body)
+
+
+def _sub(request: Request) -> str:
+    claims = getattr(request.state, "principal", None) or {}
+    return str(claims.get("sub") or claims.get("sid") or "")
+
+
+async def _calendar_context(request: Request, question: str, account_id: str | None) -> Any:
+    """Calendar-action context, built only when the cheap gate matches so an
+    ordinary question reads nothing extra."""
+    if not looks_like_calendar_create(question):
+        return None
+    return await build_calendar_context(request.app.state, sub=_sub(request), account_id=account_id)
+
+
+def _sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, default=str)}\n\n"
+
+
+@router.post("/ask/stream")
+async def ask_stream(request: Request, body: AskRequest) -> Any:
+    """Streaming ask (server-sent events).
+
+    Events: ``meta`` {request_id}, ``delta`` {text}, ``proposal`` {...},
+    ``done`` {the body ``POST /api/context/ask`` returns} and ``error``
+    {code, message}. An empty question is the same 422 as ``/ask``.
+    """
+    question = (body.question or "").strip()
+    if not question:
+        return JSONResponse(
+            status_code=422,
+            content={
+                "accepted": False,
+                "executed": False,
+                "service": "context",
+                "request_id": str(uuid4()),
+                "timestamp": datetime.now(UTC).isoformat(),
+                "status": "invalid_request",
+                "detail": "'question' is required and must be non-empty.",
+                "inference": _resolve_audit(request, body.agent, body.inference),
+                "result": None,
+            },
+        )
+    svc = _ask_service(request)
+    if body.agent is not None and body.agent != "":
+        await _hydrate_agent_binding(request, body.agent)
+    calendar = await _calendar_context(request, question, body.account_id)
+    ask_request = AskRequest(
+        question=question,
+        context=body.context,
+        agent=body.agent,
+        inference=body.inference,
+        account_id=body.account_id,
+        session_id=body.session_id,
+    )
+
+    def events() -> Iterator[str]:
+        for name, data in svc.ask_stream(ask_request, calendar=calendar):
+            yield _sse(name, data)
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 def _resolve_audit(

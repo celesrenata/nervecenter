@@ -505,3 +505,69 @@ class TestWireFormat:
         assert captured["url"] == "http://omni.example/v1/routes"
         assert isinstance(candidates, list) and isinstance(candidates[0], RouteCandidate)
         assert candidates[0].model == "m"
+
+
+# ---------------------------------------------------------------------------
+# Streaming (generate_stream)
+# ---------------------------------------------------------------------------
+class TestGenerateStream:
+    @staticmethod
+    def _stream_transport(lines: list[str], status: int = 200, headers=None):
+        import httpx
+
+        seen: list[httpx.Request] = []
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            seen.append(request)
+            return httpx.Response(
+                status, content="\n".join(lines).encode(), headers=headers or {}
+            )
+
+        t = OmniRouteTransport(
+            base_url="http://omni.example",
+            api_key=_API_KEY,
+            _client=httpx.Client(transport=httpx.MockTransport(handler)),
+        )
+        t._seen = seen  # type: ignore[attr-defined]
+        return t
+
+    def test_parses_sse_deltas_until_done(self) -> None:
+        def ev(text):
+            return "data: " + json.dumps({"choices": [{"delta": {"content": text}}]})
+
+        t = self._stream_transport(
+            [ev("Hel"), "", ": keepalive", ev("lo"), "data: not-json", ev(" there"),
+             "data: [DONE]", ev("ignored")]
+        )
+        chunks = list(
+            t.generate_stream("m", "hi", headers={"x-test": "1"}, max_tokens=50)
+        )
+        assert chunks == ["Hel", "lo", " there"]
+        req = t._seen[0]  # type: ignore[attr-defined]
+        body = json.loads(req.content)
+        assert body["stream"] is True and body["max_tokens"] == 50
+        assert req.headers["x-test"] == "1"
+        assert req.headers["authorization"] == f"Bearer {_API_KEY}"
+        assert req.url.path == "/v1/chat/completions"
+
+    def test_http_error_raises_with_retry_after(self) -> None:
+        t = self._stream_transport([], status=429, headers={"retry-after": "7"})
+        with pytest.raises(OmniRouteUnavailableError) as info:
+            list(t.generate_stream("m", "hi"))
+        assert "http_429" in str(info.value)
+        assert info.value.retry_after == 7.0
+        assert _API_KEY not in str(info.value)
+
+    def test_fixture_mode_yields_word_chunks(self, fixture_dir: Path) -> None:
+        t = OmniRouteTransport(fixture_dir=str(fixture_dir), api_key="k")
+        chunks = list(t.generate_stream("primary", "hi"))
+        assert len(chunks) == 2 and "".join(chunks) == "fixture answer"
+
+    def test_fixture_miss_and_unconfigured_raise(self, fixture_dir: Path) -> None:
+        t = OmniRouteTransport(fixture_dir=str(fixture_dir), api_key="k")
+        with pytest.raises(OmniRouteUnavailableError):
+            list(t.generate_stream("nope", "hi"))
+        t2 = OmniRouteTransport(base_url="", api_key="k")
+        t2.base_url = None
+        with pytest.raises(OmniRouteUnavailableError):
+            list(t2.generate_stream("m", "hi"))

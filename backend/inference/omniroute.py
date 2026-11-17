@@ -25,7 +25,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -413,6 +415,99 @@ class OmniRouteTransport:
                 estimated_cost_usd=0.0,
             )
         return result
+
+    def generate_stream(
+        self,
+        model: str,
+        prompt: str,
+        headers: dict[str, str] | None = None,
+        max_tokens: int | None = None,
+        timeout: int | None = None,
+    ) -> Iterator[str]:
+        """Stream one chat completion as text chunks (SSE ``delta.content``).
+
+        Sync generator. Fixture mode yields the fixture content split into
+        word chunks. Raises :class:`OmniRouteUnavailableError` like
+        :meth:`generate` (HTTP >= 400 carries ``retry_after``); a failure after
+        the first chunk raises the same error, so callers can tell "nothing
+        sent yet" (safe to retry) from "partial".
+        """
+        timeout_ms = timeout or self.default_timeout_ms
+        if self.fixture_mode:
+            started = time.monotonic()
+            try:
+                payload = self._read_fixture(model)
+                status = _as_number(payload.get("status", 200))
+                if status is not None and status >= 400:
+                    raise ValueError(f"fixture status {int(status)}")
+                content = _parse_envelope(payload)["content"]
+            except (_FixtureMissError, ValueError) as exc:
+                self._record_failure(model, model, started)
+                raise OmniRouteUnavailableError(
+                    [(model, model)], {(model, model): "no fixture"}
+                ) from exc
+            for chunk in re.findall(r"\S+\s*", content):
+                yield chunk
+            return
+
+        if not self.base_url:
+            raise OmniRouteUnavailableError(
+                [(model, model)], {(model, model): "NERVE_OMNIROUTE_URL not configured"}
+            )
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "stream": True,
+        }
+        if max_tokens:
+            body["max_tokens"] = int(max_tokens)
+        request_headers: dict[str, str] = {"Accept": "text/event-stream"}
+        if headers:
+            request_headers.update(headers)
+        key = self.current_key()
+        if key:
+            request_headers["Authorization"] = f"Bearer {key}"
+        client = self._client if self._client is not None else httpx.Client(
+            timeout=timeout_ms / 1000.0
+        )
+        url = self.base_url.rstrip("/") + "/v1/chat/completions"
+        started = time.monotonic()
+        try:
+            with client.stream("POST", url, json=body, headers=request_headers) as response:
+                status = getattr(response, "status_code", 0)
+                if status >= 400:
+                    self._record_failure(model, model, started)
+                    error = OmniRouteUnavailableError(
+                        [(model, model)], {(model, model): f"http_{status}"}
+                    )
+                    try:
+                        error.retry_after = float(response.headers.get("retry-after"))
+                    except (AttributeError, TypeError, ValueError):
+                        error.retry_after = None
+                    raise error
+                for line in response.iter_lines():
+                    line = line.strip()
+                    if not line.startswith("data:"):
+                        continue
+                    data = line[5:].strip()
+                    if data == "[DONE]":
+                        return
+                    try:
+                        event = json.loads(data)
+                        choices = event.get("choices") or []
+                        delta = (choices[0].get("delta") or {}) if choices else {}
+                        text = delta.get("content")
+                    except (ValueError, AttributeError, IndexError, TypeError):
+                        continue
+                    if text:
+                        yield str(text)
+        except OmniRouteUnavailableError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - transport-level catch-all
+            self._record_failure(model, model, started)
+            raise OmniRouteUnavailableError(
+                [(model, model)], {(model, model): type(exc).__name__}
+            ) from exc
 
     # ------------------------------------------------------------------
     # Route Candidate Interface (spec §32)

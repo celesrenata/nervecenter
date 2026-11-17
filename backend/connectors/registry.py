@@ -58,6 +58,7 @@ RELAY_TOKEN = "relay_token"
 #: Extra permissions a connection may add to its existing sign-in.
 EXTRA_SCOPES: dict[tuple[str, str], str] = {
     ("google", "calendar"): "https://www.googleapis.com/auth/calendar.readonly",
+    ("google", "calendar_write"): "https://www.googleapis.com/auth/calendar.events",
 }
 ACCESS_TOKEN = "access_token"
 REFRESH_TOKEN = "refresh_token"

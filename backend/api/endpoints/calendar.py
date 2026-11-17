@@ -27,12 +27,20 @@ from fastapi import APIRouter, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from backend.api.models import ApiResponseMeta, CalendarEvent, ListResponse
+from backend.calendar.proposals import get_proposal_store
 from backend.calendar.service import CalendarService, get_calendar_service
 from backend.calendar.sync import (
     SECRET_KIND,
     SECRET_OWNER_KIND,
     CalendarSyncRunner,
     HttpxTransport,
+)
+
+from backend.context.ask_actions import (
+    ActionError,
+    account_write_info,
+    confirm_proposal,
+    undo_created,
 )
 
 router = APIRouter(prefix="/api/calendar", tags=["calendar"])
@@ -280,11 +288,17 @@ def _degraded_write(request: Request, detail: str) -> dict[str, Any]:
     }
 
 
-def _account_dict(row: Any) -> dict[str, Any]:
+def _account_dict(row: Any, connection: Any | None = None) -> dict[str, Any]:
     """Serialize an account row — credentials are never included (they live
-    only in the secrets vault; the row carries at most a ``secret_ref``)."""
+    only in the secrets vault; the row carries at most a ``secret_ref``).
+
+    ``connection_id`` / ``can_write`` tell the UI whether Ask may add events
+    (the linked Google connection holds the ``calendar_write`` consent)."""
     sync_state = row.sync_state or {}
+    write = account_write_info(row, connection)
     return {
+        "connection_id": write["connection_id"],
+        "can_write": write["can_write"],
         "id": row.id,
         "provider": row.provider,
         "label": row.label,
@@ -302,6 +316,18 @@ def _account_dict(row: Any) -> dict[str, Any]:
         "created_at": row.created_at.isoformat() if row.created_at else None,
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
+
+
+async def _account_out(registry: Any, row: Any) -> dict[str, Any]:
+    """:func:`_account_dict` with the linked connection looked up."""
+    conn_id = (row.config or {}).get("connection_id")
+    connection = None
+    if conn_id:
+        try:
+            connection = await registry.connections.get_connection(str(conn_id))
+        except Exception:  # noqa: BLE001 - a lookup failure just reads as no write access
+            connection = None
+    return _account_dict(row, connection)
 
 
 def _row_payload(row: Any) -> dict[str, Any]:
@@ -373,7 +399,7 @@ async def list_accounts(request: Request) -> ListResponse:
     if registry is None:
         return ListResponse(data=[], meta=_meta(total=0, per_page=0))
     rows = await registry.calendar.list_accounts()
-    data = [_account_dict(r) for r in rows]
+    data = [await _account_out(registry, r) for r in rows]
     return ListResponse(data=data, meta=_meta(total=len(data), per_page=len(data)))
 
 
@@ -424,7 +450,7 @@ async def create_account(request: Request, body: AccountCreateRequest) -> dict[s
         account = await registry.calendar.update_account(
             account.id, secret_ref=secret.id
         )
-    return _account_dict(account)
+    return await _account_out(registry, account)
 
 
 @router.get("/accounts/{account_id}")
@@ -439,7 +465,7 @@ async def get_account(request: Request, account_id: str) -> dict[str, Any]:
             status_code=404,
             detail={"error_code": "calendar_account_not_found"},
         )
-    return _account_dict(row)
+    return await _account_out(registry, row)
 
 
 @router.patch("/accounts/{account_id}")
@@ -471,7 +497,7 @@ async def update_account(
             plaintext=body.credential,
         )
         row = await registry.calendar.update_account(account_id, secret_ref=secret.id)
-    return _account_dict(row)
+    return await _account_out(registry, row)
 
 
 @router.delete("/accounts/{account_id}", status_code=204)
@@ -565,6 +591,89 @@ async def conflicts(
         "conflicts": durable,
         "availability": availability,
     }
+
+
+# -- Ask calendar actions (proposals / undo) ---------------------------------
+#
+# Confirm-first: Ask proposes an event; nothing is written until the person
+# confirms. Proposals are bound to the signed-in ``sub`` and live 15 minutes;
+# a wrong sub reads as an expired proposal (404).
+
+
+class ProposalConfirmRequest(BaseModel):
+    """Optional edits made on the card before confirming."""
+
+    model_config = {"extra": "forbid"}
+
+    account_id: str | None = None
+    title: str | None = Field(default=None, max_length=200)
+    start: str | None = None
+    end: str | None = None
+
+
+def _sub(request: Request) -> str:
+    claims = getattr(request.state, "principal", None) or {}
+    return str(claims.get("sub") or claims.get("sid") or "")
+
+
+def _action_error(exc: ActionError) -> Response:
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(status_code=exc.status, content=exc.body())
+
+
+def _proposal_missing() -> HTTPException:
+    return HTTPException(status_code=404, detail={"error_code": "proposal_not_found"})
+
+
+@router.post("/proposals/{proposal_id}/confirm")
+async def confirm_calendar_proposal(
+    request: Request, proposal_id: str, body: ProposalConfirmRequest | None = None
+) -> Any:
+    """Write the proposed event (idempotent). 409 ``consent_required`` when the
+    Google grant lacks write access."""
+    store = get_proposal_store(request.app.state)
+    proposal = store.get(proposal_id, _sub(request))
+    if proposal is None:
+        raise _proposal_missing()
+    if _registry(request) is None:
+        return _degraded_write(request, "durable storage is not configured")
+    edits = body or ProposalConfirmRequest()
+    try:
+        result = await confirm_proposal(
+            request.app.state,
+            store,
+            proposal,
+            account_id=edits.account_id,
+            title=edits.title,
+            start=edits.start,
+            end=edits.end,
+        )
+    except ActionError as exc:
+        return _action_error(exc)
+    return {"status": "created", "proposal_id": proposal.id, **result}
+
+
+@router.post("/proposals/{proposal_id}/cancel")
+async def cancel_calendar_proposal(request: Request, proposal_id: str) -> dict[str, Any]:
+    store = get_proposal_store(request.app.state)
+    if not store.cancel(proposal_id, _sub(request)):
+        raise _proposal_missing()
+    return {"status": "cancelled", "proposal_id": proposal_id}
+
+
+@router.post("/events/{event_id}/undo")
+async def undo_calendar_event(request: Request, event_id: str) -> Any:
+    """Delete an event Ask just created (used when confirm-first is off)."""
+    if _registry(request) is None:
+        return _degraded_write(request, "durable storage is not configured")
+    store = get_proposal_store(request.app.state)
+    try:
+        return await undo_created(request.app.state, store, event_id, _sub(request))
+    except ActionError as exc:
+        if exc.status == 404:
+            raise HTTPException(status_code=404, detail={"error_code": exc.code}) from exc
+        return _action_error(exc)
 
 
 @router.get("/{event_id}", response_model=CalendarEvent)

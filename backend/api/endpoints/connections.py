@@ -157,7 +157,7 @@ class AuthFlowRequest(BaseModel):
     code: str | None = None
     state: str | None = None
     #: Extra permissions to add to this account's sign-in (e.g. ``["calendar"]``).
-    extra: list[Literal["calendar"]] | None = None
+    extra: list[Literal["calendar", "calendar_write"]] | None = None
 
 
 # -- list / get ---------------------------------------------------------------

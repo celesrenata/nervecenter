@@ -327,6 +327,84 @@ class GoogleCalendarProvider:
                     break
         return result
 
+    # -- write path (Ask calendar actions) ------------------------------------
+    async def _write_request(
+        self, method: str, url: str, body: bytes | None
+    ) -> HttpResponse:
+        token = await self._ensure_token()
+        headers = {"Authorization": f"Bearer {token}"}
+        if body is not None:
+            headers["Content-Type"] = "application/json"
+        resp = await self._transport.request(method, url, headers=headers, body=body)
+        if resp.status in (401, 403):
+            # Insufficient scope (read-only consent) or revoked grant: the UI
+            # offers "Grant calendar write access" instead of failing silently.
+            raise TransportError(
+                "consent_required", "Google calendar write access has not been granted"
+            )
+        return resp
+
+    async def create_event(
+        self,
+        calendar_id: str,
+        *,
+        summary: str,
+        start: datetime,
+        end: datetime | None,
+        tz: str,
+        location: str | None = None,
+        description: str | None = None,
+        event_id: str | None = None,
+        all_day: bool = False,
+    ) -> ProviderEvent:
+        """Create one event. ``event_id`` (base32hex, 5-1024 chars) makes a
+        repeated create idempotent: Google answers 409 for a duplicate id and
+        the existing event is fetched and returned instead."""
+        import json
+
+        zone = tz or self._account_timezone
+        body: dict[str, Any] = {"summary": summary}
+        if all_day:
+            end_day = (end or start + timedelta(days=1)).date()
+            if end_day <= start.date():
+                end_day = start.date() + timedelta(days=1)
+            body["start"] = {"date": start.date().isoformat()}
+            body["end"] = {"date": end_day.isoformat()}
+        else:
+            end = end or start + timedelta(hours=1)
+            body["start"] = {"dateTime": start.isoformat(), "timeZone": zone}
+            body["end"] = {"dateTime": end.isoformat(), "timeZone": zone}
+        if location:
+            body["location"] = location
+        if description:
+            body["description"] = description
+        if event_id:
+            body["id"] = event_id
+        cal = urllib.parse.quote(calendar_id or "primary", safe="@.")
+        url = self.EVENTS_URL_TMPL.format(cal=cal)
+        resp = await self._write_request("POST", url, json.dumps(body).encode("utf-8"))
+        if resp.status == 409 and event_id:
+            existing = await self._write_request(
+                "GET", f"{url}/{urllib.parse.quote(event_id, safe='')}", None
+            )
+            if existing.status >= 300:
+                raise TransportError("upstream_error", f"HTTP {existing.status} from Google")
+            return self._normalize(existing.json())
+        if resp.status >= 300:
+            raise TransportError("upstream_error", f"HTTP {resp.status} from Google")
+        return self._normalize(resp.json())
+
+    async def delete_event(self, calendar_id: str, event_id: str) -> bool:
+        """Delete one event (undo). 404/410 count as already gone."""
+        cal = urllib.parse.quote(calendar_id or "primary", safe="@.")
+        url = self.EVENTS_URL_TMPL.format(cal=cal) + "/" + urllib.parse.quote(event_id, safe="")
+        resp = await self._write_request("DELETE", url, None)
+        if resp.status in (404, 410):
+            return False
+        if resp.status >= 300:
+            raise TransportError("upstream_error", f"HTTP {resp.status} from Google")
+        return True
+
     # -- normalization -------------------------------------------------------
     def _normalize(self, item: dict[str, Any]) -> ProviderEvent:
         all_day = item.get("start", {}).get("date") is not None

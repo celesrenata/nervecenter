@@ -33,7 +33,7 @@ import asyncio
 import json
 import os
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -351,6 +351,66 @@ class SecureTransport:
             **({"sleep": self._sleep} if self._sleep is not None else {}),
         )
         return retrying(attempt)
+
+    def generate_stream(
+        self,
+        model: str,
+        prompt: str,
+        parameters: dict[str, Any] | None = None,
+        timeout: int | None = None,
+        *,
+        sensitive: bool = True,
+        kind: str | None = None,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> Iterator[str]:
+        """Streaming twin of :meth:`generate`: same route choice, headers and
+        guard. The guard runs before every attempt, the route semaphore is held
+        for the whole stream, and retries happen only before the first chunk."""
+        if not sensitive:
+            chosen = local_model(model, caller=self._caller)
+            yield from self._inner.generate_stream(
+                chosen,
+                prompt,
+                headers=kwargs.get("headers"),
+                max_tokens=max_tokens,
+                timeout=timeout,
+            )
+            return
+        chosen = secure_model(model, kind=kind, max_tokens=max_tokens)
+        capacity = self.capacity(chosen)
+        budget = max_tokens or capacity.max_tokens
+        call_timeout = timeout or capacity.timeout_ms(budget)
+        headers = {**(kwargs.pop("headers", None) or {}), **SECURE_HEADERS}
+        fixture = getattr(self._inner, "fixture_mode", False)
+        sem = route_semaphore(chosen, capacity)
+
+        def open_stream() -> tuple[Iterator[str], bool, str]:
+            if not fixture:
+                self.check(chosen)  # re-resolved on every attempt
+            stream = iter(
+                self._inner.generate_stream(
+                    chosen, prompt, headers=headers, max_tokens=budget, timeout=call_timeout
+                )
+            )
+            try:
+                return stream, True, next(stream)
+            except StopIteration:
+                return stream, False, ""
+
+        retrying = Retrying(
+            stop=stop_after_attempt(max(1, capacity.attempts)),
+            wait=self._wait(capacity),
+            retry=retry_if_exception(is_retryable),
+            before_sleep=self._on_retry(chosen),
+            reraise=True,
+            **({"sleep": self._sleep} if self._sleep is not None else {}),
+        )
+        with sem:
+            stream, has_first, first = retrying(open_stream)
+            if has_first:
+                yield first
+            yield from stream
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)

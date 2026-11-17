@@ -131,6 +131,11 @@ spec:
                 name: nervecenter-ledger-key
                 optional: true
           env:
+            # Ask calendar actions: 'true' makes Ask propose an event and wait for
+            # Confirm. 'false' makes Ask create the event at once and return an
+            # undo token. The only switch between the two behaviours.
+            - name: NERVE_ASK_CALENDAR_CONFIRM_FIRST
+              value: "true"
             # Skill Hub read key for the agent runner (NS-ADR-099). Out-of-band
             # Secret, scopes read:skills + read:catalog. Optional: without it
             # agent runs simply have no skills.
