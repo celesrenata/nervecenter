@@ -302,7 +302,9 @@ test('Agents view persists an inference binding via PATCH', async ({ page }) => 
 
   // The editor opened; select provider + model and save.
   await page.locator('#agent-infer-provider').selectOption('omniroute')
-  await page.locator('#agent-infer-model').selectOption('nerve-deep')
+  // The model field is a searchable combobox that also accepts typed ids.
+  await page.locator('#agent-infer-model').fill('nerve-deep')
+  await page.keyboard.press('Escape')
   await page.locator('[data-testid="agent-infer-save"]').click()
 
   // Wire shape: a partial PATCH carrying only the binding.

@@ -2,10 +2,7 @@ import {
   useState,
   useEffect,
   useCallback,
-  useMemo,
-  useRef,
   type FormEvent,
-  type KeyboardEvent,
 } from 'react'
 import {
   durableInferenceApi,
@@ -20,6 +17,7 @@ import {
   type DurableProviderType,
 } from '../api/inferenceDurable'
 import { ApiError } from '../api/client'
+import { CatalogPicker } from '../components/CatalogPicker'
 import { OmniRouteKeysPanel } from './OmniRouteKeysPanel'
 
 /**
@@ -108,136 +106,6 @@ interface RowState {
   ok: boolean
 }
 
-/**
- * Searchable model picker — a combobox that filters a provider's known
- * model list while still allowing free-form entry (a model id is always a
- * string, and the provider may expose more than the cached list).
- *
- * Replaces the native <datalist> (no search, no keyboard model) with an
- * accessible combobox:
- *   - type to filter, arrow keys to move the highlight, Enter to accept
- *   - free text is kept as the value when it does not match a list item
- *   - dropdown closes on Escape / outside click / submit
- */
-interface ModelPickerProps {
-  id: string
-  testId: string
-  value: string
-  onChange: (value: string) => void
-  options: string[]
-  placeholder?: string
-}
-
-const ModelPicker = ({ id, testId, value, onChange, options, placeholder }: ModelPickerProps) => {
-  const [open, setOpen] = useState(false)
-  const [highlight, setHighlight] = useState(0)
-  const rootRef = useRef<HTMLDivElement | null>(null)
-
-  const query = value.trim().toLowerCase()
-  const filtered = useMemo(
-    () => (query ? options.filter((o) => o.toLowerCase().includes(query)) : options),
-    [options, query],
-  )
-
-  // Close on outside click.
-  useEffect(() => {
-    if (!open) return
-    const onDoc = (e: MouseEvent) => {
-      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false)
-    }
-    document.addEventListener('mousedown', onDoc)
-    return () => document.removeEventListener('mousedown', onDoc)
-  }, [open])
-
-  // Keep the highlight index valid as the list changes.
-  useEffect(() => {
-    if (highlight >= filtered.length) setHighlight(0)
-  }, [filtered.length, highlight])
-
-  const pick = (model: string) => {
-    onChange(model)
-    setOpen(false)
-  }
-
-  const onKey = (e: KeyboardEvent<HTMLInputElement>) => {
-    if (e.key === 'ArrowDown') {
-      e.preventDefault()
-      if (!open) {
-        setOpen(true)
-      } else {
-        setHighlight((h) => Math.min(h + 1, filtered.length - 1))
-      }
-    } else if (e.key === 'ArrowUp') {
-      e.preventDefault()
-      setHighlight((h) => Math.max(h - 1, 0))
-    } else if (e.key === 'Enter') {
-      if (open && filtered[highlight]) {
-        e.preventDefault()
-        pick(filtered[highlight])
-      }
-    } else if (e.key === 'Escape') {
-      if (open) {
-        e.stopPropagation()
-        setOpen(false)
-      }
-    }
-  }
-
-  return (
-    <div ref={rootRef} className="relative">
-      <input
-        id={id}
-        data-testid={testId}
-        type="text"
-        required
-        role="combobox"
-        aria-expanded={open}
-        aria-controls={`${testId}-listbox`}
-        value={value}
-        onChange={(e) => {
-          onChange(e.target.value)
-          setHighlight(0)
-          setOpen(true)
-        }}
-        onFocus={() => setOpen(true)}
-        onKeyDown={onKey}
-        placeholder={placeholder}
-        className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
-      />
-      {open && (
-        <ul
-          id={`${testId}-listbox`}
-          role="listbox"
-          data-testid={`${testId}-listbox`}
-          className="absolute z-10 mt-1 w-full max-h-56 overflow-y-auto rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 shadow-lg"
-        >
-          {filtered.length === 0 ? (
-            <li className="px-3 py-2 text-sm text-gray-500 dark:text-gray-400">
-              {options.length === 0 ? 'No known models for this provider' : 'No match — the text will be saved as-is'}
-            </li>
-          ) : (
-            filtered.map((m, i) => (
-              <li
-                key={m}
-                role="option"
-                aria-selected={m === value}
-                data-testid={`${testId}-option-${i}`}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => pick(m)}
-                onMouseEnter={() => setHighlight(i)}
-                className={`px-3 py-2 text-sm cursor-pointer text-primary break-all ${
-                  i === highlight ? 'bg-blue-100 dark:bg-blue-900/40' : ''
-                } ${m === value ? 'font-semibold' : ''}`}
-              >
-                {m}
-              </li>
-            ))
-          )}
-        </ul>
-      )}
-    </div>
-  )
-}
 
 const ProvidersView = () => {
   const [providers, setProviders] = useState<DurableProvider[]>([])
@@ -1019,12 +887,13 @@ const ProvidersView = () => {
               </div>
               <div>
                 <label htmlFor="combo-model" className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Model</label>
-                <ModelPicker
+                <CatalogPicker
                   id="combo-model"
                   testId="combo-form-model"
                   value={comboForm.model_id}
                   onChange={(v) => setComboForm((f) => ({ ...f, model_id: v }))}
-                  options={providerModelOptions(comboForm.provider_id)}
+                  kind="all"
+                  localOptions={providerModelOptions(comboForm.provider_id)}
                   placeholder={providerModelOptions(comboForm.provider_id).length ? 'Pick or type' : 'gpt-4o'}
                 />
               </div>
@@ -1166,12 +1035,13 @@ const ProvidersView = () => {
                         </div>
                         <div>
                           <label htmlFor={`combo-edit-model-${c.id}`} className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">Model</label>
-                          <ModelPicker
+                          <CatalogPicker
                             id={`combo-edit-model-${c.id}`}
                             testId={`combo-edit-model-${c.id}`}
                             value={comboEditForm.model_id}
                             onChange={(v) => setComboEditForm((f) => ({ ...f, model_id: v }))}
-                            options={providerModelOptions(comboEditForm.provider_id)}
+                            kind="all"
+                  localOptions={providerModelOptions(comboEditForm.provider_id)}
                             placeholder={providerModelOptions(comboEditForm.provider_id).length ? 'Pick or type' : 'gpt-4o'}
                           />
                         </div>

@@ -122,6 +122,22 @@ class ToolGateway:
             self._clients[server] = client
         return client
 
+    async def omniroute_full(self, tool: str, args: dict[str, Any] | None = None) -> Any:
+        """One read-only OmniRoute tool result WITHOUT the agent-facing size cap.
+
+        For owner UI lookups (e.g. the combo list, which is longer than the
+        20 000-character cap and arrived as broken JSON). Never used for agents.
+        """
+        if not policy.is_allowed(policy.OMNIROUTE_SERVER, tool) or not self.omniroute_configured:
+            return None
+        client = McpClient(self._omni_url, token=self._omni_key, transport=self._transport,
+                           timeout_s=self._timeout, max_result_chars=5_000_000)
+        try:
+            return await client.call_tool(tool, args or {})
+        except McpToolError as exc:
+            log.warning("agent_tools.full_failed", tool=tool, reason=exc.reason)
+            return None
+
     async def call(
         self,
         agent: Any,

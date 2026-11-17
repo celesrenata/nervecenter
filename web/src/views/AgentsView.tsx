@@ -1,6 +1,7 @@
 import { useState, useEffect, type FormEvent } from 'react'
 import { agentsApi, type AgentUpdatePayload, type RunnerStatus } from '../api/agents'
 import { AgentRunnerPanel } from './AgentRunnerPanel'
+import { CatalogPicker } from '../components/CatalogPicker'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import {
   durableInferenceApi,
@@ -849,56 +850,50 @@ const AgentsView = () => {
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div>
               <label
-                htmlFor="agent-infer-combo"
+                htmlFor="agent-infer-combo-search"
                 className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1"
               >
-                Combo
+                OmniRoute combo
               </label>
-              <select
-                id="agent-infer-combo"
-                data-testid="agent-infer-combo"
-                value={inferCombo}
-                onChange={(e) => {
-                  const v = e.target.value
-                  setInferCombo(v)
-                  if (v.startsWith('or:')) {
+              <CatalogPicker
+                id="agent-infer-combo-search"
+                testId="agent-infer-combo-search"
+                kind="combo"
+                value={inferCombo.startsWith('or:') ? inferCombo.slice(3) : ''}
+                onChange={(v) => {
+                  const name = v.trim()
+                  setInferCombo(name ? `or:${name}` : '')
+                  if (name) {
                     setInferProvider('omniroute')
-                    setInferModel(v.slice(3))
+                    setInferModel(name)
                   }
                 }}
                 disabled={inferBusy}
-                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
-              >
-                <option value="">None (use provider / model below)</option>
-                {orCombos.length > 0 && (
-                  <optgroup label="OmniRoute combos">
-                    {orCombos.map((c) => (
-                      <option key={c.name} value={`or:${c.name}`} disabled={!c.enabled}>
-                        {c.name}{c.models.length ? ` (${c.models.join(', ')})` : ''}{c.enabled ? '' : ' — disabled'}
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {inferCombo.startsWith('or:') && !orCombos.some((c) => `or:${c.name}` === inferCombo) && (
-                  <option value={inferCombo}>{inferCombo.slice(3)}</option>
-                )}
-                {!(agents.find((a) => a.id === inferenceAgentId) && isBuiltin(agents.find((a) => a.id === inferenceAgentId)!)) && inferCombos.length > 0 && (
-                  <optgroup label="NerveCenter combos">
-                    {inferCombos.map((c) => (
-                      <option key={c.id} value={`nc:${c.id}`}>
-                        {c.name} ({c.provider_name} / {c.model_id})
-                      </option>
-                    ))}
-                  </optgroup>
-                )}
-                {(inferCombos.length === 0 && inferCombosLoading) && (
-                  <option value="" disabled>Loading…</option>
-                )}
-              </select>
-              <p className="mt-1 text-xs text-muted">
-                A combo shadows the provider/model below and is resolved at
-                ask time; re-pointing it re-binds this agent with no write.
-              </p>
+                placeholder="Search combos (e.g. secure/coder)…"
+              />
+              {inferCombo.startsWith('or:') && orCombos.find((c) => `or:${c.name}` === inferCombo)?.models.length ? (
+                <p className="mt-1 text-xs text-muted" data-testid="agent-infer-combo-models">
+                  Runs on: {orCombos.find((c) => `or:${c.name}` === inferCombo)!.models.join(', ')}
+                </p>
+              ) : null}
+              {!(agents.find((a) => a.id === inferenceAgentId) && isBuiltin(agents.find((a) => a.id === inferenceAgentId)!)) && inferCombos.length > 0 && (
+                <select
+                  id="agent-infer-combo"
+                  data-testid="agent-infer-combo"
+                  aria-label="NerveCenter combo"
+                  value={inferCombo.startsWith('nc:') ? inferCombo : ''}
+                  onChange={(e) => setInferCombo(e.target.value)}
+                  disabled={inferBusy}
+                  className="mt-2 w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
+                >
+                  <option value="">Or a NerveCenter combo…</option>
+                  {inferCombos.map((c) => (
+                    <option key={c.id} value={`nc:${c.id}`}>
+                      {c.name} ({c.provider_name} / {c.model_id})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
             <div>
               <label
@@ -930,21 +925,19 @@ const AgentsView = () => {
               >
                 Model
               </label>
-              <select
+              <CatalogPicker
                 id="agent-infer-model"
-                data-testid="agent-infer-model"
+                testId="agent-infer-model"
+                kind="model"
                 value={inferModel}
-                onChange={(e) => setInferModel(e.target.value)}
+                onChange={(v) => {
+                  setInferModel(v)
+                  if (inferCombo.startsWith('or:') && v !== inferCombo.slice(3)) setInferCombo('')
+                }}
+                localOptions={inferOptions?.models ?? []}
                 disabled={inferBusy}
-                className="w-full px-3 py-2 rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-primary"
-              >
-                <option value="">Default</option>
-                {(inferOptions?.models ?? []).map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
+                placeholder="Default — or search ~1000 models"
+              />
             </div>
           </div>
 

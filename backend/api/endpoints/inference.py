@@ -51,6 +51,19 @@ def _provider_rows() -> list[dict[str, Any]]:
     return data
 
 
+@router.get("/catalog")
+async def search_catalog(
+    q: str = "", kind: str = "all", limit: int = 50, offset: int = 0
+) -> dict[str, Any]:
+    """Search OmniRoute's model/combo catalog (~1000 entries) for the pickers.
+
+    ``kind`` is ``all`` | ``model`` | ``combo``; every word of ``q`` must match.
+    """
+    from backend.inference.catalog import get_catalog
+
+    return await get_catalog().search(q[:200], kind=kind, limit=limit, offset=offset)
+
+
 @router.get("/available")
 @router.get("/available/")
 async def list_available() -> JSONResponse:

@@ -153,8 +153,8 @@ async def omniroute_combos(request: Request) -> dict[str, Any]:
 
     now = time.monotonic()
     if _COMBO_CACHE["combos"] is None or now - _COMBO_CACHE["at"] > COMBO_CACHE_S:
-        outcome = await _gateway(request).call(None, "omniroute", "omniroute_list_combos", {})
-        combos = _parse_combos(outcome.get("result")) if outcome.get("ok") else []
+        # Full result: the agent-facing 20 000-char cap cut the list into broken JSON.
+        combos = _parse_combos(await _gateway(request).omniroute_full("omniroute_list_combos"))
         if combos or _COMBO_CACHE["combos"] is None:
             _COMBO_CACHE.update(at=now, combos=combos)
     return {"combos": _COMBO_CACHE["combos"] or []}
