@@ -1,5 +1,6 @@
 import { useState, useEffect, useSyncExternalStore } from 'react'
 import { voiceApi } from '../api/voice'
+import { CatalogPicker } from '../components/CatalogPicker'
 import { CalendarProposalCard, CreatedEventUndo } from '../components/CalendarProposalCard'
 import { useVoiceRecorder, isRecordingSupported } from '../voice/useVoiceRecorder'
 import { inferenceApi, type AvailableInference } from '../api/inference'
@@ -317,30 +318,21 @@ const AskView = () => {
                     >
                       Model
                     </label>
-                    <select
+                    <CatalogPicker
                       id="ask-model-select"
-                      data-testid="ask-model-select"
+                      testId="ask-model-select"
                       value={askModel}
-                      onChange={(e) => {
-                        const v = e.target.value
+                      onChange={(v) => {
                         setAskModel(v)
                         update({ askModel: v })
                       }}
+                      kind="all"
                       disabled={pickerLoading}
-                      className="w-full px-2 py-1.5 rounded-md border border-gray-300 dark:border-gray-600 bg-white dark:bg-gray-700 text-xs text-primary"
-                    >
-                      <option value="">
-                        Default
-                        {pickerAvailable
-                          ? ` (${pickerAvailable.default.model})`
-                          : ''}
-                      </option>
-                      {(pickerAvailable?.models ?? []).map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))}
-                    </select>
+                      placeholder={
+                        pickerAvailable ? `Default (${pickerAvailable.default.model})` : 'Default'
+                      }
+                      localOptions={pickerAvailable?.models ?? []}
+                    />
                   </div>
                   <div>
                     <label

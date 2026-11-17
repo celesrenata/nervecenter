@@ -167,15 +167,16 @@ test('Ask picker sends the selected inference + agent on the wire', async ({
   // Expand → the lazy options fetch runs and populates the selects.
   await page.locator('[data-testid="ask-advanced-toggle"]').click()
   await expect(page.locator('[data-testid="ask-advanced-panel"]')).toBeVisible()
-  await expect(
-    page.locator('#ask-model-select option[value="nerve-deep"]'),
-  ).toHaveCount(1)
   await expect(page.locator('#ask-agent-select option[value="ag-1"]')).toHaveCount(
     1,
   )
 
   // Choose a non-default model + an agent, then submit.
-  await page.locator('#ask-model-select').selectOption('nerve-deep')
+  // The model field is the searchable catalog picker (same as Providers combos).
+  await page.locator('#ask-model-select').click()
+  await page.locator('#ask-model-select').fill('nerve-deep')
+  await page.locator('[data-testid^="ask-model-select-option-"]', { hasText: 'nerve-deep' }).first().click()
+  await expect(page.locator('#ask-model-select')).toHaveValue('nerve-deep')
   await page.locator('#ask-agent-select').selectOption('ag-1')
   await page.getByPlaceholder('Type your message...').fill('Route this one.')
   await page.getByRole('button', { name: 'Send' }).click()

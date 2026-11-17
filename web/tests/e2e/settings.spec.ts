@@ -184,13 +184,16 @@ test('inference tab persists default model & provider', async ({ page }) => {
     page.getByRole('heading', { name: 'Inference defaults' }),
   ).toBeVisible()
   await expect(page.locator('[data-testid="settings-infer-model"]')).toBeVisible()
-  await expect(page.locator('#settings-infer-model option[value="nerve-deep"]')).toHaveCount(1)
   await expect(
     page.locator('#settings-infer-provider option[value="omniroute"]'),
   ).toHaveCount(1)
 
   // Choose non-default model + provider — these persist to browser settings.
-  await page.locator('[data-testid="settings-infer-model"]').selectOption('nerve-deep')
+  // Searchable catalog picker: the short /available list is offered first.
+  await page.locator('#settings-infer-model').click()
+  await page.locator('#settings-infer-model').fill('nerve-deep')
+  await page.locator('[data-testid^="settings-infer-model-option-"]', { hasText: 'nerve-deep' }).first().click()
+  await expect(page.locator('#settings-infer-model')).toHaveValue('nerve-deep')
   await page.locator('[data-testid="settings-infer-provider"]').selectOption('omniroute')
 
   const stored = await page.evaluate(() => {

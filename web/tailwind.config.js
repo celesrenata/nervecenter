@@ -1,5 +1,9 @@
 /** @type {import('tailwindcss').Config} */
 export default {
+  // `dark:` follows the app theme (ThemeContext toggles <html class="dark">),
+  // not the OS; with the default "media" a dark app on a light OS rendered
+  // light-surface fields with the dark theme's white text.
+  darkMode: 'class',
   content: [
     "./index.html",
     "./src/**/*.{js,ts,jsx,tsx}",

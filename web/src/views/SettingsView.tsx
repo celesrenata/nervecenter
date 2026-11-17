@@ -1,3 +1,4 @@
+import { CatalogPicker } from '../components/CatalogPicker'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTheme, type Theme } from '../theme/ThemeContext'
 import {
@@ -498,26 +499,17 @@ export function SettingsView() {
                 label="Default model"
                 hint="Which model Ask sends to the provider."
               >
-                <select
-                  id="settings-infer-model"
-                  data-testid="settings-infer-model"
-                  value={settings.askModel}
-                  onChange={(e) => update({ askModel: e.target.value })}
-                  className="w-full max-w-xs px-3 py-2 rounded-lg border border-line bg-hover/40 text-sm text-primary"
-                >
-                  <option value="">Service default</option>
-                  {inferOptions.models.map((m) => (
-                    <option key={m} value={m}>
-                      {m}
-                    </option>
-                  ))}
-                  {settings.askModel &&
-                    !inferOptions.models.includes(settings.askModel) && (
-                      <option value={settings.askModel}>
-                        {settings.askModel} (no longer available)
-                      </option>
-                    )}
-                </select>
+                <div className="w-full max-w-md">
+                  <CatalogPicker
+                    id="settings-infer-model"
+                    testId="settings-infer-model"
+                    value={settings.askModel}
+                    onChange={(v) => update({ askModel: v })}
+                    kind="all"
+                    placeholder="Service default (search ~1000 models and combos)"
+                    localOptions={inferOptions.models}
+                  />
+                </div>
               </OptionGroup>
             </div>
           ) : null}
