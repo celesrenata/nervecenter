@@ -68,7 +68,13 @@ test('agents: explain, schedule, run now, history, delete, back-off banner', asy
   await expect(page.getByTestId('agent-delete')).toHaveCount(1)
 
   const own = page.locator('[data-agent-id="inst-1"]')
+  // Wait for the panel's initial schedule load, or it overwrites the cadence picked below.
+  const scheduleLoaded = Promise.all([
+    page.waitForResponse((r) => r.url().includes('/api/agents/inst-1/schedule') && r.request().method() === 'GET'),
+    page.waitForResponse((r) => r.url().endsWith('/api/agents/inst-1/runs')),
+  ])
   await own.getByTestId('agent-runner-toggle').click()
+  await scheduleLoaded
   await page.getByTestId('schedule-mode').selectOption('interval')
   await page.getByTestId('schedule-minutes').fill('30')
   await page.getByRole('button', { name: 'Save schedule' }).click()

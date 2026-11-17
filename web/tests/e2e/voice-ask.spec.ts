@@ -355,6 +355,31 @@ test('calendar proposal: confirm with the chosen account, then the consent path'
   await page.waitForURL('**/__google-consent')
 })
 
+test('confirm-first off: a created event offers Undo', async ({ page }) => {
+  await installBrowserFakes(page)
+  await mockVoice(page)
+  const undos: string[] = []
+  await page.route('**/api/calendar/events/*/undo', async (route) => {
+    undos.push(/events\/([^/]+)\/undo/.exec(route.request().url())?.[1] ?? '')
+    await route.fulfill({ json: { undone: true, event_id: 'nc123' } })
+  })
+  await openAsk(page)
+  await sendQuestion(page, 'add lunch with Sam tomorrow at noon')
+  await waitForStream(page)
+  await send(page, 'done', {
+    status: 'created',
+    answer: 'Added Lunch with Sam on Wed at 12:00 PM to celes@frameshift.net.',
+    event: { event_id: 'nc123', title: 'Lunch with Sam', start: 'a', end: 'b' },
+    undo: { event_id: 'nc123', expires_at: '2030-01-01T00:00:00Z' },
+  })
+  await closeStream(page)
+  await expect(page.getByText('Added Lunch with Sam', { exact: false })).toBeVisible()
+  await expect(page.getByTestId('calendar-proposal')).toHaveCount(0)
+  await page.getByTestId('cal-undo').click()
+  await expect(page.getByTestId('cal-undone')).toHaveText('Removed from your calendar.')
+  expect(undos).toEqual(['nc123'])
+})
+
 test('specific error messages for 401, network failure and unavailable inference', async ({ page }) => {
   await mockVoice(page)
   await page.route('**/api/auth/refresh', (route) => route.fulfill({ status: 500, json: { detail: 'down' } }))

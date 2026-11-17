@@ -3,6 +3,7 @@ import {
   CalendarWriteError,
   cancelProposal,
   confirmProposal,
+  undoEvent,
   type CalendarProposal,
 } from '../api/calendar'
 import { connectionsApi } from '../api/connections'
@@ -217,6 +218,48 @@ export function CalendarProposalCard({ proposal }: { proposal: CalendarProposal 
       ) : (
         <p data-testid="cal-result" className="text-xs text-muted">
           Cancelled. Nothing was added.
+        </p>
+      )}
+    </div>
+  )
+}
+
+/** Undo for an event Ask created directly (NERVE_ASK_CALENDAR_CONFIRM_FIRST=false). */
+export function CreatedEventUndo({ eventId }: { eventId: string }) {
+  const [state, setState] = useState<'idle' | 'busy' | 'undone'>('idle')
+  const [error, setError] = useState<string | null>(null)
+  const undo = async () => {
+    setState('busy')
+    setError(null)
+    try {
+      await undoEvent(eventId)
+      setState('undone')
+    } catch (err) {
+      setState('idle')
+      setError(
+        err instanceof CalendarWriteError && err.status === 404
+          ? 'Undo is no longer available for this event.'
+          : describeWriteError(err),
+      )
+    }
+  }
+  if (state === 'undone') {
+    return <p data-testid="cal-undone" className="mt-2 text-xs">Removed from your calendar.</p>
+  }
+  return (
+    <div className="mt-2 space-y-1">
+      <button
+        type="button"
+        data-testid="cal-undo"
+        onClick={() => void undo()}
+        disabled={state === 'busy'}
+        className="rounded border border-line px-2.5 py-1 text-xs font-medium disabled:opacity-50"
+      >
+        {state === 'busy' ? 'Undoing…' : 'Undo'}
+      </button>
+      {error && (
+        <p role="alert" data-testid="cal-undo-error" className="text-xs text-red-600 dark:text-red-400">
+          {error}
         </p>
       )}
     </div>

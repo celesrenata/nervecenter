@@ -3,7 +3,7 @@ import { ApiError } from '../api/client'
 import { postAskStream } from '../api/askStream'
 import { voiceApi, VoiceApiError } from '../api/voice'
 import type { CalendarProposal } from '../api/calendar'
-import { CalendarProposalCard } from '../components/CalendarProposalCard'
+import { CalendarProposalCard, CreatedEventUndo } from '../components/CalendarProposalCard'
 import { SpeechQueue } from '../voice/SpeechQueue'
 import { useVoiceRecorder, isRecordingSupported } from '../voice/useVoiceRecorder'
 import { inferenceApi, type AvailableInference } from '../api/inference'
@@ -36,6 +36,8 @@ interface ChatMessage {
     reasoning?: string
   }
   proposal?: CalendarProposal
+  /** Event Ask created directly (confirm-first off); offers Undo. */
+  undoEventId?: string
 }
 
 /** Stable speech error codes → text. Speech never blocks the text answer. */
@@ -287,7 +289,12 @@ const AskView = () => {
               reason?: string
               status?: string
               policy?: { reason?: string }
+              undo?: { event_id?: string }
             }
+            const undoEventId =
+              data.status === 'created' && typeof data.undo?.event_id === 'string'
+                ? data.undo.event_id
+                : undefined
             let content: string
             if (typeof data.answer === 'string' && data.answer.length > 0) {
               content = data.answer
@@ -306,6 +313,7 @@ const AskView = () => {
             patch((m) => ({
               ...m,
               content,
+              ...(undoEventId ? { undoEventId } : {}),
               provenance: Array.isArray(data.facts)
                 ? {
                     facts: data.facts,
@@ -374,6 +382,7 @@ const AskView = () => {
               >
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
                 {message.proposal && <CalendarProposalCard proposal={message.proposal} />}
+                {message.undoEventId && <CreatedEventUndo eventId={message.undoEventId} />}
                 <p className="text-xs mt-2 opacity-70">
                   {new Date(message.timestamp).toLocaleTimeString()}
                 </p>
