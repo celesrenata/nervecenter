@@ -721,8 +721,6 @@ class AskService:
             outcome.body["inference"] = audit
             return outcome
 
-        if (missing := self._not_found_outcome(request_id, question, audit, decision, package, retrieval)):
-            return missing
 
         calendar_outcome = self._calendar_outcome(
             request_id=request_id,
@@ -735,6 +733,8 @@ class AskService:
         )
         if calendar_outcome is not None:
             return calendar_outcome
+        if (missing := self._not_found_outcome(request_id, question, audit, decision, package, retrieval)):
+            return missing
 
         evidence = _package_refs(package)
         payload = self._remote_payload(question, ctx, evidence, retrieval)
@@ -890,11 +890,6 @@ class AskService:
             outcome.body["inference"] = audit
             yield "done", outcome.body
             return
-        missing = self._not_found_outcome(request_id, question, audit, decision, package, retrieval)
-        if missing is not None:
-            yield "delta", {"text": missing.body["answer"]}
-            yield "done", missing.body
-            return
 
         try:
             action = self._calendar_outcome(
@@ -916,6 +911,11 @@ class AskService:
             if "delete_proposal" in action.body:
                 yield "delete_proposal", action.body["delete_proposal"]
             yield "done", action.body
+            return
+        missing = self._not_found_outcome(request_id, question, audit, decision, package, retrieval)
+        if missing is not None:
+            yield "delta", {"text": missing.body["answer"]}
+            yield "done", missing.body
             return
 
         evidence = _package_refs(package)

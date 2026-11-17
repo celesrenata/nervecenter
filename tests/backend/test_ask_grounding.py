@@ -154,3 +154,41 @@ def test_client_supplied_context_still_works() -> None:
     })
     assert response.status_code == 200
     assert response.json()["provenance"]["context_records"] == ["INC-7"]
+async def _fake_calendar_context(*args: Any, **kwargs: Any) -> object:
+    return object()
+def _with_calendar_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(context_endpoints, "build_calendar_context", _fake_calendar_context)
+def _stub_delete_proposal(monkeypatch: pytest.MonkeyPatch) -> None:
+    from backend.context import ask_delete
+    monkeypatch.setattr(
+        ask_delete, "propose_calendar_delete",
+        lambda *a, **k: {"status": "delete_proposal", "answer": "Review the list.",
+                         "delete_proposal": {"id": "dp-1", "rows": []}},
+    )
+def test_delete_gate_false_positive_still_gets_cited_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_calendar_context(monkeypatch)
+    model = SecureModel()
+    body = ask(client_for(model), "Which meetings did Marta cancel?")
+    assert body["grounded"] is True and "delete_proposal" not in body
+    assert body["citations"][0]["title"] == "Piano lesson with Marta"
+    assert any("Piano lesson with Marta" in p for p in model.prompts)
+def test_delete_gate_false_positive_stream_gets_cited_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_calendar_context(monkeypatch)
+    client = client_for(SecureModel())
+    with client.stream("POST", "/api/context/ask/stream", json={"question": "Which meetings did Marta cancel?"}) as r:
+        text = "".join(r.iter_text())
+    done = [json.loads(b.split("data: ", 1)[1]) for b in text.split("\n\n") if b.startswith("event: done")]
+    assert done and done[0]["citations"][0]["title"] == "Piano lesson with Marta"
+def test_delete_request_with_zero_retrieved_records_still_proposes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_calendar_context(monkeypatch)
+    _stub_delete_proposal(monkeypatch)
+    body = ask(client_for(SecureModel()), "remove all my appointments with Zebulon")
+    assert body["status"] == "delete_proposal" and body["delete_proposal"]["id"] == "dp-1"
+    assert not body["answer"].startswith("I found nothing about")
+def test_stream_delete_request_with_zero_retrieved_records_still_proposes(monkeypatch: pytest.MonkeyPatch) -> None:
+    _with_calendar_context(monkeypatch)
+    _stub_delete_proposal(monkeypatch)
+    client = client_for(SecureModel())
+    with client.stream("POST", "/api/context/ask/stream", json={"question": "remove all my appointments with Zebulon"}) as r:
+        text = "".join(r.iter_text())
+    assert "event: delete_proposal" in text and "I found nothing about" not in text

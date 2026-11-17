@@ -151,11 +151,10 @@ async def _retrieval(
 ) -> RetrievalResult | None:
     """Search the user's own records for this question.
 
-    Skipped when the caller supplied grounding context, when this is a calendar
-    action, and unless the transport is the secure local route (NS-ADR-108):
+    Skipped when the caller supplied grounding context and unless the transport is the secure local route (NS-ADR-108):
     personal records never go to any other transport.
     """
-    if calendar is not None or not svc.personal_allowed or not svc.transport_available:
+    if not svc.personal_allowed or not svc.transport_available:
         return None
     if body.context is not None and body.context.fixture_refs:
         return None
