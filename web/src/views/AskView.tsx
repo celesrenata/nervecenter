@@ -1,111 +1,32 @@
-import { useState, useEffect, useRef } from 'react'
-import { ApiError } from '../api/client'
-import { postAskStream } from '../api/askStream'
-import { voiceApi, VoiceApiError } from '../api/voice'
-import type { CalendarProposal } from '../api/calendar'
+import { useState, useEffect, useSyncExternalStore } from 'react'
+import { voiceApi } from '../api/voice'
 import { CalendarProposalCard, CreatedEventUndo } from '../components/CalendarProposalCard'
-import { SpeechQueue } from '../voice/SpeechQueue'
 import { useVoiceRecorder, isRecordingSupported } from '../voice/useVoiceRecorder'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import { agentsApi, type Agent } from '../api/agents'
 import { useSettings } from '../theme/SettingsContext'
-
-interface EvidenceItem {
-  statement: string
-  type: 'FACT' | 'HYPOTHESIS' | 'OBSERVATION' | 'CLAIM' | 'DERIVED_FACT' | 'RECOMMENDATION'
-  confidence: number
-  evidence: string[]
-}
-
-interface AskResponse {
-  answer: string
-  confidence: number
-  facts: EvidenceItem[]
-  hypotheses: EvidenceItem[]
-  reasoning?: string
-}
-
-interface ChatMessage {
-  id: string
-  role: 'user' | 'assistant' | 'system'
-  content: string
-  timestamp: string
-  provenance?: {
-    facts: EvidenceItem[]
-    hypotheses: EvidenceItem[]
-    reasoning?: string
-  }
-  proposal?: CalendarProposal
-  /** Event Ask created directly (confirm-first off); offers Undo. */
-  undoEventId?: string
-}
-
-/** Stable speech error codes → text. Speech never blocks the text answer. */
-function describeSpeechError(err: unknown): string {
-  if (err instanceof VoiceApiError) {
-    switch (err.code) {
-      case 'speech_unavailable':
-        return 'The speech service is unavailable right now. Text answers still work.'
-      case 'bad_audio':
-        return 'The recording could not be understood. Try again, closer to the microphone.'
-      case 'speech_policy':
-        return 'Speech is misconfigured on the server (model not allowed).'
-      case 'unknown_voice':
-        return 'The selected voice is not available. Pick another in Settings → Voice.'
-      default:
-        if (err.status === 413) return 'The recording is too long to transcribe.'
-        if (err.status === 415) return 'This browser recorded an audio format the server does not accept.'
-        return `Speech failed (${err.code}).`
-    }
-  }
-  if (err instanceof ApiError && err.status === 401) return 'Your session expired. Sign in again.'
-  if (err instanceof TypeError) return 'Could not reach the server for speech.'
-  return 'Speech failed.'
-}
-
-/** Specific text for a failed Ask request; never the generic apology. */
-function describeAskError(err: unknown): string {
-  if (err instanceof ApiError) {
-    if (err.status === 401) return 'Your session expired. Sign in again to keep asking.'
-    if (err.status === 403) return `You are not allowed to ask this: ${err.detail}`
-    if (err.status === 422) return `The request was rejected as invalid: ${err.detail}`
-    if (err.status === 429) return 'Too many requests. Wait a moment and try again.'
-    if (err.status >= 500) return `The server failed to answer (HTTP ${err.status}): ${err.detail}`
-    return `The request failed (HTTP ${err.status}): ${err.detail}`
-  }
-  if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.'
-  return `Ask failed: ${err instanceof Error ? err.message : String(err)}`
-}
-
-function newSessionId(): string {
-  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
-    ? crypto.randomUUID()
-    : `s-${Date.now()}-${Math.random().toString(16).slice(2)}`
-}
+import { askSessions, describeSpeechError, voicePrefs } from './ask/askSessions'
 
 const AskView = () => {
   const { settings, update } = useSettings()
-  const [messages, setMessages] = useState<ChatMessage[]>([])
-  const [input, setInput] = useState('')
-  const [loading, setLoading] = useState(false)
+  // Sessions (tabs) live in a module store so they and any streaming answer
+  // survive leaving this page.
+  const store = useSyncExternalStore(askSessions.subscribe, askSessions.getState)
+  const active = store.sessions.find((s) => s.id === store.activeId) ?? store.sessions[0]
+  const messages = active.messages
+  const input = active.input
+  const loading = active.loading
+  const speechError = active.speechError
+  const setInput = (v: string) => askSessions.setInput(active.id, v)
+  const setSpeechError = (v: string | null) => askSessions.setSpeechError(active.id, v)
 
-  // Voice: per-mount session id (server mute registry key), spoken-reply
-  // toggle + TTS voice (initialised from the per-account server settings).
-  const sessionIdRef = useRef(newSessionId())
-  const [spoken, setSpoken] = useState(false)
-  const spokenRef = useRef(false)
-  const voiceRef = useRef<string | undefined>(undefined)
-  const [speechError, setSpeechError] = useState<string | null>(null)
-  const queueRef = useRef<SpeechQueue | null>(null)
-  const abortRef = useRef<AbortController | null>(null)
+  const [spoken, setSpoken] = useState(voicePrefs.spoken)
   const recorder = useVoiceRecorder()
 
   // INFER_CONTROL_CONTRACT.md (web scope): optional per-request inference +
   // agent control. The picker is COLLAPSED by default — "default" keeps the
-  // service default — so the common path sends a bare `{question}` body and
-  // pre-Batch-4 backends (AskRequest `extra: "forbid"`) keep working. Options
-  // are fetched lazily, only when the user expands the picker, so a mount
-  // issues no extra requests.
+  // service default — so the common path sends a bare `{question}` body.
+  // Options are fetched lazily, only when the user expands the picker.
   const [pickerOpen, setPickerOpen] = useState(false)
   const [pickerAgents, setPickerAgents] = useState<Agent[]>([])
   const [pickerAvailable, setPickerAvailable] = useState<AvailableInference | null>(null)
@@ -128,8 +49,6 @@ const AskView = () => {
       if (agentsRes) setPickerAgents(agentsRes.data ?? [])
       if (availableRes) setPickerAvailable(availableRes)
     } catch {
-      // Honest: a fetch failure leaves the selects empty + a message; the
-      // default (no override) path is still fully usable.
       setPickerError('Could not load agent / model options.')
     } finally {
       setPickerLoading(false)
@@ -145,47 +64,38 @@ const AskView = () => {
   }
 
   useEffect(() => {
-    const initialMessages: ChatMessage[] = [
-      {
-        id: '1',
-        role: 'assistant',
-        content: 'Hello! I am NerveCenter. How can I help you today?',
-        timestamp: new Date().toISOString(),
-      },
-    ]
-    setMessages(initialMessages)
-  }, [])
-
-  useEffect(() => {
     let cancelled = false
     voiceApi
       .getSettings()
       .then((v) => {
         if (cancelled) return
-        voiceRef.current = v.tts_voice
-        spokenRef.current = v.spoken_replies
+        voicePrefs.voice = v.tts_voice
+        voicePrefs.spoken = v.spoken_replies
         setSpoken(v.spoken_replies)
       })
       .catch(() => {
         /* defaults stay: spoken replies off, server default voice */
       })
+    // Leaving the page keeps sessions, streams and speech running.
     return () => {
       cancelled = true
-      // Leaving the page stops playback and any in-flight ask.
-      queueRef.current?.stop()
-      abortRef.current?.abort()
     }
   }, [])
 
   const toggleSpoken = () => {
-    const next = !spokenRef.current
-    spokenRef.current = next
+    const next = !voicePrefs.spoken
     setSpoken(next)
     setSpeechError(null)
-    queueRef.current?.setMuted(!next)
-    void voiceApi.setMuted(sessionIdRef.current, !next).catch((e) => setSpeechError(describeSpeechError(e)))
+    askSessions.setSpoken(next)
     void voiceApi.putSettings({ spoken_replies: next }).catch((e) => setSpeechError(describeSpeechError(e)))
   }
+
+  const handleSendMessage = (override?: string) =>
+    askSessions.send(active.id, override ?? input, {
+      agent: askAgent || undefined,
+      model: askModel || undefined,
+      provider: askProvider || undefined,
+    })
 
   const handleMic = async () => {
     if (recorder.state === 'transcribing' || loading) return
@@ -193,6 +103,7 @@ const AskView = () => {
       await recorder.start()
       return
     }
+    const sessionId = active.id
     const blob = await recorder.stop()
     if (!blob) {
       recorder.setError('Nothing was recorded. Try again.')
@@ -204,157 +115,18 @@ const AskView = () => {
       recorder.setState('idle')
       const text = transcript.text.trim()
       if (!text) {
-        setSpeechError('No speech was detected in the recording.')
+        askSessions.setSpeechError(sessionId, 'No speech was detected in the recording.')
         return
       }
-      setSpeechError(null)
-      void handleSendMessage(text)
+      askSessions.setSpeechError(sessionId, null)
+      void askSessions.send(sessionId, text, {
+        agent: askAgent || undefined,
+        model: askModel || undefined,
+        provider: askProvider || undefined,
+      })
     } catch (err) {
       recorder.setState('idle')
-      setSpeechError(describeSpeechError(err))
-    }
-  }
-
-  const handleSendMessage = async (override?: string) => {
-    const text = (override ?? input).trim()
-    if (!text || loading) return
-
-    const userMessage: ChatMessage = {
-      id: Date.now().toString(),
-      role: 'user',
-      content: text,
-      timestamp: new Date().toISOString(),
-    }
-    const assistantId = `${Date.now() + 1}`
-
-    setMessages((prev) => [
-      ...prev,
-      userMessage,
-      { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() },
-    ])
-    setInput('')
-    setLoading(true)
-    setSpeechError(null)
-
-    // A new ask stops whatever was still being spoken.
-    queueRef.current?.stop()
-    abortRef.current?.abort()
-    const abort = new AbortController()
-    abortRef.current = abort
-    const queue = new SpeechQueue({
-      speak: (sentence, signal) =>
-        voiceApi.speak(
-          { text: sentence, voice: voiceRef.current, session_id: sessionIdRef.current },
-          signal,
-        ),
-      onError: (e) => setSpeechError(describeSpeechError(e)),
-      startMuted: !spokenRef.current,
-    })
-    queueRef.current = queue
-
-    const patch = (fn: (m: ChatMessage) => ChatMessage) =>
-      setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)))
-
-    let finished = false
-    try {
-      // Optional per-request override (INFER_CONTROL_CONTRACT.md §2); omitted
-      // when nothing is selected so the body stays the bare `{question}` shape.
-      const inference =
-        askModel || askProvider
-          ? {
-              ...(askModel ? { model: askModel } : {}),
-              ...(askProvider ? { provider: askProvider } : {}),
-            }
-          : undefined
-      await postAskStream(
-        {
-          question: text,
-          session_id: sessionIdRef.current,
-          ...(askAgent ? { agent: askAgent } : {}),
-          ...(inference ? { inference } : {}),
-        },
-        (ev) => {
-          if (ev.type === 'delta') {
-            queue.push(ev.data.text)
-            patch((m) => ({ ...m, content: m.content + ev.data.text }))
-          } else if (ev.type === 'proposal') {
-            patch((m) => ({ ...m, proposal: ev.data }))
-          } else if (ev.type === 'done') {
-            finished = true
-            queue.end()
-            const data = ev.data as unknown as AskResponse & {
-              accepted?: boolean
-              executed?: boolean
-              detail?: string
-              reason?: string
-              status?: string
-              policy?: { reason?: string }
-              undo?: { event_id?: string }
-            }
-            const undoEventId =
-              data.status === 'created' && typeof data.undo?.event_id === 'string'
-                ? data.undo.event_id
-                : undefined
-            let content: string
-            if (typeof data.answer === 'string' && data.answer.length > 0) {
-              content = data.answer
-            } else if (data.status === 'policy_denied') {
-              content = `This request was denied by policy: ${
-                data.reason || data.policy?.reason || data.detail || 'no reason given'
-              }`
-            } else if (data.accepted === true) {
-              const why = data.status === 'unavailable' && data.reason ? `Inference unavailable: ${data.reason}. ` : ''
-              content = `${why}Request accepted (execution: ${
-                data.executed ? 'completed' : 'pending'
-              }). ${data.detail || ''}`.trim()
-            } else {
-              content = 'The server finished without an answer.'
-            }
-            patch((m) => ({
-              ...m,
-              content,
-              ...(undoEventId ? { undoEventId } : {}),
-              provenance: Array.isArray(data.facts)
-                ? {
-                    facts: data.facts,
-                    hypotheses: Array.isArray(data.hypotheses) ? data.hypotheses : [],
-                    reasoning:
-                      typeof data.confidence === 'number'
-                        ? `Confidence: ${(data.confidence * 100).toFixed(0)}%`
-                        : undefined,
-                  }
-                : undefined,
-            }))
-          } else if (ev.type === 'error') {
-            finished = true
-            queue.stop()
-            const code = ev.data.code ?? 'error'
-            const msg = ev.data.message ?? ''
-            const content =
-              code === 'secure_route_denied'
-                ? `The secure inference route refused this request: ${msg}`
-                : code === 'stream_interrupted'
-                  ? `The answer stream was interrupted${msg ? `: ${msg}` : ''}.`
-                  : `Ask failed (${code})${msg ? `: ${msg}` : ''}`
-            patch((m) => ({ ...m, content: m.content ? `${m.content}\n\n${content}` : content }))
-          }
-        },
-        abort.signal,
-      )
-      if (!finished) {
-        queue.end()
-        patch((m) => ({
-          ...m,
-          content: m.content || 'The answer stream ended before any answer arrived.',
-        }))
-      }
-    } catch (error) {
-      if (abort.signal.aborted) return
-      queue.stop()
-      const content = describeAskError(error)
-      patch((m) => ({ ...m, content: m.content ? `${m.content}\n\n${content}` : content }))
-    } finally {
-      if (abortRef.current === abort) setLoading(false)
+      askSessions.setSpeechError(sessionId, describeSpeechError(err))
     }
   }
 
@@ -365,6 +137,62 @@ const AskView = () => {
       </h1>
 
       <div className="flex-1 bg-elevated rounded-lg shadow-lg overflow-hidden flex flex-col">
+        <div
+          role="tablist"
+          aria-label="Ask sessions"
+          data-testid="ask-tabs"
+          className="flex items-end gap-1 overflow-x-auto border-b border-line px-2 pt-2"
+        >
+          {store.sessions.map((s, i) => {
+            const selected = s.id === active.id
+            return (
+              <div
+                key={s.id}
+                className={`group flex items-center rounded-t-md border border-b-0 text-sm ${
+                  selected ? 'border-line bg-hover text-primary' : 'border-transparent text-secondary hover:bg-hover'
+                }`}
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={selected}
+                  data-testid={`ask-tab-${i}`}
+                  onClick={() => askSessions.activate(s.id)}
+                  title={s.title}
+                  className="flex max-w-[14rem] items-center gap-2 truncate px-3 py-1.5"
+                >
+                  {s.loading && (
+                    <span
+                      data-testid={`ask-tab-${i}-busy`}
+                      aria-label="answering"
+                      className="inline-block h-2 w-2 shrink-0 animate-pulse rounded-full bg-blue-500"
+                    />
+                  )}
+                  <span className="truncate">{s.title}</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid={`ask-tab-${i}-close`}
+                  aria-label={`Close ${s.title}`}
+                  onClick={() => askSessions.close(s.id)}
+                  className="px-2 py-1.5 text-xs opacity-60 hover:opacity-100"
+                >
+                  ×
+                </button>
+              </div>
+            )
+          })}
+          <button
+            type="button"
+            data-testid="ask-tab-new"
+            aria-label="New chat"
+            title="New chat"
+            onClick={() => askSessions.create()}
+            className="mb-0.5 rounded-md px-3 py-1 text-lg leading-none text-secondary hover:bg-hover hover:text-primary"
+          >
+            +
+          </button>
+        </div>
         <div className="flex-1 overflow-y-auto p-6 space-y-6">
           {messages.map((message) => (
             <div
