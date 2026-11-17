@@ -218,6 +218,19 @@ async def run_with_tools(
         for k in totals:
             totals[k] += int(result.get(k) or 0)
         latency += float(result.get("e2e_latency_ms") or 0)
+    content = str(result.get("content", ""))
+    if "## Summary" in content and "## Not checked" not in content:
+        # The report started but was cut off (reply limit reached): ask once for a short one.
+        current = (
+            f"{current}\n\nTOOL_RESULT: your last reply was cut off before the end. Write the "
+            "complete Markdown report again now, much shorter (under 400 words), with every "
+            "section. Do not write any TOOL_CALL."
+        )
+        round_no += 1
+        result = await call_model(current, round_no)
+        for k in totals:
+            totals[k] += int(result.get(k) or 0)
+        latency += float(result.get("e2e_latency_ms") or 0)
     merged = dict(result)
     merged.update(totals)
     if latency:

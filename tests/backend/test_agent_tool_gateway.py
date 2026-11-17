@@ -209,6 +209,20 @@ async def test_tool_loop_is_bounded_and_sums_tokens() -> None:
     assert "TOOL_RESULT fetch/fetch" in prompts[-1]
 
 
+async def test_a_cut_off_report_is_asked_for_once_more() -> None:
+    mcp = Mcp()
+    prompts: list[str] = []
+    replies = iter(["## Summary\nhalf a tab", "## Summary\nok\n## Not checked\nnone"])
+
+    async def infer(prompt: str) -> dict[str, Any]:
+        prompts.append(prompt)
+        return {"content": next(replies), "input_tokens": 1, "output_tokens": 1}
+
+    result = await run_with_tools(infer, "p", mcp.gateway(), AGENT)
+    assert len(prompts) == 2 and "cut off" in prompts[-1]
+    assert result["content"].endswith("none") and result["output_tokens"] == 2
+
+
 async def test_without_a_gateway_the_prompt_is_unchanged() -> None:
     seen: list[str] = []
 
