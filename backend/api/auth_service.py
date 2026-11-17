@@ -766,6 +766,9 @@ async def record_session(
             AuthSession(
                 id=jti, sub=sub, typ=typ, source=source,
                 device_id=device_id, expires_at=expires_at,
+                # Set explicitly: the live auth_sessions.issued_at has NO server
+                # default (only the ORM declares one), so omitting it failed login.
+                issued_at=datetime.now(UTC),
             )
         )
         await session.commit()
