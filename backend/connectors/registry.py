@@ -697,13 +697,15 @@ class ConnectionControlPlane:
         # code (the UI contract: Verify never implies success for a kind it
         # cannot actually probe). Only a real probe rejection flips auth to
         # ``auth_failed``.
-        update_fields: dict[str, Any] = {
-            "last_attempt_at": now,
-            "last_error_code": result.error_code,
-            "last_error_message": _redact(result.error_message),
-        }
+        # "Not applicable" is not an error either: recording it would flip the
+        # card's operational state to Error on a healthy relay device.
+        update_fields: dict[str, Any] = {"last_attempt_at": now}
         if result.error_code != ERR_PROBE_UNSUPPORTED:
-            update_fields["auth_status"] = "auth_failed"
+            update_fields.update(
+                auth_status="auth_failed",
+                last_error_code=result.error_code,
+                last_error_message=_redact(result.error_message),
+            )
         await self._registry.connections.update_connection(
             connection_id, **update_fields
         )

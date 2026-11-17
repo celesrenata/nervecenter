@@ -880,6 +880,9 @@ class TestUnprobeableKindsAreHonest:
         assert result["error_code"] == "probe_unsupported"
         # Paired auth state preserved — Verify did not lie by failing it.
         assert result["auth_status"] == "authenticated"
+        # "Not applicable" is not recorded as the card's last error.
+        stored = await plane_env.registry.connections.get_connection(row.id)
+        assert stored.last_error_code is None
 
     async def test_calendar_verify_is_honest(self, plane_env) -> None:
         """calendar has no probe registered: Verify is an honest
