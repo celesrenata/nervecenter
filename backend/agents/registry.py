@@ -606,7 +606,10 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "their ids), plus omniroute_cost_report with period day and omniroute_check_quota.\n"
                 "3. Compare in a table (combo or provider, latency, error rate, cost). Name "
                 "the slowest, the least reliable and the most expensive, and say whether the "
-                "gap is large enough to act on.",
+                "gap is large enough to act on.\n"
+                "4. Keep the final report short so it fits the reply limit: at most 6 table "
+                "rows, figures copied from the tool results (no long arithmetic), and under "
+                "500 words in total. Write the report straight away; do not deliberate at length.",
                 "You cannot run a benchmark, generate load, or measure anything that the "
                 "metrics do not already contain. Say that the figures are historical metrics, "
                 "not a new measurement. Running benchmarks in an isolated job is planned but "
