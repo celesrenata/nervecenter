@@ -244,19 +244,19 @@ def test_http_endpoints_require_the_server_bearer(monkeypatch: pytest.MonkeyPatc
     app = create_app(api=_mock_api(lambda request: httpx.Response(200, json={})))
     with TestClient(app) as client:
         monkeypatch.delenv("NERVE_MCP_SERVER_TOKENS", raising=False)
+        good_auth = {"Authorization": f"Bearer {SERVER_TOKEN}"}
+        bad_auth = {"Authorization": f"Bearer {SERVER_TOKEN}x"}
         for path in ("/mcp", "/mcp/"):
             assert client.post(path, json=message).status_code == 401
-            assert (
-                client.post(path, json=message, headers={"Authorization": f"Bearer {SERVER_TOKEN}"}).status_code
-                == 401
-            )  # no tokens configured: fail closed
+            # no tokens configured: fail closed
+            assert client.post(path, json=message, headers=good_auth).status_code == 401
         monkeypatch.setenv("NERVE_MCP_SERVER_TOKENS", f"{SERVER_TOKEN},other-{SERVER_TOKEN}")
         for path in ("/mcp", "/mcp/"):
             assert client.post(path, json=message).status_code == 401
-            bad = client.post(path, json=message, headers={"Authorization": f"Bearer {SERVER_TOKEN}x"})
+            bad = client.post(path, json=message, headers=bad_auth)
             assert bad.status_code == 401
             assert SERVER_TOKEN not in bad.text
-            ok = client.post(path, json=message, headers={"Authorization": f"Bearer {SERVER_TOKEN}"})
+            ok = client.post(path, json=message, headers=good_auth)
             assert ok.status_code == 200
         assert client.get("/mcp/health").status_code == 200
 

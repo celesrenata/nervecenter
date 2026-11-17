@@ -110,6 +110,9 @@ typeCheckingMode = "standard"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# tests/conftest.py makes pytest prepend tests/ to sys.path; without the repo
+# root ahead of the editable install, tests/backend/ shadows the backend package.
+pythonpath = ["."]
 asyncio_mode = "auto"
 addopts = "-ra --strict-markers"
 markers = [

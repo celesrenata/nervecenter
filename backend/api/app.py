@@ -24,9 +24,11 @@ from fastapi.responses import JSONResponse
 
 log = structlog.get_logger(__name__)
 
-from backend.api.auth import approvals_router as auth_approvals_router
-from backend.api.auth import require_person
-from backend.api.auth import router as auth_router
+from backend.api.auth import (
+    approvals_router as auth_approvals_router,
+    require_person,
+    router as auth_router,
+)
 from backend.api.docs import custom_openapi, get_version_info
 from backend.attention import get_attention_service
 from backend.briefing import get_briefing_service
