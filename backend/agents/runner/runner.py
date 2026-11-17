@@ -63,7 +63,8 @@ class InferenceThrottled(Exception):
 
 MAX_RUN_CONTEXT = 20_000
 #: Runs per rolling 24 h by agent type (NS-ADR-125: the pentest agent costs scans and tokens).
-RUN_CAPS: dict[str, int] = {"pentest": 4}
+#: Pentest is 8 since NS-ADR-126: testing and retries used up the original 4.
+RUN_CAPS: dict[str, int] = {"pentest": 8}
 
 
 def utcnow() -> datetime:

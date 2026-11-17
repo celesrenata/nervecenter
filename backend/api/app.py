@@ -333,6 +333,10 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                         pentest_sweep = get_sweep(app)
                         if pentest_sweep is not None:  # NS-ADR-125: daily advisory sweep
                             runner.add_tick_hook(pentest_sweep.tick)
+                        from backend.pentest.scans import get_service as pentest_scans
+                        weekly_scans = pentest_scans(app)
+                        if weekly_scans is not None:  # NS-ADR-126: one slice a day, weekly cover
+                            runner.add_tick_hook(weekly_scans.weekly_tick)
                         runner.start()
                         log.debug("api.agent_runner_started")
                         from backend.research import get_engine
