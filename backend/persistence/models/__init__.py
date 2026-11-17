@@ -53,6 +53,7 @@ from .obligations import (
 from .infra import InfraConnector, InfraPlan
 from .omniroute_keys import OmniRouteKeyAudit
 from .openai_usage import EscalationGrant, OpenAICall
+from .pentest import PentestAllowlist, PentestFirewallSnapshot
 from .planned_changes import PlannedChange
 from .projects import ProjectContext, ProjectContextNote
 from .relationships import Relationship
@@ -86,6 +87,8 @@ __all__ = [
     "AgentResourceLink",
     "InfraConnector",
     "InfraPlan",
+    "PentestAllowlist",
+    "PentestFirewallSnapshot",
     "Resource",
     "OmniRouteKeyAudit",
     "HealthSampleRow",

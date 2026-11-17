@@ -1,0 +1,108 @@
+<?xml version="1.0"?>
+<!-- Synthetic pfSense config. Every CANARY token is a fake secret that must never be stored. -->
+<pfsense>
+  <version>22.2</version>
+  <system>
+    <product_version>2.9.0</product_version>
+    <hostname>fw-test</hostname>
+    <user>
+      <name>admin</name>
+      <bcrypt-hash>$2y$10$CANARYBCRYPTHASHdoNotLeak0123456789abcdefghijk</bcrypt-hash>
+      <authorizedkeys>c3NoLXJzYSBDQU5BUllTU0hLRVk=</authorizedkeys>
+      <apikeys><item><key>CANARYAPIKEY123</key></item></apikeys>
+    </user>
+  </system>
+  <cert>
+    <refid>abc</refid>
+    <crt>CANARYCERTIFICATEBODY</crt>
+    <prv>CANARYPRIVATEKEYDATA</prv>
+  </cert>
+  <ipsec>
+    <phase1><pre-shared-key>CANARYPSKsecret99</pre-shared-key></phase1>
+  </ipsec>
+  <snmpd>
+    <rocommunity>CANARYSNMPCOMMUNITY</rocommunity>
+  </snmpd>
+  <wireguard><tunnel><privatekey>CANARYWGPRIVATEKEY</privatekey></tunnel></wireguard>
+  <interfaces>
+    <wan><if>em0</if><descr>WAN</descr><enable/><ipaddr>dhcp</ipaddr></wan>
+    <lan><if>em1</if><descr>LAN</descr><enable/><ipaddr>192.168.42.1</ipaddr><subnet>24</subnet></lan>
+    <opt1><if>em2</if><descr>IOT</descr><enable/><ipaddr>10.9.0.1</ipaddr><subnet>24</subnet></opt1>
+    <opt2><if>em3</if><descr>Kube</descr><enable/><ipaddr>10.1.1.1</ipaddr><subnet>24</subnet></opt2>
+  </interfaces>
+  <aliases>
+    <alias><name>kube_nodes</name><type>host</type><address>10.1.1.12 10.1.1.13</address><descr>Kube nodes</descr></alias>
+    <alias><name>admin_ports</name><type>port</type><address>22 3389</address><descr>Admin</descr></alias>
+    <alias><name>public_dns</name><type>host</type><address>8.8.8.8 172.20.5.9</address><descr>DNS</descr></alias>
+  </aliases>
+  <nat>
+    <rule>
+      <interface>wan</interface><protocol>tcp</protocol>
+      <source><any/></source>
+      <destination><network>wanip</network><port>2222</port></destination>
+      <target>10.1.1.12</target><local-port>22</local-port>
+      <associated-rule-id>nat1</associated-rule-id>
+      <descr>ssh to node</descr>
+    </rule>
+    <rule>
+      <interface>wan</interface><protocol>tcp</protocol>
+      <source><any/></source>
+      <destination><network>wanip</network><port>443</port></destination>
+      <target>192.168.42.8</target><local-port>443</local-port>
+      <associated-rule-id>2001</associated-rule-id>
+      <descr>nas web</descr>
+    </rule>
+  </nat>
+  <filter>
+    <rule><tracker>1001</tracker><type>pass</type><interface>wan</interface><protocol>any</protocol>
+      <source><any/></source><destination><any/></destination><descr>temporary open</descr></rule>
+    <rule><tracker>1002</tracker><type>pass</type><interface>wan</interface><protocol>tcp</protocol>
+      <source><any/></source><destination><address>203.0.113.5</address><port>admin_ports</port></destination><log/><descr>admin from anywhere</descr></rule>
+    <rule><tracker>1003</tracker><type>pass</type><interface>lan</interface><protocol>any</protocol>
+      <source><network>lan</network></source><destination><any/></destination><log/><descr>Default allow LAN</descr></rule>
+    <rule><tracker>1004</tracker><type>pass</type><interface>opt1</interface><protocol>tcp</protocol>
+      <source><network>opt1</network></source><destination><address>kube_nodes</address></destination><log/><descr>iot to kube</descr></rule>
+    <rule><tracker>1005</tracker><type>pass</type><floating>yes</floating><quick>yes</quick><interface>wan,lan</interface><protocol>tcp</protocol>
+      <source><address>10.9.0.7</address></source><destination><any/></destination><log/><descr>floating</descr></rule>
+    <rule><tracker>1006</tracker><type>pass</type><interface>lan</interface><protocol>tcp</protocol>
+      <source><address>ghost_alias</address></source><destination><address>192.168.42.8</address><port>445</port></destination><log/><descr>missing alias</descr></rule>
+    <rule><tracker>1007</tracker><type>pass</type><interface>wan</interface><protocol>any</protocol><disabled/>
+      <source><any/></source><destination><any/></destination><descr>disabled, ignored</descr></rule>
+    <rule><tracker>2001</tracker><type>pass</type><interface>wan</interface><protocol>tcp</protocol><disabled/>
+      <source><any/></source><destination><address>192.168.42.8</address><port>443</port></destination><log/><descr>nat helper</descr></rule>
+  </filter>
+  <dhcpd>
+    <lan>
+      <staticmap><mac>aa:bb:cc:dd:ee:ff</mac><ipaddr>192.168.42.50</ipaddr><hostname>printer</hostname><descr>Office printer</descr></staticmap>
+    </lan>
+  </dhcpd>
+  <installedpackages>
+    <haproxy>
+      <ha_backends>
+        <item>
+          <name>https-in</name><status>active</status><type>http</type>
+          <a_extaddr><item><extaddr>wan_ipv4</extaddr><extaddr_port>443</extaddr_port><extaddr_ssl>yes</extaddr_ssl></item></a_extaddr>
+          <ha_acls><item><name>acl_app</name><expression>host_matches</expression><value>app.example.org grafana.example.org</value></item></ha_acls>
+          <a_actionitems><item><action>use_backend</action><use_backendbackend>backend_app</use_backendbackend><acl>acl_app</acl></item></a_actionitems>
+        </item>
+        <item>
+          <name>open-in</name><status>active</status><type>http</type>
+          <a_extaddr><item><extaddr>any_ipv4</extaddr><extaddr_port>80</extaddr_port><extaddr_ssl>no</extaddr_ssl></item></a_extaddr>
+          <backend_serverpool>pool_default</backend_serverpool>
+        </item>
+        <item>
+          <name>internal-in</name><status>active</status><type>http</type>
+          <a_extaddr><item><extaddr>lan_ipv4</extaddr><extaddr_port>8080</extaddr_port><extaddr_ssl>no</extaddr_ssl></item></a_extaddr>
+          <backend_serverpool>pool_default</backend_serverpool>
+        </item>
+      </ha_backends>
+      <ha_pools>
+        <item><name>backend_app</name><check_type>HTTP</check_type>
+          <ha_servers><item><name>n2</name><address>10.1.1.13</address><port>30080</port><ssl>no</ssl></item></ha_servers></item>
+        <item><name>pool_default</name><check_type>none</check_type>
+          <ha_servers><item><name>n3</name><address>10.1.1.14</address><port>8080</port><ssl>no</ssl></item></ha_servers></item>
+      </ha_pools>
+      <apikey>CANARYHAPROXYSTATSPASSWORD</apikey>
+    </haproxy>
+  </installedpackages>
+</pfsense>
