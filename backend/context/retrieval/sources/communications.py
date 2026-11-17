@@ -6,13 +6,34 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from backend.context.retrieval.intent import Intent
-from backend.context.retrieval.sources._util import make_all, newest
+from backend.context.retrieval.sources._util import aware, make_all, newest
 from backend.context.retrieval.types import Record
+
+
+_UPCOMING_WORDS = ("upcoming", "next", "coming", "future", "soon", "later")
+
+
+def _when_text(row: Any) -> str:
+    """"Mon Nov 20, 10:00-11:00" (or the date alone for all-day events)."""
+    start, end = getattr(row, "start", None), getattr(row, "end", None)
+    if start is None:
+        return ""
+    if getattr(row, "all_day", False):
+        return f"{start:%a %b %d} (all day)"
+    text = f"{start:%a %b %d, %H:%M}"
+    if end is not None:
+        text += f"-{end:%H:%M}" if end.date() == start.date() else f" to {end:%a %b %d %H:%M}"
+    return text
 
 
 async def calendar(state: Any, intent: Intent, limit: int) -> list[Record] | None:
     now = intent.now or datetime.now(UTC)
-    start, end = intent.window if intent.window else (now - timedelta(days=30), now + timedelta(days=180))
+    if intent.window:
+        start, end = intent.window
+    elif any(w in intent.question.lower() for w in _UPCOMING_WORDS):
+        start, end = now.replace(hour=0, minute=0, second=0, microsecond=0), now + timedelta(days=365)
+    else:
+        start, end = now - timedelta(days=30), now + timedelta(days=180)
     registry = getattr(state, "repository_registry", None)
     rows: list[Any] = []
     if registry is not None and hasattr(registry, "calendar"):
@@ -22,10 +43,14 @@ async def calendar(state: Any, intent: Intent, limit: int) -> list[Record] | Non
         if service is None:
             return None
         rows = list(service.list_events(start=start, end=end, limit=limit))
+    rows = [r for r in rows
+            if not getattr(r, "deleted", False)
+            and str(getattr(r, "status", "") or "").lower() != "cancelled"]
+    rows.sort(key=lambda r: (aware(r.start) or datetime.max.replace(tzinfo=UTC)))
     specs: list[tuple[Any, ...]] = []
     for r in rows:
         ref = f"{getattr(r, 'account_id', '')}:{getattr(r, 'ical_uid', None) or getattr(r, 'event_id', '')}"
-        parts = [getattr(r, "location", None), getattr(r, "description", None)]
+        parts = [_when_text(r), getattr(r, "location", None), getattr(r, "description", None)]
         specs.append(("calendar", ref, r.title, " | ".join(str(p) for p in parts if p), r.start))
     return await make_all(specs)
 

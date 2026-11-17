@@ -12,6 +12,7 @@ him his how i if in into is it its just me more most my no nor not now of off on
 over own same she should so some such than that the their them then there these they this those through to
 too under until up very was we were what when where which while who whom why will with would you your yours
 tell show find list give please know look see get got say said anything something everything
+many much long often coming soon number count total
 """.split())
 
 #: question words that make a request a lookup ("is there anything about X?")
@@ -99,6 +100,12 @@ def parse_window(text: str, now: datetime) -> tuple[datetime, datetime] | None:
         return today - one, today
     if re.search(r"\btoday\b|\btonight\b", low):
         return today, today + one
+    span = re.search(r"\b(next|coming|upcoming|following|last|past|previous)\s+(\d{1,3})\s+(day|week|month)s?\b", low)
+    if span:
+        length = int(span.group(2)) * {"day": 1, "week": 7, "month": 30}[span.group(3)]
+        if span.group(1) in ("last", "past", "previous"):
+            return today - length * one, today + one
+        return today, today + length * one
     week_start = today - timedelta(days=today.weekday())
     if "next week" in low:
         return week_start + 7 * one, week_start + 14 * one
@@ -142,7 +149,7 @@ def parse_intent(question: str, now: datetime) -> Intent:
             continue
         if tok in names or tok in _MONTHS or tok in _WEEKDAYS:
             continue
-        if tok in ("today", "tomorrow", "yesterday", "tonight", "week", "month", "next", "last",
+        if tok in ("today", "tomorrow", "yesterday", "tonight", "week", "month", "day", "hour", "year", "next", "last",
                    "this", "future", "past", "upcoming", "recent", "recently", "latest"):
             continue
         keywords.append(tok)

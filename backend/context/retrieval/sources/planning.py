@@ -62,20 +62,39 @@ def _money(cents: Any) -> str:
         return f"{int(cents) / 100:.2f}"
     except (TypeError, ValueError):
         return "unknown amount"
+def _field(fields: dict[str, Any], key: str) -> Any:
+    """Extracted candidate fields are ``{"payee": {"value": ..., "confidence": ...}}``."""
+    raw = fields.get(key)
+    return raw.get("value") if isinstance(raw, dict) else raw
+
+
 async def bills(state: Any, intent: Intent, limit: int) -> list[Record] | None:
     registry = getattr(state, "repository_registry", None)
     if registry is None or not hasattr(registry, "session_factory"):
         return None
     from backend.bills.service import BillService
     from backend.persistence.repositories.bills_repo import BillsRepository
-
-    rows = await BillService(BillsRepository(registry.session_factory)).list_bills()
-    return await make_all([
+    service = BillService(BillsRepository(registry.session_factory))
+    rows = await service.list_bills()
+    specs: list[tuple[Any, ...]] = [
         ("bills", b["id"], f"Bill: {b['payee']}",
          f"{_money(b['amount_cents'])} {b['currency']}, {b['status']}, due {str(b['due_at'])[:10]}",
          b["due_at"])
         for b in rows[:limit]
-    ])
+    ]
+    # Bills found in mail but not yet accepted are still "coming due" to the owner.
+    for c in await service.list_candidates(status="proposed"):
+        if c.get("duplicate_of") or len(specs) >= limit:
+            continue
+        fields = c.get("extracted_fields") or {}
+        payee = _field(fields, "payee") or "unknown payee"
+        due = _field(fields, "due_at") or _field(fields, "due_date")
+        amount = _field(fields, "amount_cents")
+        detail = f"{_money(amount) if amount is not None else 'unknown amount'}, unconfirmed"
+        if due:
+            detail += f", due {str(due)[:10]}"
+        specs.append(("bills", f"candidate:{c['id']}", f"Possible bill: {payee}", detail, due or c["created_at"]))
+    return await make_all(specs)
 
 
 async def followups(state: Any, intent: Intent, limit: int) -> list[Record] | None:
