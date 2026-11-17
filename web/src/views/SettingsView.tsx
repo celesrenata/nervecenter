@@ -14,6 +14,7 @@ import {
 import { Link } from 'react-router-dom'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import { AccessTokensPanel } from './AccessTokensPanel'
+import { VoiceSettingsPanel } from './VoiceSettingsPanel'
 
 /**
  * Settings — browser-local preferences grouped by feature set. The categories
@@ -53,6 +54,7 @@ export type SettingsCategory =
   | 'data'
   | 'connections'
   | 'inference'
+  | 'voice'
   | 'access'
 
 const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: string }> = [
@@ -61,6 +63,7 @@ const CATEGORY_OPTIONS: Array<{ id: SettingsCategory; label: string; hint: strin
   { id: 'data', label: 'Data & privacy', hint: 'Wellness and local data boundaries' },
   { id: 'connections', label: 'Connections & apps', hint: 'Connectors and device builds' },
   { id: 'inference', label: 'Inference', hint: 'Default model & provider for Ask' },
+  { id: 'voice', label: 'Voice', hint: 'Spoken replies and TTS voice for Ask' },
   { id: 'access', label: 'Access', hint: 'Personal API tokens and sessions' },
 ]
 
@@ -421,6 +424,7 @@ export function SettingsView() {
       </section>}
 
       {category === 'access' && <AccessTokensPanel />}
+      {category === 'voice' && <VoiceSettingsPanel />}
       {category === 'inference' && (
         <section
           id="settings-panel-inference"

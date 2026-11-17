@@ -242,7 +242,7 @@ export const realConnectionsApi = {
     if (!res.ok && res.status !== 204) throw await apiErrorFromResponse(res)
   },
 
-  startAuth: async (id: string, body?: { code?: string; state?: string; extra?: 'calendar'[] }): Promise<AuthFlowResult> => {
+  startAuth: async (id: string, body?: { code?: string; state?: string; extra?: ('calendar' | 'calendar_write')[] }): Promise<AuthFlowResult> => {
     return (await jsonPost(`/api/connections/${encodeURIComponent(id)}/auth`, body ?? {})) as AuthFlowResult
   },
 

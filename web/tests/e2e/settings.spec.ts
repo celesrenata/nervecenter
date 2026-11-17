@@ -48,6 +48,7 @@ test('settings renders under the auth gate with categorized tabs', async ({ page
   await expect(page.getByRole('tab', { name: 'Data & privacy' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Connections & apps' })).toBeVisible()
   await expect(page.getByRole('tab', { name: 'Inference' })).toBeVisible()
+  await expect(page.getByRole('tab', { name: 'Voice' })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Appearance' })).toBeVisible()
 
   // Feature defaults are separated into their own categories.

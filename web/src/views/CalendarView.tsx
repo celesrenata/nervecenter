@@ -175,8 +175,8 @@ export function CalendarView() {
   )
 
   /** Ask Google for calendar read access on an existing Gmail connection. */
-  const grantCalendar = useCallback(async (connectionId: string) => {
-    const res = await connectionsApi.startAuth(connectionId, { extra: ['calendar'] })
+  const grantCalendar = useCallback(async (connectionId: string, extra: 'calendar' | 'calendar_write' = 'calendar') => {
+    const res = await connectionsApi.startAuth(connectionId, { extra: [extra] })
     if (isDegradedConn(res)) throw new ApiError(503, res.detail)
     if (!('authorization_url' in res)) throw new ApiError(500, 'Google sign-in did not start')
     window.sessionStorage.setItem('nerve.oauth.returnTo', '/calendar')
@@ -213,10 +213,10 @@ export function CalendarView() {
   )
 
   const regrant = useCallback(
-    async (connectionId: string) => {
+    async (connectionId: string, extra: 'calendar' | 'calendar_write' = 'calendar') => {
       setAccountError(null)
       try {
-        await grantCalendar(connectionId)
+        await grantCalendar(connectionId, extra)
       } catch (err) {
         setAccountError(err instanceof ApiError ? err.detail : 'Could not start Google sign-in')
       }
@@ -534,6 +534,20 @@ export function CalendarView() {
                   <p className="mt-0.5 text-xs text-muted">
                     Last sync: {fmtWhen(a.last_sync_at)}
                   </p>
+                  {a.provider === 'google' && typeof a.config?.connection_id === 'string' && a.can_write === false && (
+                    <p className="mt-0.5 text-xs text-muted" data-testid={`calendar-write-hint-${a.id}`}>
+                      Ask can add events here once Google allows write access.{' '}
+                      <button
+                        type="button"
+                        onClick={() => void regrant(a.config.connection_id as string, 'calendar_write')}
+                        disabled={accountBusy !== null}
+                        data-testid={`calendar-grant-write-${a.id}`}
+                        className="underline text-accent disabled:opacity-50"
+                      >
+                        Grant calendar write access
+                      </button>
+                    </p>
+                  )}
                 </div>
                 <div className="flex shrink-0 items-center gap-2">
                   {a.provider === 'google' && typeof a.config?.connection_id === 'string' && a.last_error_code && (

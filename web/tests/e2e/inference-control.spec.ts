@@ -135,20 +135,20 @@ test('Ask picker sends the selected inference + agent on the wire', async ({
   await mockAgents(page)
 
   let captured: Record<string, unknown> | null = null
-  await page.route('**/api/context/ask', (route) => {
+  await page.route('**/api/context/ask/stream', (route) => {
     // postDataJSON() already returns a parsed object (or null).
     captured = route.request().postDataJSON() as Record<string, unknown> | null
     return route.fulfill({
-      status: 202,
-      contentType: 'application/json',
-      body: JSON.stringify({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: 'event: done\ndata: ' + JSON.stringify({
         accepted: true,
         executed: false,
         service: 'context',
         status: 'unavailable',
         request_status: 'pending',
         reason: 'no inference transport in mock mode',
-      }),
+      }) + '\n\n',
     })
   })
 
@@ -195,20 +195,20 @@ test('Ask default path sends a bare {question} body (no override keys)', async (
 }) => {
   const guard = trackPageErrors(page)
   let captured: Record<string, unknown> | null = null
-  await page.route('**/api/context/ask', (route) => {
+  await page.route('**/api/context/ask/stream', (route) => {
     // postDataJSON() already returns a parsed object (or null).
     captured = route.request().postDataJSON() as Record<string, unknown> | null
     return route.fulfill({
-      status: 202,
-      contentType: 'application/json',
-      body: JSON.stringify({
+      status: 200,
+      contentType: 'text/event-stream',
+      body: 'event: done\ndata: ' + JSON.stringify({
         accepted: true,
         executed: false,
         service: 'context',
         status: 'unavailable',
         request_status: 'pending',
         reason: 'x',
-      }),
+      }) + '\n\n',
     })
   })
 
@@ -219,7 +219,8 @@ test('Ask default path sends a bare {question} body (no override keys)', async (
   await page.getByPlaceholder('Type your message...').fill('hello world')
   await page.getByRole('button', { name: 'Send' }).click()
 
-  expect(captured).toEqual({ question: 'hello world' })
+  // Streaming Ask adds only the per-mount session_id; no override keys.
+  expect(captured).toEqual({ question: 'hello world', session_id: expect.any(String) })
 
   guard.dispose()
   guard.assertClean()

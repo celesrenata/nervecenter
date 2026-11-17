@@ -1,5 +1,11 @@
-import { useState, useEffect } from 'react'
-import { askApi } from '../api/client'
+import { useState, useEffect, useRef } from 'react'
+import { ApiError } from '../api/client'
+import { postAskStream } from '../api/askStream'
+import { voiceApi, VoiceApiError } from '../api/voice'
+import type { CalendarProposal } from '../api/calendar'
+import { CalendarProposalCard } from '../components/CalendarProposalCard'
+import { SpeechQueue } from '../voice/SpeechQueue'
+import { useVoiceRecorder, isRecordingSupported } from '../voice/useVoiceRecorder'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import { agentsApi, type Agent } from '../api/agents'
 import { useSettings } from '../theme/SettingsContext'
@@ -29,6 +35,50 @@ interface ChatMessage {
     hypotheses: EvidenceItem[]
     reasoning?: string
   }
+  proposal?: CalendarProposal
+}
+
+/** Stable speech error codes → text. Speech never blocks the text answer. */
+function describeSpeechError(err: unknown): string {
+  if (err instanceof VoiceApiError) {
+    switch (err.code) {
+      case 'speech_unavailable':
+        return 'The speech service is unavailable right now. Text answers still work.'
+      case 'bad_audio':
+        return 'The recording could not be understood. Try again, closer to the microphone.'
+      case 'speech_policy':
+        return 'Speech is misconfigured on the server (model not allowed).'
+      case 'unknown_voice':
+        return 'The selected voice is not available. Pick another in Settings → Voice.'
+      default:
+        if (err.status === 413) return 'The recording is too long to transcribe.'
+        if (err.status === 415) return 'This browser recorded an audio format the server does not accept.'
+        return `Speech failed (${err.code}).`
+    }
+  }
+  if (err instanceof ApiError && err.status === 401) return 'Your session expired. Sign in again.'
+  if (err instanceof TypeError) return 'Could not reach the server for speech.'
+  return 'Speech failed.'
+}
+
+/** Specific text for a failed Ask request; never the generic apology. */
+function describeAskError(err: unknown): string {
+  if (err instanceof ApiError) {
+    if (err.status === 401) return 'Your session expired. Sign in again to keep asking.'
+    if (err.status === 403) return `You are not allowed to ask this: ${err.detail}`
+    if (err.status === 422) return `The request was rejected as invalid: ${err.detail}`
+    if (err.status === 429) return 'Too many requests. Wait a moment and try again.'
+    if (err.status >= 500) return `The server failed to answer (HTTP ${err.status}): ${err.detail}`
+    return `The request failed (HTTP ${err.status}): ${err.detail}`
+  }
+  if (err instanceof TypeError) return 'Could not reach the server. Check your connection and try again.'
+  return `Ask failed: ${err instanceof Error ? err.message : String(err)}`
+}
+
+function newSessionId(): string {
+  return typeof crypto !== 'undefined' && 'randomUUID' in crypto
+    ? crypto.randomUUID()
+    : `s-${Date.now()}-${Math.random().toString(16).slice(2)}`
 }
 
 const AskView = () => {
@@ -36,6 +86,17 @@ const AskView = () => {
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [input, setInput] = useState('')
   const [loading, setLoading] = useState(false)
+
+  // Voice: per-mount session id (server mute registry key), spoken-reply
+  // toggle + TTS voice (initialised from the per-account server settings).
+  const sessionIdRef = useRef(newSessionId())
+  const [spoken, setSpoken] = useState(false)
+  const spokenRef = useRef(false)
+  const voiceRef = useRef<string | undefined>(undefined)
+  const [speechError, setSpeechError] = useState<string | null>(null)
+  const queueRef = useRef<SpeechQueue | null>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const recorder = useVoiceRecorder()
 
   // INFER_CONTROL_CONTRACT.md (web scope): optional per-request inference +
   // agent control. The picker is COLLAPSED by default — "default" keeps the
@@ -93,24 +154,109 @@ const AskView = () => {
     setMessages(initialMessages)
   }, [])
 
-  const handleSendMessage = async () => {
-    if (!input.trim()) return
+  useEffect(() => {
+    let cancelled = false
+    voiceApi
+      .getSettings()
+      .then((v) => {
+        if (cancelled) return
+        voiceRef.current = v.tts_voice
+        spokenRef.current = v.spoken_replies
+        setSpoken(v.spoken_replies)
+      })
+      .catch(() => {
+        /* defaults stay: spoken replies off, server default voice */
+      })
+    return () => {
+      cancelled = true
+      // Leaving the page stops playback and any in-flight ask.
+      queueRef.current?.stop()
+      abortRef.current?.abort()
+    }
+  }, [])
+
+  const toggleSpoken = () => {
+    const next = !spokenRef.current
+    spokenRef.current = next
+    setSpoken(next)
+    setSpeechError(null)
+    queueRef.current?.setMuted(!next)
+    void voiceApi.setMuted(sessionIdRef.current, !next).catch((e) => setSpeechError(describeSpeechError(e)))
+    void voiceApi.putSettings({ spoken_replies: next }).catch((e) => setSpeechError(describeSpeechError(e)))
+  }
+
+  const handleMic = async () => {
+    if (recorder.state === 'transcribing' || loading) return
+    if (recorder.state === 'idle') {
+      await recorder.start()
+      return
+    }
+    const blob = await recorder.stop()
+    if (!blob) {
+      recorder.setError('Nothing was recorded. Try again.')
+      return
+    }
+    recorder.setState('transcribing')
+    try {
+      const transcript = await voiceApi.transcribe(blob)
+      recorder.setState('idle')
+      const text = transcript.text.trim()
+      if (!text) {
+        setSpeechError('No speech was detected in the recording.')
+        return
+      }
+      setSpeechError(null)
+      void handleSendMessage(text)
+    } catch (err) {
+      recorder.setState('idle')
+      setSpeechError(describeSpeechError(err))
+    }
+  }
+
+  const handleSendMessage = async (override?: string) => {
+    const text = (override ?? input).trim()
+    if (!text || loading) return
 
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
-      content: input,
+      content: text,
       timestamp: new Date().toISOString(),
     }
+    const assistantId = `${Date.now() + 1}`
 
-    setMessages((prev) => [...prev, userMessage])
+    setMessages((prev) => [
+      ...prev,
+      userMessage,
+      { id: assistantId, role: 'assistant', content: '', timestamp: new Date().toISOString() },
+    ])
     setInput('')
     setLoading(true)
+    setSpeechError(null)
 
+    // A new ask stops whatever was still being spoken.
+    queueRef.current?.stop()
+    abortRef.current?.abort()
+    const abort = new AbortController()
+    abortRef.current = abort
+    const queue = new SpeechQueue({
+      speak: (sentence, signal) =>
+        voiceApi.speak(
+          { text: sentence, voice: voiceRef.current, session_id: sessionIdRef.current },
+          signal,
+        ),
+      onError: (e) => setSpeechError(describeSpeechError(e)),
+      startMuted: !spokenRef.current,
+    })
+    queueRef.current = queue
+
+    const patch = (fn: (m: ChatMessage) => ChatMessage) =>
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? fn(m) : m)))
+
+    let finished = false
     try {
-      // Build the optional per-request override (INFER_CONTROL_CONTRACT.md
-      // §2). Omitted when nothing is selected so the body stays the legacy
-      // `{question}` shape.
+      // Optional per-request override (INFER_CONTROL_CONTRACT.md §2); omitted
+      // when nothing is selected so the body stays the bare `{question}` shape.
       const inference =
         askModel || askProvider
           ? {
@@ -118,63 +264,89 @@ const AskView = () => {
               ...(askProvider ? { provider: askProvider } : {}),
             }
           : undefined
-      const opts =
-        askAgent || inference
-          ? {
-              ...(askAgent ? { agent: askAgent } : {}),
-              ...(inference ? { inference } : {}),
+      await postAskStream(
+        {
+          question: text,
+          session_id: sessionIdRef.current,
+          ...(askAgent ? { agent: askAgent } : {}),
+          ...(inference ? { inference } : {}),
+        },
+        (ev) => {
+          if (ev.type === 'delta') {
+            queue.push(ev.data.text)
+            patch((m) => ({ ...m, content: m.content + ev.data.text }))
+          } else if (ev.type === 'proposal') {
+            patch((m) => ({ ...m, proposal: ev.data }))
+          } else if (ev.type === 'done') {
+            finished = true
+            queue.end()
+            const data = ev.data as unknown as AskResponse & {
+              accepted?: boolean
+              executed?: boolean
+              detail?: string
+              reason?: string
+              status?: string
+              policy?: { reason?: string }
             }
-          : undefined
-      const response = await askApi.post(input, opts)
-      const data = response.data as (AskResponse & {
-        accepted?: boolean
-        executed?: boolean
-        detail?: string
-      }) | null
-
-      // The backend answers either with a full answer payload (200) or an
-      // accepted-but-not-executed ack (202, no `answer` field). Render
-      // whichever shape actually arrived instead of crashing on missing
-      // fields.
-      const content =
-        data && typeof data.answer === 'string' && data.answer.length > 0
-          ? data.answer
-          : data && data.accepted === true
-            ? `Request accepted (execution: ${
+            let content: string
+            if (typeof data.answer === 'string' && data.answer.length > 0) {
+              content = data.answer
+            } else if (data.status === 'policy_denied') {
+              content = `This request was denied by policy: ${
+                data.reason || data.policy?.reason || data.detail || 'no reason given'
+              }`
+            } else if (data.accepted === true) {
+              const why = data.status === 'unavailable' && data.reason ? `Inference unavailable: ${data.reason}. ` : ''
+              content = `${why}Request accepted (execution: ${
                 data.executed ? 'completed' : 'pending'
               }). ${data.detail || ''}`.trim()
-            : 'Sorry, I encountered an error processing your request.'
-
-      const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content,
-        timestamp: new Date().toISOString(),
-        provenance:
-          data && Array.isArray(data.facts)
-            ? {
-                facts: data.facts,
-                hypotheses: Array.isArray(data.hypotheses) ? data.hypotheses : [],
-                reasoning:
-                  typeof data.confidence === 'number'
-                    ? `Confidence: ${(data.confidence * 100).toFixed(0)}%`
-                    : undefined,
-              }
-            : undefined,
+            } else {
+              content = 'The server finished without an answer.'
+            }
+            patch((m) => ({
+              ...m,
+              content,
+              provenance: Array.isArray(data.facts)
+                ? {
+                    facts: data.facts,
+                    hypotheses: Array.isArray(data.hypotheses) ? data.hypotheses : [],
+                    reasoning:
+                      typeof data.confidence === 'number'
+                        ? `Confidence: ${(data.confidence * 100).toFixed(0)}%`
+                        : undefined,
+                  }
+                : undefined,
+            }))
+          } else if (ev.type === 'error') {
+            finished = true
+            queue.stop()
+            const code = ev.data.code ?? 'error'
+            const msg = ev.data.message ?? ''
+            const content =
+              code === 'secure_route_denied'
+                ? `The secure inference route refused this request: ${msg}`
+                : code === 'stream_interrupted'
+                  ? `The answer stream was interrupted${msg ? `: ${msg}` : ''}.`
+                  : `Ask failed (${code})${msg ? `: ${msg}` : ''}`
+            patch((m) => ({ ...m, content: m.content ? `${m.content}\n\n${content}` : content }))
+          }
+        },
+        abort.signal,
+      )
+      if (!finished) {
+        queue.end()
+        patch((m) => ({
+          ...m,
+          content: m.content || 'The answer stream ended before any answer arrived.',
+        }))
       }
-
-      setMessages((prev) => [...prev, assistantMessage])
     } catch (error) {
-      console.error('Error sending message:', error)
-      const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: 'assistant',
-        content: 'Sorry, I encountered an error processing your request.',
-        timestamp: new Date().toISOString(),
-      }
-      setMessages((prev) => [...prev, errorMessage])
+      if (abort.signal.aborted) return
+      queue.stop()
+      const content = describeAskError(error)
+      patch((m) => ({ ...m, content: m.content ? `${m.content}\n\n${content}` : content }))
     } finally {
-      setLoading(false)
+      if (abortRef.current === abort) setLoading(false)
     }
   }
 
@@ -201,6 +373,7 @@ const AskView = () => {
                 }`}
               >
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                {message.proposal && <CalendarProposalCard proposal={message.proposal} />}
                 <p className="text-xs mt-2 opacity-70">
                   {new Date(message.timestamp).toLocaleTimeString()}
                 </p>
@@ -366,20 +539,55 @@ const AskView = () => {
           </div>
 
           <div className="px-4 pb-4">
+          {(recorder.error || speechError) && (
+            <p
+              role="alert"
+              data-testid="ask-speech-error"
+              className="mb-2 text-xs text-amber-700 dark:text-amber-300"
+            >
+              {recorder.error ?? speechError}
+            </p>
+          )}
           <div className="flex space-x-2">
             <input
               type="text"
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyPress={(e) => {
-                if (e.key === 'Enter') handleSendMessage()
+                if (e.key === 'Enter') void handleSendMessage()
               }}
               placeholder="Type your message..."
               className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 rounded-lg focus:ring-2 focus:ring-blue-500 dark:bg-gray-700 dark:text-white"
               disabled={loading}
             />
             <button
-              onClick={handleSendMessage}
+              type="button"
+              data-testid="ask-mic"
+              onClick={() => void handleMic()}
+              disabled={loading || recorder.state === 'transcribing'}
+              aria-label={recorder.state === 'recording' ? 'Stop recording and send' : 'Dictate a question'}
+              title={isRecordingSupported() ? 'Dictate a question' : 'This browser cannot record audio'}
+              className={`px-3 py-2 rounded-lg border border-line transition-colors disabled:opacity-50 ${
+                recorder.state === 'recording' ? 'bg-red-500 text-white' : 'bg-hover text-primary'
+              }`}
+            >
+              {recorder.state === 'recording' ? '■ Stop' : recorder.state === 'transcribing' ? '…' : '🎤'}
+            </button>
+            <button
+              type="button"
+              data-testid="ask-speak-toggle"
+              aria-pressed={spoken}
+              onClick={toggleSpoken}
+              title="Speak replies aloud"
+              className={`px-3 py-2 rounded-lg border border-line transition-colors ${
+                spoken ? 'bg-blue-500 text-white' : 'bg-hover text-primary'
+              }`}
+            >
+              {spoken ? '🔊' : '🔇'}
+              <span className="sr-only">Spoken replies</span>
+            </button>
+            <button
+              onClick={() => void handleSendMessage()}
               disabled={loading || !input.trim()}
               className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >

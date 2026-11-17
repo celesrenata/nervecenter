@@ -5,7 +5,7 @@ import { seedBreakGlassSession } from './helpers/auth-seed'
  * AC005 — Ask round-trip against the REAL backend.
  *
  * Flow: seed auth → /ask → submit a question through the form →
- * the UI POSTs /api/context/ask, and the T003-04 grounded pipeline
+ * the UI POSTs /api/context/ask/stream, and the T003-04 grounded pipeline
  * answers HTTP 202 with an honest unavailability ack when the inference
  * transport is not configured. Benign questions (sensitivity `internal`)
  * are no longer policy-denied — the earlier default-deny wiring bug that
@@ -59,7 +59,7 @@ test('Ask round-trip renders the /api/context/ask response without console error
 
     const responsePromise = page.waitForResponse(
       (res) =>
-        res.url().endsWith('/api/context/ask') && res.request().method() === 'POST',
+        res.url().endsWith('/api/context/ask/stream') && res.request().method() === 'POST',
     )
     await page.getByRole('button', { name: 'Send' }).click()
     const response = await responsePromise
@@ -68,8 +68,13 @@ test('Ask round-trip renders the /api/context/ask response without console error
     // questions (sensitivity `internal`) are no longer policy-denied;
     // the endpoint now answers 202 with an honest unavailability ack
     // when the transport is not configured — no fabricated answer.
-    expect(response.status()).toBe(202)
-    const body = await response.json()
+    // The stream endpoint answers HTTP 200 and delivers the same ack as the
+    // `done` event (no HTTP 202 on a stream).
+    expect(response.status()).toBe(200)
+    const sse = await response.text()
+    const doneFrame = sse.split('\n\n').find((f) => f.startsWith('event: done'))
+    expect(doneFrame, 'stream carries a done event').toBeTruthy()
+    const body = JSON.parse(doneFrame!.split('\n').find((l) => l.startsWith('data:'))!.slice(5))
     expect(body.accepted).toBe(true)
     expect(body.executed).toBe(false)
     expect(body.service).toBe('context')

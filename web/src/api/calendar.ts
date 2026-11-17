@@ -50,6 +50,10 @@ export interface CalendarAccountRow {
   last_sync_at: string | null
   created_at: string | null
   updated_at: string | null
+  /** Linked Gmail/Google connection id, when the account reuses its sign-in. */
+  connection_id?: string | null
+  /** True once the linked connection granted the `calendar_write` scope. */
+  can_write?: boolean
 }
 
 /** Envelope returned by list endpoints (`GET /accounts`, `GET /…/events`). */
@@ -215,3 +219,102 @@ export const mockCalendarAccountsApi: CalendarAccountsClient = {
 export const calendarAccountsApi = useMockMode
   ? mockCalendarAccountsApi
   : realCalendarAccountsApi
+
+// ─── Ask calendar proposals (confirm-first) ──────────────────────────────────
+
+export interface ProposalAccount {
+  id: string
+  label: string
+  can_write: boolean
+  connection_id?: string | null
+}
+
+export interface CalendarProposal {
+  id: string
+  title: string
+  start: string
+  end: string
+  all_day?: boolean
+  location?: string | null
+  tz: string
+  account: { id: string; label: string; can_write: boolean }
+  accounts: ProposalAccount[]
+  warnings: string[]
+  assumptions: string[]
+  conflicts?: Array<{ event_id: string; title: string; start: string; end: string }>
+  expires_at?: string
+  requires_confirmation?: boolean
+  consent_required?: { code: string; message: string; connection_id?: string }
+}
+
+export interface ProposalConfirmEdits {
+  account_id?: string
+  title?: string
+  start?: string
+  end?: string
+}
+
+export interface ProposalConfirmResult {
+  status: 'created'
+  proposal_id: string
+  event: { event_id: string; title: string; start: string; end: string; account_id?: string }
+  undo?: { event_id: string; expires_at: string }
+}
+
+/** A refused calendar write, carrying the stable error code from the API. */
+export class CalendarWriteError extends Error {
+  status: number
+  code: string
+  connectionId: string | null
+
+  constructor(status: number, code: string, message: string, connectionId: string | null = null) {
+    super(message)
+    this.name = 'CalendarWriteError'
+    this.status = status
+    this.code = code
+    this.connectionId = connectionId
+  }
+}
+
+async function writeErrorFromResponse(res: Response): Promise<CalendarWriteError> {
+  let code = `http_${res.status}`
+  let message = res.statusText || `HTTP ${res.status}`
+  let connectionId: string | null = null
+  try {
+    const raw = (await res.json()) as Record<string, unknown>
+    const inner = (raw.detail && typeof raw.detail === 'object' ? raw.detail : raw) as Record<string, unknown>
+    const c = inner.code ?? inner.error_code
+    if (typeof c === 'string') code = c
+    if (typeof inner.message === 'string') message = inner.message
+    else if (typeof raw.detail === 'string') message = raw.detail
+    if (typeof inner.connection_id === 'string') connectionId = inner.connection_id
+  } catch {
+    /* non-JSON body */
+  }
+  return new CalendarWriteError(res.status, code, message, connectionId)
+}
+
+const jsonInit = (body: unknown): RequestInit => ({
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+export async function confirmProposal(
+  id: string,
+  edits: ProposalConfirmEdits = {},
+): Promise<ProposalConfirmResult> {
+  const res = await apiFetch(`/api/calendar/proposals/${encodeURIComponent(id)}/confirm`, jsonInit(edits))
+  if (!res.ok) throw await writeErrorFromResponse(res)
+  return (await res.json()) as ProposalConfirmResult
+}
+
+export async function cancelProposal(id: string): Promise<void> {
+  const res = await apiFetch(`/api/calendar/proposals/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+  if (!res.ok) throw await writeErrorFromResponse(res)
+}
+
+export async function undoEvent(eventId: string): Promise<void> {
+  const res = await apiFetch(`/api/calendar/events/${encodeURIComponent(eventId)}/undo`, { method: 'POST' })
+  if (!res.ok) throw await writeErrorFromResponse(res)
+}
