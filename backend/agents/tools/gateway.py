@@ -249,8 +249,11 @@ class ToolGateway:
                     "host_key_status", "secret_set")
             return {"ok": True, "result": [{k: c.get(k) for k in keep if k in c} for c in conns]}
         if tool == "propose_plan":
+            is_kube = str(getattr(agent, "type", "") or "") == "kube_doctor"
             try:
-                plan = await svc.propose(agent_id, args)
+                if is_kube:
+                    args = await self._kube_runbook_args(args)
+                plan = await svc.propose(agent_id, args, guard="kube" if is_kube else None)
             except InfraInputError as exc:
                 return {"ok": False, "denied_reason": f"plan_invalid: {exc}"[:200]}
             log.info("agent_tools.call", agent_id=agent_id, server="infra", tool=tool)
@@ -263,6 +266,27 @@ class ToolGateway:
         if "denied_reason" in outcome:
             return outcome
         return {"ok": True, "result": outcome}
+
+    async def _kube_runbook_args(self, args: dict[str, Any]) -> dict[str, Any]:
+        """kube_doctor: refuse while diagnose-only, expand ``args["runbook"]`` into steps."""
+        from backend.agents.tools.nerve import NerveToolError
+        from backend.infra.service import InfraInputError
+
+        if self.nerve is None or await self.nerve.kube_first_run():
+            raise InfraInputError("first_run: diagnose only, enable proposals first")
+        runbook = args.get("runbook")
+        if runbook is None:
+            return args
+        try:
+            steps = await self.nerve.expand_runbook(runbook)
+        except NerveToolError as exc:
+            raise InfraInputError(exc.reason) from None
+        extra = args.get("steps") or []
+        if not isinstance(extra, list):
+            raise InfraInputError("steps: a list")
+        merged = {k: v for k, v in args.items() if k != "runbook"}
+        merged["steps"] = steps + extra
+        return merged
 
     @staticmethod
     def _audit_fetch(agent_id: str, host: str, outcome: str, reason: str) -> None:

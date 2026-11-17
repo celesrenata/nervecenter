@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, Integer, String, func
+from sqlalchemy import Boolean, DateTime, Integer, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, Jsonb, UUIDv4
@@ -36,6 +36,11 @@ class KubeSettings(Base):
                                                  default="/volume1/Kubernetes")
     daily_run_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
     issue_cooldown_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
+    #: Optional Prometheus base URL (prometheus-service); null = not used
+    prometheus_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    #: True until the owner enables proposals: the agent only diagnoses (FEAT-004 clears it)
+    diagnose_only_until_first_report: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true")
     last_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_waste_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     updated_by: Mapped[str | None] = mapped_column(String(200), nullable=True)

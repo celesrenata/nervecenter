@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -382,6 +383,237 @@ class NerveTools:
             {k: (_clip(r.get(k), 160) if k == "reason" else r.get(k)) for k in keep}
             | {"targets": (r.get("targets") or [])[:4]} for r in rows],
             "limits": await svc.settings()}, ("scans",))
+
+    # -- kube agent (NS-ADR-120): read-only; modes come from the backend, never the model ----------
+    KUBE_KINDS = ("pod", "pvc", "pv", "node", "deploy", "statefulset", "daemonset", "job",
+                  "cronjob", "svc", "ingress", "event", "volumes.longhorn.io", "certificate")
+    KUBE_CLUSTER_KINDS = ("pv", "node")
+    KUBE_MODE_NOTES = {
+        "known_down": "known down on purpose: report only, never change",
+        "diagnose_only": "protected namespace: report only, do not propose changes",
+        "override_active": "protected namespace with an active owner override for this issue",
+        "normal": "",
+    }
+
+    async def _kube(self) -> tuple[Any, Any, str]:
+        from backend.infra.service import get_service as infra_service
+        from backend.kube.store import get_services, kubernetes_connector
+        if self._app is None:
+            raise NerveToolError("unconfigured")
+        kube, infra = get_services(self._app), infra_service(self._app)
+        if kube is None or infra is None:
+            raise NerveToolError("unconfigured")
+        connector = await kubernetes_connector(infra)
+        if connector is None:
+            raise NerveToolError("no_kubernetes_connector")
+        return kube, infra, connector
+
+    async def _kube_mode(self, kube: Any, namespace: str, issue_key: str | None = None) -> str:
+        from backend.kube.settings import classify_namespace
+        verdict = classify_namespace(namespace, await kube.settings.get(),
+                                     await kube.overrides.active(), issue_key)
+        return "diagnose_only" if verdict == "protected" else verdict
+
+    @staticmethod
+    def _kube_age(row: dict[str, Any] | None, minutes: int) -> bool:
+        stamp = row.get("created_at") if row else None
+        return isinstance(stamp, datetime) and (
+            datetime.now(UTC) - stamp < timedelta(minutes=minutes))
+
+    async def _t_kube_health(self, args: dict[str, Any]) -> Any:
+        from backend.kube.collector import collect_snapshot, snapshot_problems
+        kube, infra, connector = await self._kube()
+        stored = await kube.reports.latest("snapshot")
+        source = "stored"
+        if self._kube_age(stored, 15):
+            snap = dict(stored["data"])
+        else:
+            snap = await collect_snapshot(infra, connector)
+            await kube.reports.add("snapshot", snap)
+            source = "fresh"
+        settings, overrides = await kube.settings.get(), await kube.overrides.active()
+        from backend.kube.settings import classify_namespace
+        issues = []
+        for p in snapshot_problems(snap):
+            verdict = classify_namespace(p["namespace"], settings, overrides, p["key"])
+            mode = "diagnose_only" if verdict == "protected" else verdict
+            extra = {k: v for k, v in p.items() if k not in
+                     ("key", "kind", "namespace", "name", "reason", "severity")}
+            row = {"key": p["key"], "kind": p["kind"], "namespace": p["namespace"],
+                   "name": p["name"], "reason": p["reason"], "severity": p["severity"],
+                   "mode": mode, "detail": _clip(json.dumps(extra, default=str), 160)}
+            if self.KUBE_MODE_NOTES.get(mode):
+                row["note"] = self.KUBE_MODE_NOTES[mode]
+            issues.append(row)
+        issues.sort(key=lambda r: (r["severity"] != "critical", r["mode"] != "normal"))
+        events = [{k: _clip(e.get(k), 120) for k in ("namespace", "object", "reason", "message")}
+                  | {"count": e.get("count")} for e in (snap.get("events") or [])[:8]]
+        return self._shrink({
+            "source": source, "collected_at": snap.get("collected_at"),
+            "namespaces": snap.get("namespaces"), "issue_count": len(issues),
+            "issues": issues, "warning_events": events,
+            "warnings": [_clip(w, 120) for w in (snap.get("warnings") or [])[:5]],
+        }, ("issues", "warning_events"))
+
+    async def _kube_read(self, args: list[str]) -> str:
+        from backend.infra.policy import _REDACTIONS
+        _, infra, connector = await self._kube()
+        res = await infra.run_read(connector, {"args": args})
+        if not res.get("ok"):
+            raise NerveToolError(str(res.get("denied_reason") or "read_failed")[:60])
+        text = str(res.get("output") or "")
+        for pattern, repl in _REDACTIONS:  # not redact(): its cut would drop the Events tail
+            text = pattern.sub(repl, text)
+        return text
+
+    @staticmethod
+    def _kube_name(args: dict[str, Any], key: str) -> str:
+        value = _text(args, key, required=True, limit=253)
+        if not re.fullmatch(r"[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?", value):
+            raise NerveToolError(f"bad_{key}")
+        return value
+
+    async def _t_kube_describe(self, args: dict[str, Any]) -> Any:
+        kind = _text(args, "kind", required=True, limit=40).lower()
+        if kind not in self.KUBE_KINDS:
+            raise NerveToolError("kind_not_allowed")
+        name = self._kube_name(args, "name")
+        kube, _, _ = await self._kube()
+        cmd = ["describe", kind, name]
+        namespace = ""
+        if kind not in self.KUBE_CLUSTER_KINDS:
+            namespace = _text(args, "namespace", limit=63) or (
+                "longhorn-system" if kind == "volumes.longhorn.io" else "")
+            if not namespace:
+                raise NerveToolError("namespace_required")
+            cmd += ["-n", self._kube_name({"namespace": namespace}, "namespace")]
+        text = await self._kube_read(cmd)
+        truncated = len(text) > RESULT_BUDGET
+        if truncated:  # keep the head and the Events section at the end
+            text = text[:1_800] + "\n[... middle cut ...]\n" + text[-(RESULT_BUDGET - 1_900):]
+        mode = await self._kube_mode(kube, namespace) if namespace else "normal"
+        out = {"kind": kind, "name": name, "namespace": namespace, "mode": mode,
+               "truncated": truncated, "text": text}
+        if self.KUBE_MODE_NOTES.get(mode):
+            out["note"] = self.KUBE_MODE_NOTES[mode]
+        return out
+
+    async def _t_kube_logs(self, args: dict[str, Any]) -> Any:
+        namespace = self._kube_name(args, "namespace")
+        pod = self._kube_name(args, "pod")
+        tail = _int(args, "tail", 100, 1, 300)
+        cmd = ["logs", pod, "-n", namespace, f"--tail={tail}"]
+        container = _text(args, "container", limit=63)
+        if container:
+            cmd += ["-c", self._kube_name({"container": container}, "container")]
+        previous = args.get("previous") is True
+        if previous:
+            cmd.append("--previous")
+        kube, _, _ = await self._kube()
+        text = await self._kube_read(cmd)
+        truncated = len(text) > RESULT_BUDGET
+        mode = await self._kube_mode(kube, namespace)
+        out = {"pod": pod, "namespace": namespace, "container": container, "previous": previous,
+               "tail": tail, "mode": mode, "truncated": truncated,
+               "text": text[-RESULT_BUDGET:]}  # the newest lines matter most
+        if self.KUBE_MODE_NOTES.get(mode):
+            out["note"] = self.KUBE_MODE_NOTES[mode]
+        return out
+
+    async def _t_kube_waste(self, args: dict[str, Any]) -> Any:
+        from backend.kube.waste import collect_waste
+        kube, infra, connector = await self._kube()
+        stored = await kube.reports.latest("waste")
+        if self._kube_age(stored, 26 * 60):
+            report, source = dict(stored["data"]), "stored"
+        else:
+            url = (await kube.settings.get()).get("prometheus_url")
+            report, source = await collect_waste(infra, connector, url), "fresh"
+            await kube.reports.add("waste", report)
+        sections = ("idle_pods", "oversized_pods", "unused_pvcs", "orphaned_pvs",
+                    "restarting_pods", "crash_loop_burn")
+        while len(json.dumps(report, default=str)) > RESULT_BUDGET:
+            key = max(sections, key=lambda k: len((report.get(k) or {}).get("items") or []))
+            items = (report.get(key) or {}).get("items") or []
+            if not items:
+                break
+            report[key] = {**report[key], "items": items[:-1]}
+            report["truncated"] = True
+        return {"source": source, **report}
+
+    async def _t_kube_known_down(self, args: dict[str, Any]) -> Any:
+        kube, _, _ = await self._kube()
+        settings = await kube.settings.get()
+        overrides = [{"issue_key": o["issue_key"], "namespace": o["namespace"],
+                      "expires_at": o["expires_at"].isoformat()
+                      if hasattr(o["expires_at"], "isoformat") else o["expires_at"]}
+                     for o in await kube.overrides.active()]
+        first_run = bool(settings.get("diagnose_only_until_first_report", True))
+        return {
+            "known_down": settings["known_down"],
+            "protected_namespaces": settings["protected_namespaces"],
+            "active_overrides": overrides[:20], "override_hours": settings["override_hours"],
+            "first_run": first_run,
+            "note": ("first_run is true: diagnose only, do not call propose_plan" if first_run
+                     else "Known-down namespaces are never changed; protected namespaces only "
+                          "for an issue listed in active_overrides."),
+        }
+
+    async def _t_kube_runbook(self, args: dict[str, Any]) -> Any:
+        from backend.kube import skeleton
+        from backend.kube.runbooks import new_stamp
+        kube, infra, connector = await self._kube()
+        runbook = {k: v for k, v in args.items() if k != "issue_key"}
+        runbook.setdefault("stamp", new_stamp())
+        if "dbtype" in runbook and runbook.get("kind") is None:
+            runbook["kind"] = "backup"
+        ssh = await self._kube_ssh(infra, runbook.pop("ssh_connector", None))
+        settings = await kube.settings.get()
+        try:
+            steps = skeleton.build_steps(runbook, settings, connector, ssh)
+        except skeleton.RunbookError as exc:
+            raise NerveToolError(f"runbook_invalid: {exc}"[:120]) from None
+        if ssh:
+            runbook["ssh_connector"] = ssh
+        out: dict[str, Any] = {
+            "issue_key": _text(args, "issue_key", limit=300), "connector": connector,
+            "runbook": runbook, "step_count": len(steps),
+            "steps": skeleton.summarize(steps),
+            "use": "In propose_plan pass {\"runbook\": <the runbook object above>, \"title\", "
+                   "\"summary\", \"issue_key\", \"verify\", \"rollback\"}; the system fills in "
+                   "the step manifests. Extra steps go in \"steps\" and get indexes after these.",
+        }
+        if not ssh and any("mkdir" in str(s.get("command", "")) or s.get("kind") == "backup"
+                           for s in steps):
+            out["backup_directory"] = "No ssh connector was named: ask the owner to create the " \
+                "backups directory on the NAS before the backup steps run."
+        return self._shrink(out, ("steps",))
+
+    async def _kube_ssh(self, infra: Any, name: Any) -> str | None:
+        if not isinstance(name, str) or not name:
+            return None
+        found = [c for c in await infra.list_connectors()
+                 if c.get("kind") == "ssh" and c.get("name") == name]
+        return name if found else None
+
+    async def kube_first_run(self) -> bool:
+        """True while the owner has not enabled proposals (also when settings are unreadable)."""
+        try:
+            kube, _, _ = await self._kube()
+            return bool((await kube.settings.get()).get("diagnose_only_until_first_report", True))
+        except NerveToolError:
+            return True
+
+    async def expand_runbook(self, runbook: Any) -> list[dict[str, Any]]:
+        """Steps of a ``runbook`` object in ``propose_plan`` (same arguments as kube_runbook)."""
+        from backend.kube import skeleton
+        kube, infra, connector = await self._kube()
+        spec = dict(runbook) if isinstance(runbook, dict) else {}
+        ssh = await self._kube_ssh(infra, spec.pop("ssh_connector", None))
+        try:
+            return skeleton.build_steps(spec, await kube.settings.get(), connector, ssh)
+        except skeleton.RunbookError as exc:
+            raise NerveToolError(f"runbook_invalid: {exc}"[:120]) from None
 
     # -- incidents, events, changes ----------------------------------------------------------
     async def _t_incidents_list(self, args: dict[str, Any]) -> Any:

@@ -97,7 +97,12 @@ INFRA_HELP = (
     '"args": ["rollout", "restart", "deploy/x", "-n", "ns"], "purpose": "..."}, '
     '{"connector": "<ssh name>", "command": "sudo systemctl restart foo", "purpose": "..."}], '
     '"verify": [{"connector": "<name>", "args": ["get", "pods", "-n", "ns"]}], '
-    '"rollback": "how to undo"}}. Nothing runs until the owner approves it.'
+    '"rollback": "how to undo"}}. Nothing runs until the owner approves it.\n'
+    "Optional step fields (kube plans): \"kind\" (read, change, backup, backup_verify, repair, "
+    "restore), \"requires\" (earlier step indexes that must have succeeded), "
+    "\"on_failure_of\" (runs only when those steps failed), \"rollback\" (one sentence to undo "
+    "that step). Optional plan field: \"issue_key\" (the issue this plan fixes). A plan may "
+    "carry \"runbook\": the object from nerve/kube_runbook; the system then writes the steps."
 )
 
 
@@ -132,6 +137,20 @@ NERVE_ARGS = {
     "first planned slice; never write a target list yourself; refused outside the "
     "owner-approved allowlist)",
     "pentest_scan_status": '{"scan_id": "<optional>"} (the scan ledger, or one scan)',
+    "kube_health": "{} (open cluster problems with mode: known_down, diagnose_only, "
+    "override_active or normal; read-only)",
+    "kube_describe": '{"kind": "pod", "name": "...", "namespace": "..."} (kinds: pod, pvc, pv, '
+    "node, deploy, statefulset, daemonset, job, cronjob, svc, ingress, event, "
+    "volumes.longhorn.io, certificate; never Secrets; read-only)",
+    "kube_logs": '{"namespace": "...", "pod": "...", "container": "", "previous": false, '
+    '"tail": 100} (1 to 300 lines; read-only)',
+    "kube_waste": "{} (idle and over-sized pods, unused PVCs, orphaned PVs, restart churn; "
+    "read-only)",
+    "kube_known_down": "{} (known-down and protected namespaces, active overrides, first_run)",
+    "kube_runbook": '{"kind": "mysql_repair|redis_repair|postgres|nextcloud_upgrade|crashloop|'
+    'imagepull|pvc|backup", "namespace": "...", "workload": "...", "pod": "...", '
+    '"dbtype": "mysql|postgres|redis", "issue_key": "..."} (a step skeleton to pass to '
+    "propose_plan as runbook; read-only, nothing runs)",
     "resources_list": "{} (files the owner linked to you; empty when none)",
     "resources_read": '{"resource_id": "...", "offset": 0, "limit": 5000} (text files only, '
     "5,000 characters per page)",

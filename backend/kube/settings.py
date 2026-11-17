@@ -16,6 +16,7 @@ from backend.persistence.models.kube import KubeOverride, KubeSettings
 
 DNS_LABEL = re.compile(r"^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$")
 _HOST = re.compile(r"^[A-Za-z0-9]([A-Za-z0-9.-]{0,198}[A-Za-z0-9])?$")
+_URL = re.compile(r"^https?://[A-Za-z0-9._:-]+(/[A-Za-z0-9._/-]*)?$")
 _PATH = re.compile(r"^/[A-Za-z0-9._/-]{0,250}$")
 MAX_LIST = 100
 _INT_RANGES = {
@@ -44,6 +45,8 @@ def _row_dict(row: KubeSettings) -> dict[str, Any]:
         "retention_weekly": row.retention_weekly, "backup_nfs_server": row.backup_nfs_server,
         "backup_nfs_base": row.backup_nfs_base, "daily_run_cap": row.daily_run_cap,
         "issue_cooldown_hours": row.issue_cooldown_hours,
+        "prometheus_url": row.prometheus_url,
+        "diagnose_only_until_first_report": bool(row.diagnose_only_until_first_report),
         "last_check_at": _utc(row.last_check_at), "last_waste_at": _utc(row.last_waste_at),
         "updated_by": row.updated_by, "updated_at": _utc(row.updated_at),
     }
@@ -81,6 +84,15 @@ def validate_patch(patch: Any) -> dict[str, Any]:
         elif key == "backup_nfs_server":
             if not isinstance(value, str) or not _HOST.match(value):
                 raise KubeSettingsError("backup_nfs_server: a host name or address")
+            out[key] = value
+        elif key == "prometheus_url":
+            if value is not None and (not isinstance(value, str) or len(value) > 300
+                                      or not _URL.match(value)):
+                raise KubeSettingsError("prometheus_url: an http(s) address or null")
+            out[key] = value.rstrip("/") if value else None
+        elif key == "diagnose_only_until_first_report":
+            if not isinstance(value, bool):
+                raise KubeSettingsError(f"{key}: true or false")
             out[key] = value
         elif key == "backup_nfs_base":
             if not isinstance(value, str) or not _PATH.match(value) or ".." in value:
