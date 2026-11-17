@@ -318,3 +318,64 @@ export async function undoEvent(eventId: string): Promise<void> {
   const res = await apiFetch(`/api/calendar/events/${encodeURIComponent(eventId)}/undo`, { method: 'POST' })
   if (!res.ok) throw await writeErrorFromResponse(res)
 }
+
+// -- Ask calendar deletion ------------------------------------------------------
+
+export interface DeletionRow {
+  id: string
+  kind: 'single' | 'series'
+  title: string
+  start: string | null
+  end: string | null
+  all_day?: boolean
+  account: { id: string; label: string; can_write: boolean; connection_id?: string | null }
+  confidence: 'strong' | 'possible'
+  selected: boolean
+  repeats: string | null
+  next_dates: Array<string | null>
+  upcoming_count: number
+  upcoming_capped: boolean
+  path: 'delete' | 'series_end' | 'series_deleted' | 'series_removed'
+  path_label: string
+  fallback: { count: number; until: string; max_instances: number } | null
+}
+
+export interface CalendarDeletionProposal {
+  id: string
+  person: string
+  scope: 'all_future' | 'next' | 'date' | 'ambiguous'
+  scope_choices: Array<{ id: string; label: string }>
+  rows: DeletionRow[]
+  expires_at?: string
+  requires_confirmation: boolean
+  limits?: { max_instances: number; horizon_days: number }
+}
+
+export interface DeletionRowResult {
+  id: string
+  title: string
+  status: 'deleted' | 'series_ended' | 'instances_deleted' | 'not_found' | 'failed'
+  path?: string
+  detail: string
+}
+
+export interface DeletionConfirmResult {
+  status: 'done'
+  proposal_id: string
+  results: DeletionRowResult[]
+  summary: string
+}
+
+export async function confirmDeletion(
+  id: string,
+  body: { item_ids: string[]; scope?: string | null },
+): Promise<DeletionConfirmResult> {
+  const res = await apiFetch(`/api/calendar/deletions/${encodeURIComponent(id)}/confirm`, jsonInit(body))
+  if (!res.ok) throw await writeErrorFromResponse(res)
+  return (await res.json()) as DeletionConfirmResult
+}
+
+export async function cancelDeletion(id: string): Promise<void> {
+  const res = await apiFetch(`/api/calendar/deletions/${encodeURIComponent(id)}/cancel`, { method: 'POST' })
+  if (!res.ok) throw await writeErrorFromResponse(res)
+}

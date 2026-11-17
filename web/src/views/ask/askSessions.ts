@@ -11,7 +11,7 @@
 import { ApiError, apiFetch } from '../../api/client'
 import { postAskStream } from '../../api/askStream'
 import { voiceApi, VoiceApiError } from '../../api/voice'
-import type { CalendarProposal } from '../../api/calendar'
+import type { CalendarDeletionProposal, CalendarProposal } from '../../api/calendar'
 import { SpeechQueue } from '../../voice/SpeechQueue'
 
 export interface EvidenceItem {
@@ -29,6 +29,16 @@ interface AskResponse {
   reasoning?: string
 }
 
+/** A record Ask cited: real title, domain and date, and the screen it lives on. */
+export interface AskSource {
+  id: string
+  domain: string
+  title: string
+  when?: string | null
+  snippet?: string
+  link?: string | null
+}
+
 export interface ChatMessage {
   id: string
   role: 'user' | 'assistant' | 'system'
@@ -36,6 +46,9 @@ export interface ChatMessage {
   timestamp: string
   provenance?: { facts: EvidenceItem[]; hypotheses: EvidenceItem[]; reasoning?: string }
   proposal?: CalendarProposal
+  deleteProposal?: CalendarDeletionProposal
+  /** Records the answer cites (the ids in the answer's [..] markers). */
+  sources?: AskSource[]
   /** Event Ask created directly (confirm-first off); offers Undo. */
   undoEventId?: string
   /** Transient progress while the server waits on a busy model. */
@@ -420,6 +433,8 @@ export const askSessions = {
             patch((m) => ({ ...m, status: undefined, content: m.content + ev.data.text }))
           } else if (ev.type === 'proposal') {
             patch((m) => ({ ...m, proposal: ev.data }))
+          } else if (ev.type === 'delete_proposal') {
+            patch((m) => ({ ...m, deleteProposal: ev.data }))
           } else if (ev.type === 'done') {
             finished = true
             q.end()
@@ -431,7 +446,9 @@ export const askSessions = {
               status?: string
               policy?: { reason?: string }
               undo?: { event_id?: string }
+              records?: AskSource[]
             }
+            const sources = Array.isArray(data.records) && data.records.length > 0 ? data.records : undefined
             const undoEventId =
               data.status === 'created' && typeof data.undo?.event_id === 'string' ? data.undo.event_id : undefined
             let content: string
@@ -454,6 +471,7 @@ export const askSessions = {
               status: undefined,
               content,
               ...(undoEventId ? { undoEventId } : {}),
+              ...(sources ? { sources } : {}),
               provenance: Array.isArray(data.facts)
                 ? {
                     facts: data.facts,

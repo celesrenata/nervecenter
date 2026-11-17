@@ -155,7 +155,7 @@ async def _retrieval(
     action, and unless the transport is the secure local route (NS-ADR-108):
     personal records never go to any other transport.
     """
-    if calendar is not None or not svc.personal_allowed:
+    if calendar is not None or not svc.personal_allowed or not svc.transport_available:
         return None
     if body.context is not None and body.context.fixture_refs:
         return None

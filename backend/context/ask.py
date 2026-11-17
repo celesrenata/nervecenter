@@ -711,8 +711,6 @@ class AskService:
             outcome.body["inference"] = audit
             return outcome
 
-        if (missing := self._not_found_outcome(request_id, question, audit, decision, package, retrieval)):
-            return missing
 
         if not self.transport_available:
             exc = OmniRouteUnavailableError(
@@ -722,6 +720,9 @@ class AskService:
             outcome = self._unavailable_body(request_id, exc, package)
             outcome.body["inference"] = audit
             return outcome
+
+        if (missing := self._not_found_outcome(request_id, question, audit, decision, package, retrieval)):
+            return missing
 
         calendar_outcome = self._calendar_outcome(
             request_id=request_id,
@@ -881,11 +882,6 @@ class AskService:
             outcome.body["inference"] = audit
             yield "done", outcome.body
             return
-        missing = self._not_found_outcome(request_id, question, audit, decision, package, retrieval)
-        if missing is not None:
-            yield "delta", {"text": missing.body["answer"]}
-            yield "done", missing.body
-            return
         if not self.transport_available:
             exc = OmniRouteUnavailableError(
                 [(provider, model)], {(provider, model): "no transport configured"}
@@ -893,6 +889,11 @@ class AskService:
             outcome = self._unavailable_body(request_id, exc, package)
             outcome.body["inference"] = audit
             yield "done", outcome.body
+            return
+        missing = self._not_found_outcome(request_id, question, audit, decision, package, retrieval)
+        if missing is not None:
+            yield "delta", {"text": missing.body["answer"]}
+            yield "done", missing.body
             return
 
         try:

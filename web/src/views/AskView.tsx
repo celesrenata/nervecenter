@@ -1,7 +1,9 @@
 import { useState, useEffect, useSyncExternalStore } from 'react'
+import { Link } from 'react-router-dom'
 import { voiceApi } from '../api/voice'
 import { CatalogPicker } from '../components/CatalogPicker'
 import { CalendarProposalCard, CreatedEventUndo } from '../components/CalendarProposalCard'
+import { CalendarDeletionCard } from '../components/CalendarDeletionCard'
 import { useVoiceRecorder, isRecordingSupported } from '../voice/useVoiceRecorder'
 import { inferenceApi, type AvailableInference } from '../api/inference'
 import { agentsApi, type Agent } from '../api/agents'
@@ -224,6 +226,31 @@ const AskView = () => {
                   </p>
                 )}
                 {message.proposal && <CalendarProposalCard proposal={message.proposal} />}
+                {message.deleteProposal && <CalendarDeletionCard proposal={message.deleteProposal} />}
+                {message.sources && message.sources.length > 0 && (
+                  <div data-testid="ask-sources" className="mt-3 pt-2 border-t border-line">
+                    <div className="text-xs font-semibold mb-1">Sources</div>
+                    <ul className="space-y-1">
+                      {message.sources.map((src) => (
+                        <li key={src.id} data-testid="ask-source" className="text-xs">
+                          <span className="rounded bg-elevated px-1.5 py-0.5 mr-1 text-muted">
+                            {src.domain.replace('_', ' ')}
+                          </span>
+                          {src.link ? (
+                            <Link to={src.link} className="underline" data-testid="ask-source-link">
+                              {src.title}
+                            </Link>
+                          ) : (
+                            src.title
+                          )}
+                          {src.when && (
+                            <span className="text-muted"> · {new Date(src.when).toLocaleDateString()}</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 {message.undoEventId && <CreatedEventUndo eventId={message.undoEventId} />}
                 <p className="text-xs mt-2 opacity-70">
                   {new Date(message.timestamp).toLocaleTimeString()}
