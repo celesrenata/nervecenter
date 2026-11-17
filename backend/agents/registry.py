@@ -601,9 +601,11 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "scopes\", say the gateway key lacks that scope; do not retry it.\n"
                 "- omniroute/omniroute_get_health {}: gateway health.\n"
                 "- sequential-thinking/sequentialthinking.",
-                "1. Round 1: omniroute_get_health and omniroute_list_combos.\n"
+                "At most 3 calls run per round; never repeat a call you already made.\n"
+                "1. Round 1: omniroute_get_health, omniroute_list_combos and "
+                "omniroute_cost_report with period day.\n"
                 "2. Round 2: omniroute_get_combo_metrics for up to 3 enabled combos (use "
-                "their ids), plus omniroute_cost_report with period day and omniroute_check_quota.\n"
+                "their ids). Round 3: omniroute_check_quota.\n"
                 "3. Compare in a table (combo or provider, latency, error rate, cost). Name "
                 "the slowest, the least reliable and the most expensive, and say whether the "
                 "gap is large enough to act on.\n"
