@@ -36,6 +36,7 @@ log = structlog.get_logger(__name__)
 DISABLE_ENV = "NERVE_AGENT_RUNNER_DISABLED"
 _THROTTLE_MARKERS = ("http_429", "http_502", "http_503", "http_504", "timeout", "queue")
 DAILY_GRACE = timedelta(minutes=30)
+MIN_REPORT_CHARS = 40  # a shorter final output is not a report
 
 #: ``infer(agent, prompt) -> {"content", "input_tokens", "output_tokens", "e2e_latency_ms"}``
 Infer = Callable[[Any, str], Awaitable[dict[str, Any]]]
@@ -46,6 +47,8 @@ class AgentMissingError(Exception):
     """The agent id does not resolve to a persisted instance."""
 
 
+class NoReportError(Exception):
+    """The run ended without a usable final output."""
 class AgentBusyError(Exception):
     """The agent already has a run in flight."""
 
@@ -251,6 +254,8 @@ class AgentRunner:
                 result = await run_with_tools(
                     lambda text: self.infer(agent, text), prompt, self.tools, agent, on_event
                 )
+                if len(str(result.get("content") or "").strip()) < MIN_REPORT_CHARS:
+                    raise NoReportError("no report produced")
             except Exception as exc:  # noqa: BLE001 - recorded, never raised
                 finished = self._clock()
                 if _is_throttle(exc):

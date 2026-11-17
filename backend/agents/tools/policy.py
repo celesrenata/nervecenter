@@ -94,8 +94,8 @@ NERVE_AGENT_TOOLS: MappingProxyType[str, frozenset[str]] = MappingProxyType(
         ),
         "research_agent": frozenset({"resources_list", "resources_read"}),
         "pentest": frozenset(
-            {"pentest_scope", "pentest_exposure", "pentest_findings", "pentest_scan_start",
-             "pentest_scan_status", "resources_list", "resources_read", "task_create",
+            {"pentest_scope", "pentest_exposure", "pentest_findings", "pentest_scan_plan",
+             "pentest_scan_start", "pentest_scan_status", "resources_list", "resources_read", "task_create",
              "task_update"}
         ),
     }

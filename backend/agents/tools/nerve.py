@@ -336,21 +336,34 @@ class NerveTools:
     async def _t_pentest_scan_start(self, agent: Any, args: dict[str, Any]) -> Any:
         from backend.pentest.scans import ScanRefused, get_service
 
+        svc = self._pentest(get_service)
         targets = args.get("targets")
-        if not isinstance(targets, list) or not targets or len(targets) > 16 \
+        slice_id = args.get("slice")
+        if targets is None:
+            if slice_id is not None and not (isinstance(slice_id, str) and len(slice_id) <= 32):
+                raise NerveToolError("bad_arguments")
+            targets = await svc.resolve_slice(slice_id or None)
+            if not targets:
+                raise NerveToolError("slice_not_found" if slice_id else "nothing_to_scan")
+        elif slice_id is not None or not isinstance(targets, list) or not targets \
+                or len(targets) > 16 \
                 or not all(isinstance(t, str) and len(t) <= 64 for t in targets):
             raise NerveToolError("bad_arguments")
         ports = args.get("scan_tcp_ports")
         if ports is not None and not isinstance(ports, bool):
             raise NerveToolError("bad_arguments")
         try:
-            row = await self._pentest(get_service).start(PENTEST_ACTOR, targets, ports)
+            row = await svc.start(PENTEST_ACTOR, targets, ports)
         except ScanRefused as exc:
             raise NerveToolError(f"scan_refused_{exc.kind}") from None
         return {"scan_id": row.get("id"), "status": row.get("status"),
                 "targets": row.get("targets"),
                 "note": "Started. Poll pentest_scan_status; do not start another."}
 
+    async def _t_pentest_scan_plan(self, args: dict[str, Any]) -> Any:
+        from backend.pentest.scans import get_service
+        plan = await self._pentest(get_service).plan(10)
+        return self._shrink(plan, ("slices",))
     async def _t_pentest_scan_status(self, args: dict[str, Any]) -> Any:
         from backend.pentest.scans import get_service
 

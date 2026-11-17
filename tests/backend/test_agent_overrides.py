@@ -38,7 +38,7 @@ def api(engine):
 
     async def infer(agent, prompt):
         prompts.append(prompt)
-        return {"content": f"report from {agent.id}", "input_tokens": 1, "output_tokens": 2}
+        return {"content": f"A complete report from {agent.id}, forty characters or more", "input_tokens": 1, "output_tokens": 2}
 
     app = FastAPI()
     app.include_router(runner_ep.router)
@@ -64,7 +64,7 @@ def test_builtin_run_now_records_history(api):
     c, prompts = api
     run = c.post("/api/agents/planner/run")
     assert run.status_code == 201 and run.json()["status"] == "completed"
-    assert run.json()["output"] == "report from planner"
+    assert run.json()["output"].startswith("A complete report from planner")
     assert PLANNER_PROMPT in prompts[0]
     history = c.get("/api/agents/planner/runs").json()["data"]
     assert [r["id"] for r in history] == [run.json()["id"]]

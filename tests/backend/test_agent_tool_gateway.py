@@ -11,7 +11,13 @@ import pytest
 
 from backend.agents.tools import ToolGateway, policy
 from backend.agents.tools.fetch_guard import FetchGuard
-from backend.agents.tools.protocol import MAX_ROUNDS, parse_calls, run_with_tools
+from backend.agents.tools.protocol import (
+    MAX_ROUNDS,
+    CutOffToolCall,
+    is_cut_off_call,
+    parse_calls,
+    run_with_tools,
+)
 
 HUB_TOKEN = "hub-token-value"
 
@@ -290,3 +296,32 @@ async def test_tool_loop_reports_progress_events_in_order() -> None:
         "model_call", "model_reply", "tool_call", "tool_result", "model_call", "model_reply"
     ]
     assert events[2][1] == "fetch.fetch" and events[-1][1] == "done"
+CUT_OFF = 'TOOL_CALL {"server": "nerve", "tool": "pentest_scan_start", "args": {"targets": ["10.1'
+async def test_a_tool_call_cut_off_at_the_reply_limit_is_retried_once() -> None:
+    mcp = Mcp()
+    prompts: list[str] = []
+    replies = iter([
+        {"content": "TOOL_CALL {\"", "output_tokens": 8192},
+        {"content": 'TOOL_CALL {"server":"fetch","tool":"fetch","args":{"url":"https://example.org"}}',
+         "output_tokens": 30},
+        {"content": "## Summary\nfine\n## Not checked\nnone", "output_tokens": 20},
+    ])
+    async def infer(prompt: str) -> dict[str, Any]:
+        prompts.append(prompt)
+        return {"input_tokens": 1, **next(replies)}
+    result = await run_with_tools(infer, "p", mcp.gateway(), AGENT)
+    assert "cut off in the middle of a TOOL_CALL" in prompts[1]
+    assert len(mcp.tool_calls()) == 1 and result["content"].endswith("none")
+    assert result["output_tokens"] == 8192 + 30 + 20
+async def test_a_tool_call_cut_off_twice_fails_the_run() -> None:
+    mcp = Mcp()
+    async def infer(prompt: str) -> dict[str, Any]:
+        return {"content": CUT_OFF, "input_tokens": 1, "output_tokens": 8192}
+    with pytest.raises(CutOffToolCall, match="cut off mid tool call"):
+        await run_with_tools(infer, "p", mcp.gateway(), AGENT)
+def test_cut_off_detection_needs_a_broken_call_that_hit_the_limit() -> None:
+    assert is_cut_off_call("TOOL_CALL {\"", 8192)
+    assert is_cut_off_call(CUT_OFF, 10)  # does not end in a closing brace
+    assert not is_cut_off_call('TOOL_CALL {"server":"a","tool":"b","args":{}}', 8192)
+    assert not is_cut_off_call("TOOL_CALL not json}", 10)  # complete but malformed: left alone
+    assert not is_cut_off_call("## Summary\nno calls here", 8192)

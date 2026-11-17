@@ -764,8 +764,13 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "- nerve/pentest_exposure: firewall risks and internet-facing hosts.\n"
                 "- nerve/pentest_findings {status, severity, offset, limit}: stored findings "
                 "with exposure tier, severity and sources.\n"
-                "- nerve/pentest_scan_start {targets, scan_tcp_ports}: start a network scan. "
-                "Refused outside the approved allowlist and by rate limits.\n"
+                "- nerve/pentest_scan_plan: the next scan-sized slices of the owner's ticked "
+                "hosts (counts and at most 10 slices). Read it before any scan.\n"
+                "- nerve/pentest_scan_start {slice}: start the slice with that id from "
+                "pentest_scan_plan (no argument = the first planned slice). Never write a list "
+                "of targets or CIDR ranges yourself; the allowlist can hold hundreds of "
+                "thousands of addresses. Refused outside the approved allowlist and by rate "
+                "limits.\n"
                 "- nerve/pentest_scan_status {scan_id}: the scan ledger or one scan.\n"
                 "- nerve/resources_list and nerve/resources_read: files the owner linked to you.\n"
                 "- nerve/task_create {title, description, priority}: a DRAFT task the owner "
@@ -774,13 +779,12 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 + _INFRA_TOOLS,
                 "1. Round 1: pentest_scope, pentest_exposure and pentest_findings (page 1) "
                 "together.\n"
-                "2. Round 2: pentest_scan_status, pentest_findings page 2 (offset), and at most 2 "
-                "infra/kubectl describe calls for the services that matter most. Start a scan "
-                "with pentest_scan_start only when the allowlist is approved and the last scan "
-                "is old; a refusal is a reason code, report it.\n"
-                "3. Round 3: create DRAFT tasks with task_create for fixes (at most 10) and, "
-                "for changes that need doing, at most 2 infra/propose_plan calls. Then stop "
-                "calling tools.\n"
+                "2. Round 2: pentest_scan_plan, pentest_scan_status and pentest_findings page 2 "
+                "(offset); three calls at most.\n"
+                "3. Round 3: when the plan has a pending slice, pentest_scan_start with its id "
+                "(or with no argument), plus at most 2 task_create DRAFT tasks for the most "
+                "important fixes. A refusal is a reason code, report it. Then stop calling "
+                "tools. Every round has at most 3 short tool calls; never list targets.\n"
                 "4. Final report: in Findings give, for every finding, severity, the Exposure "
                 "tier and the Sources (advisory ids or links from the tool result). Order by "
                 "severity. Say when exposure is unknown because no firewall config is imported.",
@@ -791,7 +795,7 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
             ),
             tools=[
                 "infra", "nerve.pentest_scope", "nerve.pentest_exposure",
-                "nerve.pentest_findings", "nerve.pentest_scan_start",
+                "nerve.pentest_findings", "nerve.pentest_scan_plan", "nerve.pentest_scan_start",
                 "nerve.pentest_scan_status", "nerve.resources_list", "nerve.resources_read",
                 "nerve.task_create", "nerve.task_update", "sequential-thinking",
             ],

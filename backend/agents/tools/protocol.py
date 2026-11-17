@@ -23,9 +23,12 @@ from backend.infra.policy import SSH_READ_COMMANDS
 MAX_ROUNDS = 3
 MAX_CALLS_PER_ROUND = 3
 RESULT_CHARS = 6_000
+#: A reply this long (output tokens) has hit the model's reply limit (8,192 on the routes in use).
+CUT_OFF_TOKENS = 8_000
 
 _LINE = re.compile(r"^\s*TOOL_CALL\s+(\{.*\})\s*$", re.MULTILINE)
 _RESULT_LINE = re.compile(r"^\s*TOOL_RESULT\b", re.MULTILINE)
+_CALL_START = re.compile(r"^\s*TOOL_CALL\b.*$", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -63,6 +66,22 @@ def parse_calls(text: str) -> list[ToolCall]:
     return calls
 
 
+class CutOffToolCall(RuntimeError):
+    """The model's reply ended inside a TOOL_CALL, twice in a row."""
+def is_cut_off_call(text: str, output_tokens: int | None = None) -> bool:
+    """Whether the reply's last ``TOOL_CALL`` line is unparseable JSON and the reply was cut off.
+    Cut off means it reached the reply limit, or it does not end with a closing brace.
+    """
+    lines = _CALL_START.findall(strip_invented_results(text or ""))
+    if not lines:
+        return False
+    last = lines[-1].strip()
+    try:
+        json.loads(last.removeprefix("TOOL_CALL").strip())
+        return False
+    except ValueError:
+        pass
+    return int(output_tokens or 0) >= CUT_OFF_TOKENS or not last.endswith("}")
 INFRA_HELP = (
     "Infrastructure (read-only; changes only through an approved plan):\n"
     '- TOOL_CALL {"server": "infra", "tool": "connectors", "args": {}} lists clusters/hosts.\n'
@@ -107,8 +126,11 @@ NERVE_ARGS = {
     "pentest_exposure": '{"limit": 20} (firewall risks and internet-facing hosts)',
     "pentest_findings": '{"status": "open", "severity": "high", "offset": 0, "limit": 12} '
     "(severity and exposure tier are computed, not yours to change)",
-    "pentest_scan_start": '{"targets": ["10.1.1.0/24"], "scan_tcp_ports": true} (refused outside '
-    "the owner-approved allowlist; at most one /24)",
+    "pentest_scan_plan": "{} (the next scan-sized slices from the owner's ticked selection, "
+    "counts and at most 10 slices; read-only)",
+    "pentest_scan_start": '{"slice": "<id from pentest_scan_plan>"} (no argument starts the '
+    "first planned slice; never write a target list yourself; refused outside the "
+    "owner-approved allowlist)",
     "pentest_scan_status": '{"scan_id": "<optional>"} (the scan ledger, or one scan)',
     "resources_list": "{} (files the owner linked to you; empty when none)",
     "resources_read": '{"resource_id": "...", "offset": 0, "limit": 5000} (text files only, '
@@ -193,6 +215,26 @@ async def run_with_tools(
     round_no = 1
     totals = {k: int(result.get(k) or 0) for k in ("input_tokens", "output_tokens")}
     latency = float(result.get("e2e_latency_ms") or 0)
+    async def mend(reply: dict[str, Any], base: str) -> dict[str, Any]:
+        """A reply cut off inside a TOOL_CALL is a failed round: ask once more, then fail."""
+        nonlocal round_no, latency
+        if not is_cut_off_call(str(reply.get("content", "")), reply.get("output_tokens")):
+            return reply
+        emit("model_retry", "Model reply was cut off mid tool call; asking for a short call")
+        again = (
+            f"{base}\n\nTOOL_RESULT: your last reply was cut off in the middle of a TOOL_CALL. "
+            "Write a short TOOL_CALL (one line, under 300 characters, no lists of targets or "
+            "addresses), or write the final Markdown report if you have enough."
+        )
+        round_no += 1
+        retry = await call_model(again, round_no)
+        for k in totals:
+            totals[k] += int(retry.get(k) or 0)
+        latency += float(retry.get("e2e_latency_ms") or 0)
+        if is_cut_off_call(str(retry.get("content", "")), retry.get("output_tokens")):
+            raise CutOffToolCall("model reply was cut off mid tool call")
+        return retry
+    result = await mend(result, current)
     for _ in range(MAX_ROUNDS):
         calls = parse_calls(strip_invented_results(str(result.get("content", ""))))
         if not calls:
@@ -216,6 +258,7 @@ async def run_with_tools(
         for k in totals:
             totals[k] += int(result.get(k) or 0)
         latency += float(result.get("e2e_latency_ms") or 0)
+        result = await mend(result, current)
     if parse_calls(strip_invented_results(str(result.get("content", "")))):
         # The round budget ran out while the model still wanted tools: ask for the report.
         current = (
@@ -228,6 +271,7 @@ async def run_with_tools(
         for k in totals:
             totals[k] += int(result.get(k) or 0)
         latency += float(result.get("e2e_latency_ms") or 0)
+        result = await mend(result, current)
     content = str(result.get("content", ""))
     if "## Summary" in content and "## Not checked" not in content:
         # The report started but was cut off (reply limit reached): ask once for a short one.

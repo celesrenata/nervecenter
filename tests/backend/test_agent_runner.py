@@ -156,7 +156,7 @@ async def test_scheduled_agent_runs_on_cadence_and_counts(engine):
         calls.append(prompt)
         if next(outcomes) == "boom":
             raise RuntimeError("model exploded")
-        return {"content": "report", "input_tokens": 3, "output_tokens": 4, "e2e_latency_ms": 120}
+        return {"content": "A complete report of at least forty characters. report", "input_tokens": 3, "output_tokens": 4, "e2e_latency_ms": 120}
 
     agent_id = await _make_agent(engine)
     runner = _runner(engine, infer, clock)
@@ -174,7 +174,7 @@ async def test_scheduled_agent_runs_on_cadence_and_counts(engine):
 
     runs = await runner.store.runs(agent_id)
     assert [r["status"] for r in runs] == ["completed", "failed", "completed"]
-    assert runs[0]["output"] == "report" and "model exploded" in runs[1]["error"]
+    assert runs[0]["output"].endswith(" report") and "model exploded" in runs[1]["error"]
 
     svc = AgentService(engine, session_factory=make_session_factory(engine))
     row = await svc.get(agent_id)
@@ -186,7 +186,7 @@ async def test_scheduled_starts_are_at_least_a_minute_apart(engine):
     ran: list[str] = []
     async def infer(agent, prompt):
         ran.append(agent.id)
-        return {"content": "ok", "e2e_latency_ms": 10}
+        return {"content": "A complete report of at least forty characters.", "e2e_latency_ms": 10}
     first = await _make_agent(engine)
     second = await _make_agent(engine, "a2")
     runner = _runner(engine, infer, clock)
@@ -202,7 +202,7 @@ async def test_scheduled_starts_are_at_least_a_minute_apart(engine):
 
 async def test_on_demand_run_and_missing_agent(engine):
     async def infer(agent, prompt):
-        return {"content": "hi", "input_tokens": 1, "output_tokens": 1}
+        return {"content": "A complete report of at least forty characters.", "input_tokens": 1, "output_tokens": 1}
 
     runner = _runner(engine, infer, FakeClock())
     agent_id = await _make_agent(engine)
@@ -374,7 +374,7 @@ async def test_run_records_skill_ids_and_revisions(engine):
 
     async def infer(agent, prompt):
         assert "guidance" in prompt
-        return {"content": "ok", "input_tokens": 1, "output_tokens": 1, "e2e_latency_ms": 5}
+        return {"content": "A complete report of at least forty characters.", "input_tokens": 1, "output_tokens": 1, "e2e_latency_ms": 5}
 
     hub = SkillHubClient(key="k", url="https://hub.test", transport=httpx.MockTransport(handler))
     agent_id = await _make_agent(engine)
@@ -391,7 +391,7 @@ async def test_unavailable_skill_hub_still_completes_the_run(engine):
         return httpx.Response(503)
 
     async def infer(agent, prompt):
-        return {"content": "ok", "input_tokens": 1, "output_tokens": 1, "e2e_latency_ms": 5}
+        return {"content": "A complete report of at least forty characters.", "input_tokens": 1, "output_tokens": 1, "e2e_latency_ms": 5}
 
     agent_id = await _make_agent(engine)
     runner = _runner(engine, infer, FakeClock())
@@ -405,7 +405,7 @@ async def test_unavailable_skill_hub_still_completes_the_run(engine):
 
 async def test_live_log_follows_a_run_and_polls_incrementally(engine):
     async def infer(agent, prompt):
-        return {"content": "## Report\n\n- all good", "input_tokens": 1, "output_tokens": 1}
+        return {"content": "## Report\n\n- all good, nothing needs attention today", "input_tokens": 1, "output_tokens": 1}
 
     runner = _runner(engine, infer, FakeClock())
     agent_id = await _make_agent(engine)
@@ -437,3 +437,11 @@ async def test_live_log_records_failures_and_keeps_recent_runs(engine):
     assert "model exploded" in view["events"][-1]["text"]
     older = view["runs"][-1]["run_key"]
     assert runner.live.view(agent_id, run_key=older)["run"]["run_key"] == older
+@pytest.mark.parametrize("content", ["", "TOOL_CALL {\"", "short"])
+async def test_a_run_without_a_report_is_failed_not_completed(engine, content):
+    async def infer(agent, prompt):
+        return {"content": content, "input_tokens": 1, "output_tokens": 1}
+    runner = _runner(engine, infer, FakeClock())
+    agent_id = await _make_agent(engine)
+    run = await runner.run_agent(agent_id, "on_demand")
+    assert run["status"] == "failed" and "no report produced" in run["error"]
