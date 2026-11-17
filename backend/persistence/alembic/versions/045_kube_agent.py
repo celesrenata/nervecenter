@@ -9,7 +9,7 @@ from alembic import op
 from sqlalchemy.dialects import postgresql
 
 revision = "045_kube_agent"
-down_revision = "044_pentest_tcp_ports"
+down_revision = "046_pentest_scope_guard"
 branch_labels = None
 depends_on = None
 
