@@ -1,0 +1,282 @@
+# Central log store for the cluster: Elasticsearch (single node, security on, 100Gi,
+# about 120 days), Kibana (cluster-internal only) and Fluent Bit (one pod per node).
+# NOT APPLIED. Review first; apply only with the owner's go-ahead:
+#   kubectl apply -f logservers.yaml
+# Create these Secrets first (values are never stored in git):
+#   kubectl -n logservers create secret generic elastic-credentials \
+#     --from-literal=ELASTIC_PASSWORD=<password for the elastic superuser>
+#   kubectl -n logservers create secret generic kibana-credentials \
+#     --from-literal=KIBANA_PASSWORD=<password you set for kibana_system>
+#   kubectl -n logservers create secret generic logs-reader-credentials \
+#     --from-literal=NERVE_LOGS_ES_USER=nervecenter_logs_reader \
+#     --from-literal=NERVE_LOGS_ES_PASSWORD=<password for the read-only user>
+# After Elasticsearch is up, run the es-setup Job once (index template, 120-day ILM
+# policy, kibana_system password and the read-only role/user used by NerveCenter's
+# logs_search tool). Kibana is a ClusterIP Service only; expose it only after asking.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: logservers
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: elasticsearch
+  namespace: logservers
+spec:
+  clusterIP: None
+  selector: {app: elasticsearch}
+  ports:
+    - {name: http, port: 9200}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: elasticsearch
+  namespace: logservers
+spec:
+  serviceName: elasticsearch
+  replicas: 1
+  selector:
+    matchLabels: {app: elasticsearch}
+  template:
+    metadata:
+      labels: {app: elasticsearch}
+    spec:
+      securityContext: {fsGroup: 1000}
+      containers:
+        - name: elasticsearch
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.15.3
+          env:
+            - {name: discovery.type, value: single-node}
+            - {name: xpack.security.enabled, value: "true"}
+            - {name: xpack.security.http.ssl.enabled, value: "false"}
+            - {name: ES_JAVA_OPTS, value: "-Xms2g -Xmx2g"}
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: elastic-credentials, key: ELASTIC_PASSWORD}
+          ports:
+            - {name: http, containerPort: 9200}
+          resources:
+            requests: {cpu: 500m, memory: 4Gi}
+            limits: {memory: 4Gi}
+          readinessProbe:
+            tcpSocket: {port: 9200}
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          volumeMounts:
+            - {name: data, mountPath: /usr/share/elasticsearch/data}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources:
+          requests: {storage: 100Gi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana
+  namespace: logservers
+spec:
+  type: ClusterIP
+  selector: {app: kibana}
+  ports:
+    - {name: http, port: 5601}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kibana
+  namespace: logservers
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: kibana}
+  template:
+    metadata:
+      labels: {app: kibana}
+    spec:
+      containers:
+        - name: kibana
+          image: docker.elastic.co/kibana/kibana:8.15.3
+          env:
+            - {name: ELASTICSEARCH_HOSTS, value: "http://elasticsearch.logservers.svc:9200"}
+            - {name: ELASTICSEARCH_USERNAME, value: kibana_system}
+            - name: ELASTICSEARCH_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: kibana-credentials, key: KIBANA_PASSWORD}
+          ports:
+            - {name: http, containerPort: 5601}
+          resources:
+            requests: {cpu: 200m, memory: 1Gi}
+            limits: {memory: 1536Mi}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: fluent-bit
+  namespace: logservers
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: fluent-bit-read
+rules:
+  - apiGroups: [""]
+    resources: [namespaces, pods]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: fluent-bit-read
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: fluent-bit-read
+subjects:
+  - {kind: ServiceAccount, name: fluent-bit, namespace: logservers}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fluent-bit-config
+  namespace: logservers
+data:
+  fluent-bit.conf: |
+    [SERVICE]
+        Flush        5
+        Parsers_File parsers.conf
+    [INPUT]
+        Name             tail
+        Path             /var/log/containers/*.log
+        multiline.parser docker, cri
+        Tag              kube.*
+        Mem_Buf_Limit    20MB
+        Skip_Long_Lines  On
+    [FILTER]
+        Name                kubernetes
+        Match               kube.*
+        Merge_Log           On
+        Keep_Log            On
+        K8S-Logging.Parser  Off
+        Buffer_Size         256k
+    [FILTER]
+        Name    grep
+        Match   kube.*
+        Exclude $kubernetes['namespace_name'] ^logservers$
+    [OUTPUT]
+        Name                es
+        Match               kube.*
+        Host                elasticsearch.logservers.svc
+        Port                9200
+        HTTP_User           elastic
+        HTTP_Passwd         ${ELASTIC_PASSWORD}
+        Logstash_Format     On
+        Logstash_Prefix     logs
+        Suppress_Type_Name  On
+        Replace_Dots        On
+        Retry_Limit         5
+  parsers.conf: |
+    [PARSER]
+        Name        json
+        Format      json
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluent-bit
+  namespace: logservers
+spec:
+  selector:
+    matchLabels: {app: fluent-bit}
+  template:
+    metadata:
+      labels: {app: fluent-bit}
+    spec:
+      serviceAccountName: fluent-bit
+      tolerations:
+        - {operator: Exists}
+      containers:
+        - name: fluent-bit
+          image: fluent/fluent-bit:3.1.9
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: elastic-credentials, key: ELASTIC_PASSWORD}
+          resources:
+            requests: {cpu: 50m, memory: 64Mi}
+            limits: {memory: 200Mi}
+          volumeMounts:
+            - {name: config, mountPath: /fluent-bit/etc}
+            - {name: varlog, mountPath: /var/log, readOnly: true}
+            - {name: containers, mountPath: /var/lib/docker/containers, readOnly: true}
+      volumes:
+        - name: config
+          configMap: {name: fluent-bit-config}
+        - name: varlog
+          hostPath: {path: /var/log}
+        - name: containers
+          hostPath: {path: /var/lib/docker/containers}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: es-setup-script
+  namespace: logservers
+data:
+  setup.sh: |
+    #!/bin/sh
+    set -eu
+    ES=http://elasticsearch.logservers.svc:9200
+    A="-u elastic:${ELASTIC_PASSWORD}"
+    until curl -sf $A "$ES/_cluster/health" >/dev/null; do sleep 5; done
+    # 120-day retention
+    curl -sf $A -X PUT "$ES/_ilm/policy/logs-120d" -H 'Content-Type: application/json' -d '{
+      "policy": {"phases": {"hot": {"actions": {}},
+        "delete": {"min_age": "120d", "actions": {"delete": {}}}}}}'
+    curl -sf $A -X PUT "$ES/_index_template/logs" -H 'Content-Type: application/json' -d '{
+      "index_patterns": ["logs-*"],
+      "template": {"settings": {"index.lifecycle.name": "logs-120d",
+        "number_of_shards": 1, "number_of_replicas": 0}}}'
+    # password for the kibana_system user
+    curl -sf $A -X POST "$ES/_security/user/kibana_system/_password" \
+      -H 'Content-Type: application/json' -d "{\"password\": \"${KIBANA_PASSWORD}\"}"
+    # read-only role and user for NerveCenter's logs_search tool
+    curl -sf $A -X PUT "$ES/_security/role/nervecenter_logs_reader" \
+      -H 'Content-Type: application/json' -d '{
+      "indices": [{"names": ["logs-*"], "privileges": ["read", "view_index_metadata"]}]}'
+    curl -sf $A -X PUT "$ES/_security/user/${NERVE_LOGS_ES_USER}" \
+      -H 'Content-Type: application/json' \
+      -d "{\"password\": \"${NERVE_LOGS_ES_PASSWORD}\", \"roles\": [\"nervecenter_logs_reader\"]}"
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: es-setup
+  namespace: logservers
+spec:
+  backoffLimit: 3
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: setup
+          image: curlimages/curl:8.10.1
+          command: ["/bin/sh", "/scripts/setup.sh"]
+          envFrom:
+            - secretRef: {name: logs-reader-credentials}
+          env:
+            - name: ELASTIC_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: elastic-credentials, key: ELASTIC_PASSWORD}
+            - name: KIBANA_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: kibana-credentials, key: KIBANA_PASSWORD}
+          volumeMounts:
+            - {name: script, mountPath: /scripts}
+      volumes:
+        - name: script
+          configMap: {name: es-setup-script}

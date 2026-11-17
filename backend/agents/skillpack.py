@@ -200,7 +200,7 @@ def build_pack() -> dict[str, str]:
             slug,
             manifest.name,
             manifest.description,
-            manifest.prompt_template,
+            manifest.description,
             rules,
             sorted(manifest.tools),
         )

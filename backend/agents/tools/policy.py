@@ -68,6 +68,27 @@ INFRA_AGENT_TYPES = frozenset(
 )
 
 
+#: NerveCenter's own data (read-only; see backend/agents/tools/nerve.py). Each agent
+#: type gets only the tools listed for it. Anything not listed is "tool_not_allowed".
+NERVE_SERVER = "nerve"
+NERVE_AGENT_TOOLS: MappingProxyType[str, frozenset[str]] = MappingProxyType(
+    {
+        "planner": frozenset({"tasks_list", "goals_list", "task_create", "task_update"}),
+        "repository_inspector": frozenset({"repo_ask", "repo_result"}),
+        "code_reviewer": frozenset({"repo_ask", "repo_result"}),
+        "test_runner": frozenset({"repo_ask", "repo_result"}),
+        "log_investigator": frozenset({"app_logs", "logs_search"}),
+        "incident_correlator": frozenset(
+            {"incidents_list", "incident_get", "events_search", "changes_list", "app_logs"}
+        ),
+        "verifier": frozenset({"evidence_search", "evidence_get", "systems_status"}),
+        "architecture_analyst": frozenset({"systems_status"}),
+        "context_critic": frozenset({"goals_list", "tasks_list", "evidence_search"}),
+    }
+)
+NERVE_TOOLS = frozenset().union(*NERVE_AGENT_TOOLS.values())
+def nerve_tools_for(agent: Any) -> frozenset[str]:
+    return NERVE_AGENT_TOOLS.get(str(getattr(agent, "type", "") or ""), frozenset())
 def infra_allowed(agent: Any) -> bool:
     if agent is None:
         return False
@@ -107,6 +128,8 @@ def has_personal_data(args: Any) -> bool:
 def is_allowed(server: str, tool: str) -> bool:
     if server == INFRA_SERVER:
         return tool in INFRA_TOOLS
+    if server == NERVE_SERVER:
+        return tool in NERVE_TOOLS
     if server == OMNIROUTE_SERVER:
         return tool in OMNIROUTE_TOOLS
     return tool in HUB_SERVERS.get(server, frozenset())
@@ -116,8 +139,10 @@ def check(
     agent: Any, server: str, tool: str, args: dict[str, Any], *, non_sensitive: bool = False
 ) -> str | None:
     """A refusal reason code, or ``None`` when the call is allowed."""
-    if server not in (OMNIROUTE_SERVER, INFRA_SERVER) and server not in HUB_SERVERS:
+    if server not in (OMNIROUTE_SERVER, INFRA_SERVER, NERVE_SERVER) and server not in HUB_SERVERS:
         return "unknown_server"
+    if server == NERVE_SERVER and tool not in nerve_tools_for(agent):
+        return "tool_not_allowed"
     if server == INFRA_SERVER and not infra_allowed(agent):
         return "infra_not_granted"
     if not is_allowed(server, tool):
@@ -136,10 +161,16 @@ def check(
     return None
 
 
-def listing(agent: Any = None, *, include_infra: bool = False) -> dict[str, list[str]]:
+def listing(
+    agent: Any = None, *, include_infra: bool = False, include_nerve: bool = False
+) -> dict[str, list[str]]:
     """The allowlist as plain data (for the tools endpoint and prompts)."""
     out = {name: sorted(tools) for name, tools in HUB_SERVERS.items()}
     out[OMNIROUTE_SERVER] = sorted(OMNIROUTE_TOOLS)
     if include_infra or infra_allowed(agent):
         out[INFRA_SERVER] = sorted(INFRA_TOOLS)
+    if include_nerve:
+        out[NERVE_SERVER] = sorted(NERVE_TOOLS)
+    elif nerve_tools_for(agent):
+        out[NERVE_SERVER] = sorted(nerve_tools_for(agent))
     return out

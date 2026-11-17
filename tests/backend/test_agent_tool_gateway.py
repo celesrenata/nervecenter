@@ -230,7 +230,7 @@ def test_tools_endpoints() -> None:
     with TestClient(app) as client:
         body = client.get("/api/agents/tools").json()
         assert set(body["servers"]) == {
-            "sequential-thinking", "fetch", "memory", "omniroute", "infra"}
+            "sequential-thinking", "fetch", "memory", "omniroute", "infra", "nerve"}
         assert body["servers"]["fetch"]["tools"] == ["fetch"]
         assert (
             client.post(

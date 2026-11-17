@@ -71,6 +71,35 @@ INFRA_HELP = (
 )
 
 
+#: Argument help for the ``nerve`` tools (shown only for the tools an agent is granted).
+NERVE_ARGS = {
+    "tasks_list": '{"status": "draft|pending|...", "goal_id": "...", "limit": 30}',
+    "goals_list": '{"limit": 30}',
+    "task_create": '{"title": "...", "description": "...", "priority": 0-10, '
+    '"goal_id": "...", "dependencies": ["<task id>"]} (creates a DRAFT the owner must accept)',
+    "task_update": '{"task_id": "...", "title": "...", "description": "...", "priority": 3, '
+    '"dependencies": []} (only your own drafts)',
+    "incidents_list": '{"limit": 20}',
+    "incident_get": '{"incident_id": "..."}',
+    "events_search": '{"entity": "<subject id, optional>", "limit": 30}',
+    "changes_list": '{"limit": 30}',
+    "app_logs": '{"min_level": "warning", "contains": "text", "limit": 40} (the API pod only)',
+    "logs_search": '{"query": "level:error AND payments", "since_minutes": 60, "limit": 30} '
+    "(cluster-wide Elasticsearch, Lucene query syntax)",
+    "evidence_search": '{"contains": "text", "source_type": "...", "limit": 20}',
+    "evidence_get": '{"evidence_id": "..."}',
+    "systems_status": "{}",
+    "repo_ask": '{"repo": "nervcenter", "ref": "main", "question": "..."} (queues a read-only '
+    "opencode job; no personal data in it)",
+    "repo_result": '{"handoff_id": "..."} (poll a repo_ask; it can take minutes)',
+}
+def nerve_help(tools: list[str]) -> str:
+    lines = []
+    for t in tools:
+        args, _, note = NERVE_ARGS.get(t, "{}").partition(" (")
+        tail = f" ({note}" if note else ""
+        lines.append(f'- TOOL_CALL {{"server": "nerve", "tool": "{t}", "args": {args}}}{tail}')
+    return "NerveCenter data (read-only unless stated):\n" + "\n".join(lines)
 def instructions(agent: Any = None) -> str:
     """The prompt block that teaches the protocol and lists the allowlist."""
     servers = policy.listing(agent)
@@ -85,6 +114,8 @@ def instructions(agent: Any = None) -> str:
     )
     if policy.INFRA_SERVER in servers:
         text += "\n" + INFRA_HELP
+    if policy.NERVE_SERVER in servers:
+        text += "\n" + nerve_help(servers[policy.NERVE_SERVER])
     return text
 
 

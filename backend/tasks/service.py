@@ -14,6 +14,7 @@ Task lifecycle
 --------------
 ::
 
+    draft -> pending       (owner accepts an agent-proposed task)
     pending -> scheduled   (queued for execution)
     scheduled|pending -> in_progress  (picked by scheduler)
     in_progress -> completed | failed | cancelled
@@ -361,6 +362,7 @@ class TaskService:
                 return _orm_to_schema(orm)
             # Valid transitions
             allowed = {
+                "draft": {"pending", "cancelled"},
                 "pending": {"scheduled", "cancelled"},
                 "scheduled": {"in_progress", "cancelled"},
                 "in_progress": {"completed", "failed", "cancelled"},

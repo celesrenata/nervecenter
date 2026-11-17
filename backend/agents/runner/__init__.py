@@ -97,6 +97,15 @@ def build_runner(engine: Any, app: Any = None) -> AgentRunner:
         except Exception:  # noqa: BLE001 - infra tools are optional
             gateway.infra = None
 
+    if app is not None:
+        from backend.agents.tools.nerve import NerveTools
+
+        gateway.nerve = NerveTools(app)
+
+        async def nerve_blocked(agent_id: str) -> bool:
+            return await grant_for(agent_id) is not None
+
+        gateway.nerve_blocked = nerve_blocked
     async def health() -> bool | None:
         primary = await route_health()
         if primary is None:  # secondary: real OmniRoute health through the tool layer

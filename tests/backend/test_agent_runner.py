@@ -19,7 +19,7 @@ from backend.agents.runner.backoff import (
     BackoffConfig,
     BackoffController,
 )
-from backend.agents.runner.runner import compute_next_run, validate_schedule
+from backend.agents.runner.runner import compute_next_run, stagger_offset, validate_schedule
 from backend.agents.runner.skillhub import SkillHubClient
 from backend.api.app import canonical_aliases
 from backend.api.endpoints import agent_runner as runner_ep
@@ -163,7 +163,7 @@ async def test_scheduled_agent_runs_on_cadence_and_counts(engine):
     await runner.set_schedule(agent_id, {"mode": "interval", "interval_seconds": 600})
 
     assert await runner.tick() == []  # not due yet
-    clock.advance(seconds=600)
+    clock.advance(seconds=600 + stagger_offset(agent_id, 150))  # first start is staggered
     assert [r["status"] for r in await runner.tick()] == ["completed"]
     assert await runner.tick() == []  # next run is 600s out
     clock.advance(seconds=600)
@@ -179,6 +179,25 @@ async def test_scheduled_agent_runs_on_cadence_and_counts(engine):
     svc = AgentService(engine, session_factory=make_session_factory(engine))
     row = await svc.get(agent_id)
     assert (row["tasksCompleted"], row["tasksFailed"]) == (2, 1)
+
+
+async def test_scheduled_starts_are_at_least_a_minute_apart(engine):
+    clock = FakeClock()
+    ran: list[str] = []
+    async def infer(agent, prompt):
+        ran.append(agent.id)
+        return {"content": "ok", "e2e_latency_ms": 10}
+    first = await _make_agent(engine)
+    second = await _make_agent(engine, "a2")
+    runner = _runner(engine, infer, clock)
+    for agent_id in (first, second):
+        await runner.set_schedule(agent_id, {"mode": "interval", "interval_seconds": 3600})
+    clock.advance(seconds=3600 + 600)  # both are due
+    assert len(await runner.tick()) == 1  # one start only
+    assert len(await runner.tick()) == 0  # still inside the 60 s gap
+    clock.advance(seconds=61)
+    assert len(await runner.tick()) == 1
+    assert sorted(ran) == sorted([first, second])
 
 
 async def test_on_demand_run_and_missing_agent(engine):
@@ -207,7 +226,7 @@ async def test_throttle_signal_backs_off_and_stretches_interval(engine):
     agent_id = await _make_agent(engine)
     runner = _runner(engine, infer, clock)
     await runner.set_schedule(agent_id, {"mode": "interval", "interval_seconds": 600})
-    clock.advance(seconds=600)
+    clock.advance(seconds=600 + stagger_offset(agent_id, 150))
     await runner.tick()
     assert runner.backoff.evaluate(clock()) == DEGRADED
     sched = await runner.get_schedule(agent_id)

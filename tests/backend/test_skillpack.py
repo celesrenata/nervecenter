@@ -35,7 +35,7 @@ def test_research_skills_are_merged_into_one() -> None:
     assert "research-agent" not in pack
     assert [slug for slug in pack if "research" in slug] == ["researcher"]
     researcher = pack["researcher"]
-    assert "- `web_search`" in researcher and "Find and synthesize information" in researcher
+    assert "- `fetch`" in researcher and "Find and synthesize information" in researcher
 
 
 def test_frontmatter_is_valid_and_names_are_unique() -> None:

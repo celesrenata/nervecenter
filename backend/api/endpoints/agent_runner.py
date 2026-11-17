@@ -58,11 +58,24 @@ async def runner_status(request: Request) -> dict[str, Any]:
     return runner.status()
 
 
+class RunRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    context: str | None = Field(default=None, max_length=20_000)
+
+
 @router.post("/api/agents/{agent_id}/run", status_code=201)
-async def run_agent_now(request: Request, agent_id: str) -> dict[str, Any]:
-    """Run one agent immediately and return the recorded run."""
+async def run_agent_now(
+    request: Request, agent_id: str, body: RunRequest | None = None
+) -> dict[str, Any]:
+    """Run one agent immediately and return the recorded run.
+
+    The optional ``context`` is material for the agent to examine (for example the
+    context a Context Critic reviews); it is presented as data, never instructions.
+    """
     try:
-        return await _runner(request).run_agent(agent_id, "on_demand")
+        return await _runner(request).run_agent(
+            agent_id, "on_demand", body.context if body else None
+        )
     except AgentMissingError:
         raise HTTPException(status_code=404, detail="Agent not found") from None
     except AgentBusyError:

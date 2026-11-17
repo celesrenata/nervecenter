@@ -21,6 +21,7 @@ from .base import Record
 
 #: Lifecycle of a scheduled task.
 TaskStatus = Literal[
+    "draft",
     "pending",
     "scheduled",
     "in_progress",

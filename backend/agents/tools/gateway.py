@@ -9,6 +9,7 @@ id, server, tool and reason code only.
 
 from __future__ import annotations
 
+import hashlib
 import os
 from typing import Any
 
@@ -60,6 +61,11 @@ class ToolGateway:
         self._fetch_guard = fetch_guard or FetchGuard()
         #: InfraService (NS-ADR-120); set by the runner/app wiring, None = unavailable.
         self.infra: Any = None
+        #: NerveTools (backend/agents/tools/nerve.py); None = unavailable.
+        self.nerve: Any = None
+        #: ``async (agent_id) -> bool``: True when the agent may reach an OpenAI route.
+        #: ``nerve`` data is personal, so it is refused there (NS-ADR-108).
+        self.nerve_blocked: Any = None
 
     @property
     def _omni_key(self) -> str | None:
@@ -75,11 +81,18 @@ class ToolGateway:
 
     @property
     def configured(self) -> bool:
-        return self.hub_configured or self.omniroute_configured or self.infra is not None
+        return (
+            self.hub_configured
+            or self.omniroute_configured
+            or self.infra is not None
+            or self.nerve is not None
+        )
 
     def available(self, server: str) -> bool:
         if server == policy.INFRA_SERVER:
             return self.infra is not None
+        if server == policy.NERVE_SERVER:
+            return self.nerve is not None
         return (
             self.omniroute_configured if server == policy.OMNIROUTE_SERVER else self.hub_configured
         )
@@ -89,7 +102,7 @@ class ToolGateway:
         return {
             "servers": {
                 server: {"tools": tools, "available": self.available(server)}
-                for server, tools in policy.listing(include_infra=True).items()
+                for server, tools in policy.listing(include_infra=True, include_nerve=True).items()
             },
             "memory_rule": "refused unless a call is marked non-sensitive by the owner API "
             "or code, the agent is not in a sensitive class, and arguments carry no personal data",
@@ -159,6 +172,14 @@ class ToolGateway:
         reason = policy.check(agent, server, tool, args, non_sensitive=non_sensitive)
         if reason is None and not self.available(server):
             reason = "unconfigured"
+        if server == policy.NERVE_SERVER:
+            if reason is None and self.nerve_blocked is not None and await self.nerve_blocked(agent_id):
+                reason = "nerve_blocked_openai_route"
+            if reason is not None:
+                log.info("agent_tools.denied", agent_id=agent_id, server=server, tool=tool,
+                         reason=reason)
+                return {"ok": False, "denied_reason": reason}
+            return await self._nerve_call(agent, agent_id, tool, args, context)
         if server == policy.INFRA_SERVER:
             if reason is not None:
                 log.info("agent_tools.denied", agent_id=agent_id, server=server, tool=tool,
@@ -195,6 +216,24 @@ class ToolGateway:
         log.info("agent_tools.call", agent_id=agent_id, server=server, tool=tool)
         return {"ok": True, "result": result}
 
+    async def _nerve_call(
+        self, agent: Any, agent_id: str, tool: str, args: dict[str, Any], context: str
+    ) -> dict[str, Any]:
+        from backend.agents.tools.nerve import NerveToolError
+
+        run_key = hashlib.sha1(f"{agent_id}|{context}".encode()).hexdigest()
+        try:
+            result = await self.nerve.call(agent, tool, args, run_key)
+        except NerveToolError as exc:
+            log.info("agent_tools.denied", agent_id=agent_id, server="nerve", tool=tool,
+                     reason=exc.reason)
+            return {"ok": False, "denied_reason": exc.reason}
+        except Exception as exc:  # noqa: BLE001 - a backend fault is a reason code, not a crash
+            log.warning("agent_tools.failed", agent_id=agent_id, server="nerve", tool=tool,
+                        reason=type(exc).__name__)
+            return {"ok": False, "denied_reason": "tool_failed"}
+        log.info("agent_tools.call", agent_id=agent_id, server="nerve", tool=tool)
+        return {"ok": True, "result": result}
     async def _infra_call(
         self, agent: Any, agent_id: str, tool: str, args: dict[str, Any]
     ) -> dict[str, Any]:
