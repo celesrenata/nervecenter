@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -107,7 +108,11 @@ def _env(workdir: str, **extra: str) -> dict[str, str]:
 
 
 async def _run(argv: list[str], *, env: dict[str, str], timeout: float,
-               stdin: str | None = None, cwd: str | None = None) -> RunResult:
+               stdin: str | None = None, cwd: str | None = None,
+               on_output: Callable[[str], None] | None = None) -> RunResult:
+    """Run one command; output is read as it arrives so ``on_output`` (raw text
+    chunks, for the live log) sees it before the command ends. A timeout keeps
+    what was printed so far."""
     try:
         proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -119,15 +124,34 @@ async def _run(argv: list[str], *, env: dict[str, str], timeout: float,
         )
     except FileNotFoundError as exc:
         raise ExecutorError("binary_missing") from exc
+    chunks: list[bytes] = []
+
+    async def pump() -> None:
+        if stdin is not None and proc.stdin is not None:
+            proc.stdin.write(stdin.encode())
+            await proc.stdin.drain()
+            proc.stdin.close()
+        assert proc.stdout is not None
+        while True:
+            data = await proc.stdout.read(4096)
+            if not data:
+                break
+            chunks.append(data)
+            if on_output is not None:
+                try:
+                    on_output(data.decode("utf-8", "replace"))
+                except Exception:  # noqa: BLE001 - the live log must never break a step
+                    pass
+        await proc.wait()
+
     try:
-        out, _ = await asyncio.wait_for(
-            proc.communicate(stdin.encode() if stdin is not None else None), timeout
-        )
+        await asyncio.wait_for(pump(), timeout)
     except TimeoutError:
         proc.kill()
         await proc.wait()
-        return RunResult(False, None, "[timed out]")
-    text = redact(out.decode("utf-8", "replace"))
+        partial = redact(b"".join(chunks).decode("utf-8", "replace")).rstrip()
+        return RunResult(False, None, f"{partial}\n[timed out]" if partial else "[timed out]")
+    text = redact(b"".join(chunks).decode("utf-8", "replace"))
     return RunResult(proc.returncode == 0, proc.returncode, text)
 
 
@@ -153,7 +177,8 @@ def kubeconfig(config: dict[str, Any], token: str) -> str:
 
 
 async def run_kubectl(config: dict[str, Any], token: str | None, args: list[str], *,
-                      stdin: str | None = None, act: bool = False) -> RunResult:
+                      stdin: str | None = None, act: bool = False,
+                      on_output: Callable[[str], None] | None = None) -> RunResult:
     if not token:
         raise ExecutorError("kube_token_missing")
     workdir = _tmpdir()
@@ -162,7 +187,8 @@ async def run_kubectl(config: dict[str, Any], token: str | None, args: list[str]
         _write(path, kubeconfig(config, token))
         return await _run([KUBECTL, "--request-timeout=30s", *args],
                           env=_env(workdir, KUBECONFIG=path),
-                          timeout=ACT_TIMEOUT_S if act else READ_TIMEOUT_S, stdin=stdin)
+                          timeout=ACT_TIMEOUT_S if act else READ_TIMEOUT_S, stdin=stdin,
+                          on_output=on_output)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
@@ -180,7 +206,8 @@ def _ssh_target(config: dict[str, Any]) -> tuple[str, int, str]:
 
 
 async def run_ssh(config: dict[str, Any], secret: str | None, command: str, *,
-                  act: bool = False) -> RunResult:
+                  act: bool = False, on_output: Callable[[str], None] | None = None
+                  ) -> RunResult:
     host, port, user = _ssh_target(config)
     known = str(config.get("known_hosts") or "").strip()
     if not known:
@@ -205,7 +232,7 @@ async def run_ssh(config: dict[str, Any], secret: str | None, command: str, *,
             "-T", "--", host, command,
         ]
         return await _run(argv, env=_env(workdir),
-                          timeout=ACT_TIMEOUT_S if act else READ_TIMEOUT_S)
+                          timeout=ACT_TIMEOUT_S if act else READ_TIMEOUT_S, on_output=on_output)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

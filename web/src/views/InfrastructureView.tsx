@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { ApiError } from '../api/client'
+import { InfraPlanLog } from './InfraPlanLog'
 import { infraApi, type InfraConnector, type InfraKind, type InfraPlan, type InfraStep } from '../api/infra'
 
 /**
@@ -269,19 +270,22 @@ function PlanCard({ p, onChange }: { p: InfraPlan; onChange: () => void }) {
       <ol className="list-decimal space-y-1 pl-5 text-sm">
         {p.steps.map((s, i) => {
           const r = p.results.find((x) => x.index === i)
+          const running = p.live?.index === i
           return (
             <li key={i}>
               <span className="font-mono text-xs">[{s.connector}] {stepText(s)}</span>
               {s.purpose && <span className="text-muted"> — {s.purpose}</span>}
               {r && (
-                <pre className={`mt-1 max-h-48 overflow-auto rounded p-2 text-xs ${r.ok ? 'bg-surface' : 'bg-red-50 dark:bg-red-900/20'}`}>
-                  {r.ok ? 'ok' : `failed (exit ${r.exit ?? '-'})`}{'\n'}{r.output}
-                </pre>
+                <span className={`ml-2 text-xs font-semibold ${r.ok ? 'text-green-600' : 'text-red-600'}`}>
+                  {r.ok ? 'ok' : `failed (exit ${r.exit ?? '-'})`}
+                </span>
               )}
+              {running && <span className="ml-2 animate-pulse text-xs font-semibold text-blue-600">running</span>}
             </li>
           )
         })}
       </ol>
+      <InfraPlanLog p={p} describe={stepText} />
       {p.verify.length > 0 && <p className="text-xs text-muted">Verify: {p.verify.map(stepText).join(' · ')}</p>}
       {p.rollback && <p className="text-xs text-muted">Rollback: {p.rollback}</p>}
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
@@ -326,6 +330,14 @@ export function InfrastructureView() {
   useEffect(() => {
     void load()
   }, [load])
+
+  // While a plan is approved or running, refresh every 2 s (no page reload).
+  const active = plans.some((p) => p.status === 'approved' || p.status === 'running')
+  useEffect(() => {
+    if (!active) return
+    const t = setInterval(() => void load(), 2000)
+    return () => clearInterval(t)
+  }, [active, load])
 
   const pending = plans.filter((p) => p.status === 'proposed')
   return (

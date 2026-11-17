@@ -55,6 +55,8 @@ export interface InfraPlan {
   results: InfraResult[]
   handoff_id: string | null
   created_at: string | null
+  /** Output so far of the step running now (redacted); null when none is running. */
+  live?: { index: number; started_at: string; output: string } | null
 }
 
 async function json<T>(res: Response): Promise<T> {

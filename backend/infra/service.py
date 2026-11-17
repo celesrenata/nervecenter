@@ -28,6 +28,7 @@ from backend.infra.policy import (
     PolicyError,
     check_kubectl,
     check_ssh_act_command,
+    redact,
     ssh_read_command,
 )
 from backend.persistence.models.infra import InfraConnector, InfraPlan
@@ -44,6 +45,10 @@ _NAME_OK = set("abcdefghijklmnopqrstuvwxyz0123456789-_")
 
 class InfraInputError(ValueError):
     pass
+
+
+#: Live output kept per running step (characters, tail).
+LIVE_MAX_CHARS = 19_000  # under policy.MAX_OUTPUT_CHARS
 
 
 def _now() -> datetime:
@@ -119,6 +124,8 @@ class InfraService:
         self._vault = vault  # registry.connections (upsert_secret/get_secret/delete_secret)
         self._handoffs = handoffs
         self._tasks: set[asyncio.Task[Any]] = set()
+        # Live output of the step running now, per plan (memory only; see live_view).
+        self._live: dict[str, dict[str, Any]] = {}
 
     # -- connectors ------------------------------------------------------------------
 
@@ -235,12 +242,13 @@ class InfraService:
 
     # -- running ----------------------------------------------------------------------
 
-    async def _execute(self, row: InfraConnector, step: dict[str, Any], *, act: bool
-                       ) -> executor.RunResult:
+    async def _execute(self, row: InfraConnector, step: dict[str, Any], *, act: bool,
+                       on_output: Any = None) -> executor.RunResult:
         secret = await self._secret(row.id)
         if row.kind == "kubernetes":
             args = check_kubectl(step.get("args"), act=act, stdin=step.get("stdin"))
             return await executor.run_kubectl(row.config or {}, secret, args,
+                                              on_output=on_output,
                                               stdin=step.get("stdin"), act=act)
         if row.host_key_status != "pinned":
             raise executor.ExecutorError("host_key_not_pinned")
@@ -248,7 +256,8 @@ class InfraService:
             command = check_ssh_act_command(step.get("command"))
         else:
             command = ssh_read_command(step.get("command"), step.get("params"))
-        return await executor.run_ssh(row.config or {}, secret, command, act=act)
+        return await executor.run_ssh(row.config or {}, secret, command, act=act,
+                                      on_output=on_output)
 
     async def run_read(self, connector: str, step: dict[str, Any]) -> dict[str, Any]:
         """Plan mode: one read-only command. ``{"ok", "exit", "output"}`` or a refusal."""
@@ -321,14 +330,27 @@ class InfraService:
             q = select(InfraPlan).order_by(InfraPlan.created_at.desc()).limit(100)
             if status:
                 q = q.where(InfraPlan.status == status)
-            return [plan_view(p) for p in (await s.execute(q)).scalars()]
+            return [
+                {**plan_view(p), "live": self.live_view(p.id)}
+                for p in (await s.execute(q)).scalars()
+            ]
 
     async def get_plan(self, plan_id: str) -> dict[str, Any]:
         async with self._sessions() as s:
             p = await s.get(InfraPlan, plan_id)
             if p is None:
                 raise KeyError(plan_id)
-            return plan_view(p)
+            return {**plan_view(p), "live": self.live_view(plan_id)}
+
+    def live_view(self, plan_id: str) -> dict[str, Any] | None:
+        """Output so far of the step running now (redacted, tail-capped), or None."""
+        live = self._live.get(plan_id)
+        if live is None:
+            return None
+        # Tail first (redact() caps from the start), with room for a secret that
+        # straddles the cut; the redacted tail fits the output cap.
+        text = redact("".join(live["buffer"])[-LIVE_MAX_CHARS:])
+        return {"index": live["index"], "started_at": live["started_at"], "output": text}
 
     async def decide(self, plan_id: str, *, approve: bool, actor: str,
                      act_mode: str = "opencode") -> dict[str, Any]:
@@ -392,10 +414,23 @@ class InfraService:
             p.status = "running"
             await s.commit()
             row = await self._row(s, step["connector"])
+        live = {"index": index, "started_at": datetime.now(UTC).isoformat(), "buffer": []}
+        self._live[plan_id] = live
+
+        def on_output(text: str) -> None:
+            buf = live["buffer"]
+            buf.append(text)
+            if sum(len(c) for c in buf) > LIVE_MAX_CHARS * 2:  # keep the tail only
+                joined = "".join(buf)[-LIVE_MAX_CHARS:]
+                buf[:] = [joined]
+
         try:
-            res = (await self._execute(row, step, act=True)).as_dict()
+            res = (await self._execute(row, step, act=True, on_output=on_output)).as_dict()
         except (PolicyError, executor.ExecutorError) as exc:
             res = {"ok": False, "exit": None, "output": f"[refused: {exc.code}]"}
+        finally:
+            if self._live.get(plan_id) is live:
+                del self._live[plan_id]
         async with self._sessions() as s:
             p = await s.get(InfraPlan, plan_id)
             p.results = [*list(p.results or []), {"index": index, **res}]

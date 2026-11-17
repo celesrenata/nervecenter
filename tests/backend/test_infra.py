@@ -362,3 +362,52 @@ async def test_dedicated_listener_serves_only_the_infra_mcp_route(monkeypatch) -
         assert c.post("/api/mcp/infra", json={}).status_code == 401
     monkeypatch.delenv(mcp_listener.PORT_ENV, raising=False)
     assert await mcp_listener.start(main) is None  # off unless the deployment sets a port
+
+
+async def test_run_streams_output_and_keeps_it_on_timeout(tmp_path: pathlib.Path) -> None:
+    import asyncio as _asyncio
+
+    seen: list[str] = []
+    slow = _script(tmp_path / "slow", "echo first\nsleep 0.4\necho second\n")
+    task = _asyncio.ensure_future(
+        executor._run([slow], env={"PATH": "/usr/bin:/bin"}, timeout=5, on_output=seen.append)
+    )
+    await _asyncio.sleep(0.2)
+    assert "".join(seen) == "first\n" and not task.done()  # streamed before the end
+    res = await task
+    assert res.ok and res.output == "first\nsecond\n"
+
+    hang = _script(tmp_path / "hang", "echo started\nsleep 5\n")
+    out = await executor._run([hang], env={"PATH": "/usr/bin:/bin"}, timeout=0.3)
+    assert not out.ok and out.output == "started\n[timed out]"
+
+
+async def test_plan_view_shows_the_running_steps_live_output(svc, monkeypatch) -> None:
+    import asyncio as _asyncio
+
+    await _kube(svc)
+    plan = await svc.propose("agent-1", {"title": "Slow", "steps": [
+        {"connector": "home", "args": ["rollout", "status", "deploy/api"]}]})
+    await svc.decide(plan["id"], approve=True, actor="owner", act_mode="direct")
+    gate = _asyncio.Event()
+
+    async def fake_kubectl(config, token, args, *, stdin=None, act=False, on_output=None):
+        on_output("waiting Authorization: Bearer abcdefghijklmnopqrstuvwxyz0123\n")
+        await gate.wait()
+        return executor.RunResult(True, 0, "rolled out\n")
+
+    monkeypatch.setattr(executor, "run_kubectl", fake_kubectl)
+    task = _asyncio.ensure_future(svc.run_step(plan["id"], 0))
+    for _ in range(50):
+        live = (await svc.get_plan(plan["id"]))["live"]
+        if live:
+            break
+        await _asyncio.sleep(0.01)
+    assert live["index"] == 0 and live["started_at"] and "waiting" in live["output"]
+    assert "abcdefghijklmnopqrstuvwxyz0123" not in live["output"]  # redacted before shown
+    assert "Bearer [redacted]" in live["output"]
+    assert (await svc.list_plans())[0]["live"]["index"] == 0
+    gate.set()
+    await task
+    done = await svc.get_plan(plan["id"])
+    assert done["live"] is None and done["status"] == "done"

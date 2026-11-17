@@ -72,3 +72,46 @@ test('an SSH host without a pinned key explains the next step and keeps Test dis
   await expect(page.getByTestId('infra-needs-key-esnixi')).toContainText('Scan host key')
   await expect(page.getByTestId('infra-test-esnixi')).toBeDisabled()
 })
+
+test('a running plan updates its live log without a page reload', async ({ page }) => {
+  const step = { connector: 'esnixi', command: 'docker build .', purpose: 'Build' }
+  const plan: Record<string, unknown> = {
+    id: 'p9', agent_id: 'owner', title: 'Build image', summary: '', status: 'running',
+    steps: [{ connector: 'home', args: ['get', 'pods'], purpose: 'Check' }, step], verify: [],
+    rollback: '', act_mode: 'opencode', decided_by: 'celes', decided_at: null, handoff_id: null,
+    created_at: null,
+    results: [{ index: 0, ok: true, exit: 0, output: 'pod-a Running\n' }],
+    live: { index: 1, started_at: new Date().toISOString(), output: '#1 load build definition\n' },
+  }
+  let calls = 0
+  await page.route('**/api/infra/connectors', (r) => r.fulfill({ json: { connectors: [] } }))
+  await page.route('**/api/infra/plans', (r) => {
+    calls += 1
+    return r.fulfill({ json: { plans: [plan] } })
+  })
+  await seedBreakGlassSession(page)
+  await page.goto('/infrastructure', { waitUntil: 'domcontentloaded' })
+  const log = page.getByTestId('infra-plan-log-p9')
+  await expect(log).toContainText('pod-a Running')
+  await expect(page.getByTestId('infra-plan-live-p9')).toContainText('#1 load build definition')
+  await expect(page.getByTestId('infra-plan-live-p9')).toContainText('running')
+
+  // New output arrives through polling alone.
+  plan.live = { ...(plan.live as object), output: '#1 load build definition\n#2 npm ci\n' }
+  await expect(page.getByTestId('infra-plan-live-p9')).toContainText('#2 npm ci', { timeout: 6000 })
+
+  // Step finishes and the plan completes: polling stops after the final state.
+  plan.live = null
+  plan.status = 'done'
+  plan.results = [...(plan.results as unknown[]), { index: 1, ok: true, exit: 0, output: 'pushed\n' }]
+  await expect(log).toContainText('pushed', { timeout: 6000 })
+  await expect(page.getByTestId('infra-plan-live-p9')).toHaveCount(0)
+  const settled = calls
+  await page.waitForTimeout(4500)
+  expect(calls).toBe(settled)
+
+  await page.getByTestId('infra-plan-log-maximize-p9').click()
+  await expect(page.getByTestId('maximize-overlay')).toContainText('pushed')
+  await page.keyboard.press('Escape')
+  await expect(page.getByTestId('maximize-overlay')).toHaveCount(0)
+})
