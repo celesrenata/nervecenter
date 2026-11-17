@@ -18,3 +18,12 @@ def test_parse_combos_from_the_mcp_text_result() -> None:
     assert combos[1]["models"] == ["vllm/qwen"] and combos[2]["enabled"] is False
     assert "id" not in combos[0]
     assert _parse_combos("not json") == [] and _parse_combos(None) == []
+
+
+def test_parse_combos_salvages_a_list_omniroute_truncated() -> None:
+    full = json.dumps({"combos": [
+        {"name": "local/esnixi", "models": [{"model": "vllm/qwen"}]},
+        {"name": "secure/coder", "models": [{"model": "a"}, {"model": "b"}]},
+    ]}, indent=2)
+    cut = full[: full.rindex('"b"')] + "\n\n... [truncated 469 chars by OmniRoute MCP filter.]"
+    assert [c["name"] for c in _parse_combos(cut)] == ["local/esnixi"]

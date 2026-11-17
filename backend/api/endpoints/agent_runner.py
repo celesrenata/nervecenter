@@ -118,6 +118,26 @@ _COMBO_CACHE: dict[str, Any] = {"at": 0.0, "combos": None}
 COMBO_CACHE_S = 60.0
 
 
+def _salvage_combos(text: str) -> list[dict[str, Any]]:
+    """Recover the complete combo objects from a list OmniRoute's MCP filter truncated (~50 KB)."""
+    import json as _json
+
+    start = text.find("[", text.find('"combos"'))
+    if start < 0:
+        return []
+    decoder, pos, out = _json.JSONDecoder(), start + 1, []
+    while True:
+        while pos < len(text) and text[pos] in " \t\r\n,":
+            pos += 1
+        if pos >= len(text) or text[pos] != "{":
+            return out
+        try:
+            obj, pos = decoder.raw_decode(text, pos)
+        except ValueError:
+            return out
+        out.append(obj)
+
+
 def _parse_combos(result: Any) -> list[dict[str, Any]]:
     import json as _json
 
@@ -126,7 +146,7 @@ def _parse_combos(result: Any) -> list[dict[str, Any]]:
         try:
             data = _json.loads(result)
         except ValueError:
-            return []
+            data = _salvage_combos(result)
     items = data.get("combos", []) if isinstance(data, dict) else data
     out: list[dict[str, Any]] = []
     for item in items if isinstance(items, list) else []:
@@ -155,6 +175,15 @@ async def omniroute_combos(request: Request) -> dict[str, Any]:
     if _COMBO_CACHE["combos"] is None or now - _COMBO_CACHE["at"] > COMBO_CACHE_S:
         # Full result: the agent-facing 20 000-char cap cut the list into broken JSON.
         combos = _parse_combos(await _gateway(request).omniroute_full("omniroute_list_combos"))
+        # OmniRoute's MCP filter truncates the list; /v1/models names every combo.
+        from backend.inference.catalog import get_catalog
+        seen = {c["name"] for c in combos}
+        for item in await get_catalog().items():
+            if item["kind"] == "combo" and item["id"] not in seen:
+                seen.add(item["id"])
+                combos.append({"name": item["id"], "enabled": True,
+                               "secure": item["id"].startswith("secure/"), "models": []})
+        combos.sort(key=lambda c: (not c["secure"], c["name"]))
         if combos or _COMBO_CACHE["combos"] is None:
             _COMBO_CACHE.update(at=now, combos=combos)
     return {"combos": _COMBO_CACHE["combos"] or []}
