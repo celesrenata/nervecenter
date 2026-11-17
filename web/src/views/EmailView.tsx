@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, type FormEvent } from 'react'
 import { emailApi, ApiError } from '../api/client'
 import { MailSecurityIndicator } from '../components/MailSecurityIndicator'
+import { EmailBodyView } from '../components/EmailBodyView'
 
 /**
  * EmailView — the Email plane (prompt2 Phase P0).
@@ -27,6 +28,8 @@ interface EmailMessage {
   to_address: string
   subject: string
   body: string
+  /** Raw, untrusted HTML alternative; sanitised + sandboxed by EmailBodyView. */
+  body_html?: string | null
   timestamp: string
   source?: string
 }
@@ -263,7 +266,11 @@ export function EmailView() {
                           : 'bg-gray-100 dark:bg-gray-800 text-gray-800 dark:text-gray-100'
                       }`}
                     >
-                      <p className="whitespace-pre-wrap break-words">{m.body}</p>
+                      <EmailBodyView
+                        text={m.body}
+                        html={m.body_html}
+                        tone={sent ? 'sent' : 'received'}
+                      />
                       <p
                         className={`mt-1 text-xs ${
                           sent ? 'text-blue-100' : 'text-gray-400'

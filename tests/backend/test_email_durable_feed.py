@@ -178,3 +178,15 @@ async def test_html_only_mail_shows_as_plain_text(world) -> None:
     await feed.refresh(force=True)
     body = _bodies(service)["Subject 1"]
     assert "<" not in body and "statement is ready" in body
+async def test_html_mail_exposes_sanitisable_html_alternative(world) -> None:
+    registry, store = world
+    await _add_mail(registry, store, 1, mime=_mime(
+        "bank@example.com", "Statement", "<p>Your <b>statement</b> is ready</p>", html=True))
+    await _add_mail(registry, store, 2, mime=_mime(
+        "shop@example.com", "Promo", "<html><body><p>Sale <b>now</b></p></body></html>"))
+    feed, service, _ = _feed(registry, store)
+    await feed.refresh(force=True)
+    msgs = {m.subject: m for t in service.list_threads() for m in service.get_messages(t.thread_id)}
+    assert "<b>statement</b>" in (msgs["Subject 1"].body_html or "")
+    # HTML mislabelled as text/plain is still treated as HTML, never shown as markup.
+    assert "<" not in msgs["Subject 2"].body and msgs["Subject 2"].body_html

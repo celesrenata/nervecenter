@@ -93,6 +93,12 @@ class IngestEmailRequest(BaseModel):
     sender_name: str | None = None
     subject: str = ""
     body: str = ""
+    # Optional: an explicit html alternative, or hints so the server can
+    # decode ``body`` (quoted-printable / base64 / charset / raw MIME).
+    body_html: str | None = None
+    content_type: str | None = None
+    transfer_encoding: str | None = None
+    charset: str | None = None
     timestamp: datetime | None = None
     source: str = "personal-relay"
 

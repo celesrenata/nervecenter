@@ -412,6 +412,9 @@ class EmailMessage(BaseModel):
     to_address: str
     subject: str
     body: str = ""
+    # Raw, UNTRUSTED html alternative of ``body`` (None when the mail has no
+    # html). Clients must sanitise it and render it only in a sandboxed iframe.
+    body_html: str | None = None
     timestamp: datetime
     # Provenance: which ingestion source produced this message
     # (prompt2 §49 — retention is per-source).

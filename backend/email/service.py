@@ -42,6 +42,7 @@ from backend.api.models import (
     EmailThread,
 )
 from backend.attention.service import AttentionService, get_attention_service
+from backend.email.body import decode_body, looks_like_html, looks_like_mime
 
 # A thread stops producing "new activity" attention once every received
 # email has been acknowledged; re-escalation happens only on new inbounds.
@@ -129,6 +130,21 @@ class EmailService:
         # conversation (the sender for a received email, the recipient for
         # an outgoing one) plus the normalized subject line.
         counterpart = recipient if direction is EmailDirection.SENT else sender
+        body_text = str(payload.get("body", ""))
+        body_html = payload.get("body_html")
+        if body_html is None and (
+            payload.get("content_type")
+            or payload.get("transfer_encoding")
+            or looks_like_html(body_text)
+            or looks_like_mime(body_text)
+        ):
+            decoded = decode_body(
+                body_text,
+                content_type=payload.get("content_type"),
+                transfer_encoding=payload.get("transfer_encoding"),
+                charset=payload.get("charset"),
+            )
+            body_text, body_html = decoded.text, decoded.html
 
         message = EmailMessage(
             message_id=message_id,
@@ -137,7 +153,8 @@ class EmailService:
             from_address=sender,
             to_address=recipient,
             subject=subject,
-            body=str(payload.get("body", "")),
+            body=body_text,
+            body_html=body_html,
             timestamp=timestamp,
             source=str(payload.get("source", "personal-relay")),
         )

@@ -8,8 +8,9 @@ replays the most recent stored emails into it, at startup and again on read
 
 Security comes first (NerveShield owns the verdict):
 
-- incoming mail with a ``LOW_PRIORITY`` verdict shows as plain text (HTML
-  removed, length capped); nothing is rendered as HTML;
+- incoming mail with a ``LOW_PRIORITY`` verdict shows readable text plus its
+  HTML alternative; the web app sanitises that HTML and renders it only in a
+  sandboxed iframe with remote content blocked;
 - incoming mail with any other verdict (REVIEW, INCOMPLETE, ...) shows the
   sender and subject only, with a "held" notice instead of the body;
 - incoming mail not assessed yet is skipped and picked up on a later refresh;
@@ -25,6 +26,8 @@ import time
 from typing import Any
 
 import structlog
+
+from backend.email.body import EmailBody, body_from_parts
 
 log = structlog.get_logger(__name__)
 
@@ -53,16 +56,20 @@ def _scope_of(content_ref: str) -> str | None:
     return None
 
 
-def _body_text(evidence: Any) -> str:
-    from backend.bills.signal import plain_text
+def _body(evidence: Any) -> EmailBody:
+    """Readable text plus the raw html alternative (None when there is none).
 
-    parts = list(getattr(evidence, "text_parts", []) or [])
-    plain = [p.normalized for p in parts if p.subtype == "plain" and p.normalized.strip()]
-    if plain:
-        text = "\n\n".join(plain).strip()
-    else:
-        text = plain_text("\n".join(p.normalized for p in parts))
-    return text[:BODY_CAP]
+    HTML placed in a text/plain part is treated as HTML, so it never shows as
+    markup. The html is untrusted: the web app sanitises it and renders it in
+    a sandboxed iframe only.
+    """
+    parts = [
+        (p.subtype, p.normalized)
+        for p in list(getattr(evidence, "text_parts", []) or [])
+        if p.normalized.strip()
+    ]
+    body = body_from_parts(parts)
+    return EmailBody(text=body.text[:BODY_CAP], html=body.html)
 
 
 class DurableEmailFeed:
@@ -209,10 +216,12 @@ class DurableEmailFeed:
             sender, recipient = from_addr or counterpart, to_addr or owner
         else:
             sender, recipient = from_addr or owner, to_addr or counterpart
+        body_html: str | None = None
         if held:
             body = f"Held by NerveShield ({verdict}). Open Security Review to inspect it."
         else:
-            body = _body_text(evidence)
+            decoded = _body(evidence)
+            body, body_html = decoded.text, decoded.html
         self._service.ingest(
             {
                 "message_id": f"durable:{row.id}",
@@ -222,6 +231,7 @@ class DurableEmailFeed:
                 "sender_name": (name or None) if incoming else None,
                 "subject": row.subject or _header(evidence, "subject") or "",
                 "body": body,
+                "body_html": body_html,
                 "timestamp": row.received_at,
                 "source": "mail",
             },
