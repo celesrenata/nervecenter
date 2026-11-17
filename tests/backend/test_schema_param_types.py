@@ -225,6 +225,10 @@ TABLES_WITH_ID = frozenset(
         "mail_expectedness_counts",
         # NerveShield expectedness feedback, Alembic 025 (NS-ADR-078).
         "mail_expectedness_feedback",
+        "kube_settings",
+        "kube_issues",
+        "kube_overrides",
+        "kube_reports",
     }
 )
 
