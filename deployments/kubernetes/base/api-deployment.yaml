@@ -229,6 +229,16 @@ spec:
                   name: nervecenter-opencode
                   key: password
                   optional: true
+            # cmap pentest workload token (NS-ADR-125; out-of-band Secret, owner-run
+            # steps in deployments/pentest/README.md). Optional: without it cmap
+            # scans stay unconfigured. NERVE_CMAP_URL defaults to the in-cluster
+            # Service http://cmap.nervecenter.svc:8000 (backend/pentest/cmap_client.py).
+            - name: NERVE_CMAP_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-cmap
+                  key: token
+                  optional: true
           readinessProbe:
             httpGet:
               path: /api/health
