@@ -61,6 +61,7 @@ from backend.api.endpoints import (
     communications,
     contact_photos,
     infra,
+    kube,
     pentest,
     resources,
     conversations,
@@ -142,6 +143,7 @@ ALL_ROUTERS = (
     contacts.router,
     contact_photos.router,
     infra.router,
+    kube.router,
     pentest.router,
     resources.router,
     people.router,
@@ -337,6 +339,10 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                         weekly_scans = pentest_scans(app)
                         if weekly_scans is not None:  # NS-ADR-126: one slice a day, weekly cover
                             runner.add_tick_hook(weekly_scans.weekly_tick)
+                        from backend.kube.monitor import get_monitor
+                        kube_monitor = get_monitor(app)
+                        if kube_monitor is not None:  # NS-ADR-120: hourly kube check, no model
+                            runner.add_tick_hook(kube_monitor.tick)
                         runner.start()
                         log.debug("api.agent_runner_started")
                         from backend.research import get_engine

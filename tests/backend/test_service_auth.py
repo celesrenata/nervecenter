@@ -67,6 +67,9 @@ def test_every_scoped_route_accepts_the_service_token(client) -> None:
     [
         ("GET", "/api/connections"),
         ("GET", "/api/infra/connectors"),
+        ("GET", "/api/kube/status"),
+        ("GET", "/api/kube/issues"),
+        ("POST", "/api/kube/check"),
         ("GET", "/api/settings/omniroute"),
         ("GET", "/api/auth/tokens"),
         ("GET", "/api/auth/me"),

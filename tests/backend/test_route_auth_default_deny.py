@@ -175,6 +175,7 @@ def test_service_token_only_passes_scoped_routes(app, client, monkeypatch) -> No
     gated = (
         "/api/connections",
         "/api/infra/connectors",
+        "/api/kube/status",
         "/api/settings/omniroute",
         "/api/auth/tokens",
     )

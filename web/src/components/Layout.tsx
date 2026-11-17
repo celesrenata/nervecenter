@@ -71,6 +71,7 @@ const navItems: NavItem[] = [
   { path: '/providers', label: 'Providers', Icon: InferenceIcon },
   { path: '/infrastructure', label: 'Infrastructure', Icon: SystemsIcon },
   { path: '/pentest', label: 'Pentest', Icon: SystemsIcon },
+  { path: '/kube', label: 'Kube', Icon: SystemsIcon },
   { path: '/resources', label: 'Resources', Icon: DownloadsIcon },
   { path: '/incidents', label: 'Incidents', Icon: IncidentsIcon },
   { path: '/decisions', label: 'Decisions', Icon: DecisionsIcon },
