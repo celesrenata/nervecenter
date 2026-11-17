@@ -164,6 +164,14 @@ def test_parse_calls_ignores_malformed_lines() -> None:
     assert [(c.server, c.tool, c.args) for c in calls] == [("fetch", "fetch", {"url": "u"})]
 
 
+async def test_model_written_tool_results_are_discarded() -> None:
+    from backend.agents.tools.protocol import strip_invented_results
+
+    text = 'TOOL_CALL {"server":"fetch","tool":"fetch","args":{}}\nTOOL_RESULT fetch/fetch: fake\nmore'
+    assert strip_invented_results(text) == 'TOOL_CALL {"server":"fetch","tool":"fetch","args":{}}'
+    assert strip_invented_results("plain report") == "plain report"
+
+
 async def test_model_cannot_mark_memory_calls_non_sensitive() -> None:
     mcp = Mcp()
     replies = iter(

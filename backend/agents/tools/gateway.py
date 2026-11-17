@@ -208,7 +208,10 @@ class ToolGateway:
             )
             if is_fetch:
                 self._audit_fetch(agent_id, host, "failed", exc.reason)
-            return {"ok": False, "denied_reason": exc.reason}
+            failed: dict[str, Any] = {"ok": False, "denied_reason": exc.reason}
+            if exc.detail:
+                failed["detail"] = exc.detail
+            return failed
         if is_fetch:
             if isinstance(result, str) and len(result) > MAX_RESPONSE_CHARS:
                 result = result[:MAX_RESPONSE_CHARS] + "\n[truncated]"

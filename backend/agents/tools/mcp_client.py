@@ -20,9 +20,11 @@ MAX_RESULT_CHARS = 20_000
 class McpToolError(Exception):
     """A tool call failed; ``reason`` is a short code."""
 
-    def __init__(self, reason: str) -> None:
+    def __init__(self, reason: str, detail: str | None = None) -> None:
         super().__init__(reason)
         self.reason = reason
+        #: Short server message for ``tool_error`` (cut to 240 characters).
+        self.detail = detail[:240] if detail else None
 
 
 def last_sse_json(text: str) -> dict[str, Any] | None:
@@ -139,7 +141,15 @@ class McpClient:
             raise McpToolError("protocol_error")
         result = envelope.get("result") or {}
         if result.get("isError"):
-            raise McpToolError("tool_error")
+            first = next(
+                (
+                    c["text"]
+                    for c in result.get("content") or []
+                    if isinstance(c, dict) and isinstance(c.get("text"), str)
+                ),
+                None,
+            )
+            raise McpToolError("tool_error", first)
         texts = [
             c["text"]
             for c in result.get("content") or []

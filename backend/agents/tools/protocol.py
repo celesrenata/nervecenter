@@ -25,6 +25,7 @@ MAX_CALLS_PER_ROUND = 3
 RESULT_CHARS = 6_000
 
 _LINE = re.compile(r"^\s*TOOL_CALL\s+(\{.*\})\s*$", re.MULTILINE)
+_RESULT_LINE = re.compile(r"^\s*TOOL_RESULT\b", re.MULTILINE)
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,16 @@ class ToolCall:
     server: str
     tool: str
     args: dict[str, Any]
+
+
+def strip_invented_results(text: str) -> str:
+    """Drop everything from the first ``TOOL_RESULT`` line on.
+
+    Only the runner writes results. A model that writes its own (and keeps
+    "reasoning" over them) is inventing data, so its turn ends at that line.
+    """
+    match = _RESULT_LINE.search(text or "")
+    return text[: match.start()].rstrip() if match else text
 
 
 def parse_calls(text: str) -> list[ToolCall]:
@@ -123,8 +134,10 @@ def format_result(call: ToolCall, outcome: dict[str, Any]) -> str:
     if outcome.get("ok"):
         body = json.dumps(outcome.get("result"), default=str)[:RESULT_CHARS]
         return f"TOOL_RESULT {call.server}/{call.tool}: {body}"
+    detail = f": {outcome['detail']}" if outcome.get("detail") else ""
     return (
-        f"TOOL_RESULT {call.server}/{call.tool}: refused or failed ({outcome.get('denied_reason')})"
+        f"TOOL_RESULT {call.server}/{call.tool}: refused or failed "
+        f"({outcome.get('denied_reason')}{detail})"
     )
 
 
@@ -171,9 +184,10 @@ async def run_with_tools(
     totals = {k: int(result.get(k) or 0) for k in ("input_tokens", "output_tokens")}
     latency = float(result.get("e2e_latency_ms") or 0)
     for _ in range(MAX_ROUNDS):
-        calls = parse_calls(str(result.get("content", "")))
+        calls = parse_calls(strip_invented_results(str(result.get("content", ""))))
         if not calls:
             break
+        result = {**result, "content": strip_invented_results(str(result.get("content", "")))}
         lines = []
         for c in calls:
             emit(
