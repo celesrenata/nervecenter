@@ -98,6 +98,8 @@ import backend.persistence.models.mail_security  # noqa: F401
 import backend.persistence.models.projects  # noqa: F401
 import backend.persistence.models.handoffs  # noqa: F401
 import backend.persistence.models.openai_usage  # noqa: F401
+import backend.persistence.models.pentest  # noqa: F401
+import backend.persistence.models.resources  # noqa: F401
 from schemas.relationships import TemporalWindow
 from schemas.tasks import Task as TaskSchema
 
@@ -175,6 +177,13 @@ TABLES_WITH_ID = frozenset(
         "calendar_events",
         # Wellness-plane tables, Alembic 010 (workstream I — private journal).
         "wellness_entries",
+        # Resources (039) and pentest agent (040-042) tables.
+        "resources",
+        "pentest_allowlist",
+        "pentest_findings",
+        "pentest_firewall_snapshots",
+        "pentest_scans",
+        "pentest_settings",
         # Bills-plane tables, Alembic 008 (workstream G).
         "bills",
         "bill_candidates",
@@ -292,7 +301,10 @@ class TestOrmColumnTypes:
         # expected to register must be present. (C1 canonical-platform
         # tables from nc_platform.py are part of this set since 005.)
         assert TABLES_WITH_ID.issubset(set(Base.metadata.tables.keys()))
-        assert len(Base.metadata.tables) == len(TABLES_WITH_ID)
+        # Composite/natural-key tables with no ``id`` column are not in the id set.
+        no_id = {"agent_resource_links", "pentest_advisory_cache"}
+        assert no_id <= set(Base.metadata.tables.keys())
+        assert len(Base.metadata.tables) == len(TABLES_WITH_ID) + len(no_id)
 
     def test_every_id_column_is_string(self):
         """N1/D-5: every ``id`` column is ``String`` (never UUID)."""

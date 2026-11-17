@@ -731,13 +731,14 @@ class TestWellnessSleepSeam:
         engine, registry = await _make_harness(tmp_path)
         try:
             svc = _svc(registry)
+            base = datetime.now(UTC).replace(hour=22, minute=30, second=0, microsecond=0)
             await svc.add_sleep_record(
-                bed_at=datetime(2026, 10, 26, 22, 30, tzinfo=UTC),
-                wake_at=datetime(2026, 10, 27, 6, 15, tzinfo=UTC),
+                bed_at=base - timedelta(days=3),
+                wake_at=base - timedelta(days=3) + timedelta(hours=7, minutes=45),
                 source="manual",
             )
             await svc.add_sleep_record(
-                bed_at=datetime(2026, 10, 25, 23, 0, tzinfo=UTC),
+                bed_at=base - timedelta(days=4),
                 source="apple_health",
             )
             provider = make_wellness_sleep_provider(registry)

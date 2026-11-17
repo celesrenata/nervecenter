@@ -190,7 +190,7 @@ test.describe('Briefing (BF — prompt2 §30)', () => {
 
       // First fetch defaulted to morning — the default value is what makes
       // this screen the "Morning Brief" until the user changes it.
-      expect(seen[0]).toBe('morning')
+      await expect.poll(() => seen[0]).toBe('morning')
 
       // Switch to evening.
       await page.getByTestId('briefing-kind').selectOption('evening')
