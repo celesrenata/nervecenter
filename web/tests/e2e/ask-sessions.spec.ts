@@ -172,3 +172,19 @@ test('chats are saved to the account and come back in a new browser session', as
   await expect(bubble(second.page, 'Saved answer.')).toBeVisible()
   await second.context.close()
 })
+
+test('a busy model shows the retry status until the answer starts', async ({ page }) => {
+  await installStreamFake(page)
+  await seedBreakGlassSession(page)
+  await page.goto('/ask', { waitUntil: 'domcontentloaded' })
+  await ask(page, 'are you awake')
+  await expect.poll(() => streams(page)).toBe(1)
+  const message = 'The model is busy or still starting (http_503). Retrying in 4 s (attempt 3 of 8).'
+  await push(page, 0, 'status', { code: 'retrying', attempt: 2, max_attempts: 8, retry_in_s: 4, message })
+  await expect(page.getByTestId('ask-status')).toHaveText(message)
+  await push(page, 0, 'delta', { text: 'I am here.' })
+  await expect(page.getByTestId('ask-status')).toHaveCount(0)
+  await push(page, 0, 'done', { answer: 'I am here.', status: 'answered' })
+  await closeStream(page, 0)
+  await expect(bubble(page, 'I am here.')).toBeVisible()
+})

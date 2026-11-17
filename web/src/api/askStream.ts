@@ -2,7 +2,8 @@
  * Streaming Ask client — `POST /api/context/ask/stream` (SSE).
  *
  * Events: meta {request_id,session_id}, delta {text}, proposal {...},
- * done {full ask body, same shape as POST /api/context/ask}, error {code,message}.
+ * done {full ask body, same shape as POST /api/context/ask}, error {code,message},
+ * status {code:'retrying', message, attempt, max_attempts, retry_in_s} while a busy model is retried.
  * A non-2xx response rejects with `ApiError` (status + detail), so the caller
  * can tell an expired session (401) from a validation error (422) or a dead
  * network (TypeError from fetch).
@@ -25,8 +26,12 @@ export type AskStreamEvent =
   | { type: 'proposal'; data: CalendarProposal }
   | { type: 'done'; data: Record<string, unknown> }
   | { type: 'error'; data: { code?: string; message?: string } }
+  | {
+      type: 'status'
+      data: { code?: string; message?: string; attempt?: number; max_attempts?: number; retry_in_s?: number }
+    }
 
-const KNOWN_EVENTS = new Set(['meta', 'delta', 'proposal', 'done', 'error'])
+const KNOWN_EVENTS = new Set(['meta', 'delta', 'proposal', 'done', 'error', 'status'])
 
 /** Parse one SSE frame (the text between blank lines) into an event, or null. */
 export function parseSseFrame(frame: string): AskStreamEvent | null {

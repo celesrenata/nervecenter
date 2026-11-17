@@ -362,11 +362,14 @@ class SecureTransport:
         sensitive: bool = True,
         kind: str | None = None,
         max_tokens: int | None = None,
+        attempts: int | None = None,
         **kwargs: Any,
     ) -> Iterator[str]:
         """Streaming twin of :meth:`generate`: same route choice, headers and
         guard. The guard runs before every attempt, the route semaphore is held
-        for the whole stream, and retries happen only before the first chunk."""
+        for the whole stream, and retries happen only before the first chunk.
+        ``attempts`` overrides the route's attempt count (the streaming ask runs
+        its own reported retry loop and passes 1)."""
         if not sensitive:
             chosen = local_model(model, caller=self._caller)
             yield from self._inner.generate_stream(
@@ -399,7 +402,7 @@ class SecureTransport:
                 return stream, False, ""
 
         retrying = Retrying(
-            stop=stop_after_attempt(max(1, capacity.attempts)),
+            stop=stop_after_attempt(max(1, attempts or capacity.attempts)),
             wait=self._wait(capacity),
             retry=retry_if_exception(is_retryable),
             before_sleep=self._on_retry(chosen),

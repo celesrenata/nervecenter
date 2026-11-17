@@ -38,6 +38,8 @@ export interface ChatMessage {
   proposal?: CalendarProposal
   /** Event Ask created directly (confirm-first off); offers Undo. */
   undoEventId?: string
+  /** Transient progress while the server waits on a busy model. */
+  status?: string
 }
 
 export interface AskSession {
@@ -390,9 +392,11 @@ export const askSessions = {
           ...(inference ? { inference } : {}),
         },
         (ev) => {
-          if (ev.type === 'delta') {
+          if (ev.type === 'status') {
+            patch((m) => ({ ...m, status: ev.data.message ?? 'Waiting for the model…' }))
+          } else if (ev.type === 'delta') {
             q.push(ev.data.text)
-            patch((m) => ({ ...m, content: m.content + ev.data.text }))
+            patch((m) => ({ ...m, status: undefined, content: m.content + ev.data.text }))
           } else if (ev.type === 'proposal') {
             patch((m) => ({ ...m, proposal: ev.data }))
           } else if (ev.type === 'done') {
@@ -426,6 +430,7 @@ export const askSessions = {
             }
             patch((m) => ({
               ...m,
+              status: undefined,
               content,
               ...(undoEventId ? { undoEventId } : {}),
               provenance: Array.isArray(data.facts)
@@ -450,7 +455,11 @@ export const askSessions = {
                 : code === 'stream_interrupted'
                   ? `The answer stream was interrupted${msg ? `: ${msg}` : ''}.`
                   : `Ask failed (${code})${msg ? `: ${msg}` : ''}`
-            patch((m) => ({ ...m, content: m.content ? `${m.content}\n\n${content}` : content }))
+            patch((m) => ({
+              ...m,
+              status: undefined,
+              content: m.content ? `${m.content}\n\n${content}` : content,
+            }))
           }
         },
         abort.signal,

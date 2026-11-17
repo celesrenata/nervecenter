@@ -63,6 +63,45 @@ from schemas.context import ContextPackage
 from schemas.nc_platform import NCPrincipal, NCPolicy
 from schemas.routes import InferenceRoute
 
+#: Streaming ask patience: a cold or busy model refuses fast while it loads, so
+#: the stream retries (before the first token only) instead of giving up.
+ASK_STREAM_ATTEMPTS = int(os.environ.get("NERVE_ASK_STREAM_ATTEMPTS", "8") or 8)
+ASK_STREAM_PATIENCE_S = float(os.environ.get("NERVE_ASK_STREAM_PATIENCE_S", "240") or 240)
+ASK_STREAM_BACKOFF_MAX_S = 30.0
+#: Real rejections: retrying cannot help.
+_ASK_PERMANENT = (
+    "http_400", "http_401", "http_403", "http_404", "http_413", "http_422",
+    "no fixture", "not configured",
+)
+
+
+def _ask_reason(exc: BaseException) -> str:
+    reasons = getattr(exc, "reasons", None)
+    if isinstance(reasons, dict) and reasons:
+        return ", ".join(sorted({str(v) for v in reasons.values()}))[:120]
+    return type(exc).__name__
+
+
+def _ask_retryable(exc: BaseException) -> bool:
+    reason = _ask_reason(exc).lower()
+    return not any(code in reason for code in _ASK_PERMANENT)
+
+
+def _ask_retry_delay(attempt: int, exc: BaseException) -> float:
+    retry_after = getattr(exc, "retry_after", None)
+    if isinstance(retry_after, (int, float)) and retry_after > 0:
+        return min(float(retry_after), 60.0)
+    return min(2.0 ** attempt, ASK_STREAM_BACKOFF_MAX_S)
+
+
+def _open_stream(transport: Any, model: str, prompt: str) -> Iterator[str]:
+    """One attempt: the secure transport's own retries are folded into the
+    ask loop so each wait is reported to the user."""
+    try:
+        return iter(transport.generate_stream(model, prompt, attempts=1))
+    except TypeError:  # a transport without the ``attempts`` override
+        return iter(transport.generate_stream(model, prompt))
+
 log = structlog.get_logger(__name__)
 
 #: Deterministic fixture marker namespace: reported when the OmniRoute
@@ -347,6 +386,7 @@ class AskService:
         self._pdp = pdp if pdp is not None else default_ask_pdp()
         self._principal = principal or default_ask_principal()
         self._transport = transport
+        self._sleep = time.sleep  # tests replace this
         self._remote_provider_allowed = remote_provider_allowed
         self._model = model
         self._provider = provider
@@ -757,9 +797,45 @@ class AskService:
         try:
             transport = self._transport
             if hasattr(transport, "generate_stream"):
-                for chunk in transport.generate_stream(model, prompt):
-                    parts.append(chunk)
-                    yield "delta", {"text": chunk}
+                deadline = started + ASK_STREAM_PATIENCE_S
+                attempt = 0
+                while True:
+                    attempt += 1
+                    try:
+                        for chunk in _open_stream(transport, model, prompt):
+                            parts.append(chunk)
+                            yield "delta", {"text": chunk}
+                        if not "".join(parts).strip():
+                            raise OmniRouteUnavailableError(
+                                [(provider, model)], {(provider, model): "empty"}
+                            )
+                        break
+                    except OmniRouteUnavailableError as exc:
+                        if "".join(parts).strip():
+                            raise  # partial answer: never retried (would duplicate text)
+                        parts.clear()
+                        delay = _ask_retry_delay(attempt, exc)
+                        if (
+                            not _ask_retryable(exc)
+                            or attempt >= ASK_STREAM_ATTEMPTS
+                            or time.monotonic() + delay > deadline
+                        ):
+                            raise
+                        reason = _ask_reason(exc)
+                        log.info("ask.stream_retry", attempt=attempt, reason=reason, delay_s=delay)
+                        yield "status", {
+                            "code": "retrying",
+                            "attempt": attempt,
+                            "max_attempts": ASK_STREAM_ATTEMPTS,
+                            "retry_in_s": round(delay, 1),
+                            "reason": reason,
+                            "message": (
+                                f"The model is busy or still starting ({reason}). "
+                                f"Retrying in {round(delay)} s "
+                                f"(attempt {attempt + 1} of {ASK_STREAM_ATTEMPTS})."
+                            ),
+                        }
+                        self._sleep(delay)
             else:
                 text = str(transport.generate(model, prompt).get("content", ""))
                 parts.append(text)

@@ -214,6 +214,15 @@ const AskView = () => {
                 }`}
               >
                 <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                {message.status && active.loading && (
+                  <p
+                    data-testid="ask-status"
+                    role="status"
+                    className="mt-1 animate-pulse text-xs text-amber-700 dark:text-amber-300"
+                  >
+                    {message.status}
+                  </p>
+                )}
                 {message.proposal && <CalendarProposalCard proposal={message.proposal} />}
                 {message.undoEventId && <CreatedEventUndo eventId={message.undoEventId} />}
                 <p className="text-xs mt-2 opacity-70">
