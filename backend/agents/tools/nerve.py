@@ -269,15 +269,19 @@ class NerveTools:
 
         row = await self._pentest(get_service).current_allowlist()
         out_of_scope = row.get("out_of_scope") or []
+        selected = row.get("selected_targets") or []
         return self._shrink({
             "status": row.get("status"), "approved": bool(row.get("approved")),
             "fingerprint": _clip(row.get("fingerprint"), 12), "approved_by": row.get("approved_by"),
             "approved_at": row.get("approved_at"), "target_count": len(row.get("targets") or []),
             "targets": [_clip(t, 40) for t in (row.get("targets") or [])[:60]],
+            "selected_count": len(selected),
+            "selected_targets": [_clip(t, 40) for t in selected[:60]],
             "out_of_scope_count": len(out_of_scope),
             "out_of_scope": [_clip(o.get("cidr"), 40) for o in out_of_scope[:15]],
-            "note": "Only the approved allowlist may be scanned; the owner approves it.",
-        }, ("targets", "out_of_scope"))
+            "note": "Only the owner's ticked, approved selected_targets may be scanned, "
+                    "not the full computed targets list.",
+        }, ("targets", "selected_targets", "out_of_scope"))
 
     async def _t_pentest_exposure(self, args: dict[str, Any]) -> Any:
         from backend.pentest.findings import get_store
