@@ -229,7 +229,7 @@ spec:
             - name: WORKBENCH_IDE_ENABLED
               value: "true"
             - name: WORKBENCH_IDE_IMAGE
-              value: registry.celestium.life/nervecenter/workbench-ide@sha256:07892e8b18734311025287bfddfb165db2752d0d435b4bb2eb18333485376230
+              value: registry.celestium.life/nervecenter/workbench-ide@sha256:b36ebb481d1e1811b5359e03a61bc8cefa003e3db7f5791f7e686db3d4217481
             - name: WORKBENCH_IDE_ALLOWED_ORIGINS
               value: https://nervecenter.celestium.life
             - name: WORKBENCH_IDE_TICKET_KEY
