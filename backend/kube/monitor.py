@@ -114,6 +114,10 @@ class KubeMonitor:
                 self.last = summary
                 log.warning("kube.check_collect_failed", error=type(exc).__name__)
                 return summary
+            cov = snapshot.get("coverage")
+            if cov:
+                summary["coverage"] = cov.get("line")
+                summary["coverage_percent"] = cov.get("percent")
             summary["warnings"] += [str(w)[:200] for w in snapshot.get("warnings", [])][:10]
             await self._reports.add("snapshot", snapshot, started)
             settings = await self._settings.get()
@@ -145,7 +149,7 @@ class KubeMonitor:
             return 0
         made = 0
         for issue in new:
-            if issue["mode"] != "normal" or made >= MAX_DRAFT_TASKS:
+            if issue["mode"] != "normal" or issue["kind"] == "coverage" or made >= MAX_DRAFT_TASKS:
                 continue
             payload = {
                 "title": f"Kube: {issue['reason']} {issue['namespace']}/{issue['name']}"[:200],
@@ -178,8 +182,8 @@ class KubeMonitor:
         new_keys = {i["key"] for i in synced["new"]}
         candidates = []
         for issue in synced["open"]:  # known-down issues are not in "open"
-            if issue["mode"] == "known_down":
-                continue
+            if issue["mode"] == "known_down" or issue["kind"] == "coverage":
+                continue  # a blind check is for the owner; there is nothing to diagnose
             ran = issue.get("last_agent_run_at")
             if ran is not None and now - ran < cooldown:
                 continue

@@ -107,9 +107,14 @@ def _env(workdir: str, **extra: str) -> dict[str, str]:
             "HOME": workdir, "LANG": "C.UTF-8", **extra}
 
 
+def _limit(max_chars: int | None) -> dict[str, int]:
+    return {"limit": max_chars} if max_chars else {}
+
+
 async def _run(argv: list[str], *, env: dict[str, str], timeout: float,
                stdin: str | None = None, cwd: str | None = None,
-               on_output: Callable[[str], None] | None = None) -> RunResult:
+               on_output: Callable[[str], None] | None = None,
+               max_chars: int | None = None) -> RunResult:
     """Run one command; output is read as it arrives so ``on_output`` (raw text
     chunks, for the live log) sees it before the command ends. A timeout keeps
     what was printed so far."""
@@ -151,7 +156,7 @@ async def _run(argv: list[str], *, env: dict[str, str], timeout: float,
         await proc.wait()
         partial = redact(b"".join(chunks).decode("utf-8", "replace")).rstrip()
         return RunResult(False, None, f"{partial}\n[timed out]" if partial else "[timed out]")
-    text = redact(b"".join(chunks).decode("utf-8", "replace"))
+    text = redact(b"".join(chunks).decode("utf-8", "replace"), **_limit(max_chars))
     return RunResult(proc.returncode == 0, proc.returncode, text)
 
 
@@ -178,7 +183,8 @@ def kubeconfig(config: dict[str, Any], token: str) -> str:
 
 async def run_kubectl(config: dict[str, Any], token: str | None, args: list[str], *,
                       stdin: str | None = None, act: bool = False,
-                      on_output: Callable[[str], None] | None = None) -> RunResult:
+                      on_output: Callable[[str], None] | None = None,
+                      max_chars: int | None = None) -> RunResult:
     if not token:
         raise ExecutorError("kube_token_missing")
     workdir = _tmpdir()
@@ -188,7 +194,7 @@ async def run_kubectl(config: dict[str, Any], token: str | None, args: list[str]
         return await _run([KUBECTL, "--request-timeout=30s", *args],
                           env=_env(workdir, KUBECONFIG=path),
                           timeout=ACT_TIMEOUT_S if act else READ_TIMEOUT_S, stdin=stdin,
-                          on_output=on_output)
+                          on_output=on_output, max_chars=max_chars)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

@@ -22,7 +22,7 @@ class FakeInfra:
         self.table = table
         self.calls: list[tuple[str, ...]] = []
 
-    async def run_read(self, connector: str, step: dict[str, Any]) -> dict[str, Any]:
+    async def run_read(self, connector: str, step: dict[str, Any], **_: Any) -> dict[str, Any]:
         args = tuple(step["args"])
         self.calls.append(args)
         if args in self.table:
@@ -191,3 +191,34 @@ def test_workload_name_is_stable_across_pod_names() -> None:
         {"kind": "Job", "name": "bk-28391234", "controller": True}]}}
     assert workload_of(job) == "bk"
     assert workload_of(_pod("lone-7d9c8b6f5d-abcde", "n", None, {})) == "lone"
+async def test_coverage_counts_unreadable_namespaces_and_raises_a_blind_check_issue() -> None:
+    table = _table()
+    del table[("get", "pods", "-n", "data", "-o", "json")]
+    snap = await collect_snapshot(FakeInfra(table), "home", NOW)
+    cov = snap["coverage"]
+    assert (cov["read"], cov["total"], cov["unreadable"]) == (1, 2, ["data"])
+    assert cov["line"].startswith("read 1 of 2 namespaces, 1 unreadable (data)")
+    blind = [p for p in snapshot_problems(snap) if p["kind"] == "coverage"]
+    assert [p["key"] for p in blind] == ["coverage/_cluster/cluster/Unreadable"]
+    assert "could not be read" in blind[0]["message"] and "50%" in blind[0]["message"]
+
+
+async def test_full_coverage_raises_no_issue() -> None:
+    snap = await collect_snapshot(FakeInfra(_table()), "home", NOW)
+    assert snap["coverage"]["percent"] == 100 and snap["coverage"]["unreadable"] == []
+    assert not [p for p in snapshot_problems(snap) if p["kind"] == "coverage"]
+
+
+async def test_unreadable_nodes_are_listed_as_not_read() -> None:
+    table = {k: v for k, v in _table().items() if k[:2] != ("get", "nodes")}
+    snap = await collect_snapshot(FakeInfra(table), "home", NOW)
+    assert "nodes" in snap["coverage"]["cluster_unreadable"]
+    assert "nodes" in snap["coverage"]["line"]
+
+
+async def test_namespaces_beyond_the_read_cap_count_as_unread(monkeypatch) -> None:
+    from backend.kube import collector
+    monkeypatch.setattr(collector, "MAX_NAMESPACES", 1)
+    snap = await collect_snapshot(FakeInfra(_table()), "home", NOW)
+    assert snap["coverage"]["total"] == 2 and snap["coverage"]["read"] == 1
+    assert snap["coverage"]["over_cap"] == 1

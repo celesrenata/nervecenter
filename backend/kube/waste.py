@@ -162,8 +162,12 @@ async def collect_waste(infra: Any, connector: str, prometheus_url: str | None =
     restarts: list[dict[str, Any]] = []
     unused_pvcs: list[dict[str, Any]] = []
     for ns in namespaces:
-        pods = await _items(infra, connector, "pods", ns, warnings)
+        pod_warnings: list[str] = []
+        pods = await _items(infra, connector, "pods", ns, pod_warnings)
+        warnings.extend(pod_warnings)
         pvcs = await _items(infra, connector, "persistentvolumeclaims", ns, warnings)
+        if pod_warnings:  # without the pods every claim would look unused
+            pvcs = []
         used = set().union(*(_claims(p) for p in pods)) if pods else set()
         for pvc in pvcs:
             meta = pvc.get("metadata") or {}

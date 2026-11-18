@@ -169,6 +169,15 @@ export function KubeView() {
         </div>
       </div>
       {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {status && (
+        <p
+          data-testid="kube-coverage"
+          className={`text-sm ${status.coverage && status.coverage.percent >= 90 && status.coverage.unreadable.length === 0 && status.coverage.cluster_unreadable.length === 0 ? 'text-secondary' : 'text-red-600'}`}
+        >
+          Coverage: {status.coverage ? status.coverage.line : 'unknown (no check has recorded coverage yet)'}
+          {status.coverage && status.coverage.unreadable.length > 0 && ' - unread namespaces are unknown, not healthy.'}
+        </p>
+      )}
       <p className="text-sm text-secondary">
         Pending fix plans are approved step by step on the <Link className="underline" to="/infrastructure">Infrastructure</Link> page.
       </p>

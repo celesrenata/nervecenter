@@ -125,3 +125,18 @@ async def test_report_retention(factory) -> None:
             select(KubeReport.kind, func.count()).group_by(KubeReport.kind))).all())
     assert counts == {"snapshot": 24, "waste": 14}
     assert (await reports.latest("snapshot"))["data"] == {"i": 29}
+
+
+async def test_issue_in_an_unreadable_namespace_is_not_resolved(factory) -> None:
+    settings = await KubeSettingsStore(factory).get()
+    store = IssueStore(factory)
+    a = _p("app", "web", "CrashLoopBackOff")
+    await store.sync(_snap(a), settings, T0)
+    blind = {"pods_unhealthy": [], "coverage": {
+        "unreadable": ["app"], "unreadable_by_kind": {"pods": ["app"]}, "cluster_unreadable": []}}
+    out = await store.sync(blind, settings, T0 + timedelta(hours=1))
+    assert out["resolved"] == []  # not seen is not fixed
+    assert [i["key"] for i in await store.list("open")] == [a["key"]]
+    seen = {"pods_unhealthy": [], "coverage": {"unreadable_by_kind": {}, "cluster_unreadable": []}}
+    done = await store.sync(seen, settings, T0 + timedelta(hours=2))
+    assert [i["key"] for i in done["resolved"]] == [a["key"]]  # readable and gone: resolved

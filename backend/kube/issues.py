@@ -6,7 +6,7 @@ from typing import Any
 
 from sqlalchemy import delete, select
 
-from backend.kube.collector import snapshot_problems
+from backend.kube.collector import scope_unread, snapshot_coverage, snapshot_problems
 from backend.kube.settings import _utc, classify_namespace
 from backend.persistence.models.kube import KubeIssue, KubeReport
 
@@ -64,7 +64,10 @@ class IssueStore:
                     open_.append(view)
                     if not was_open:
                         new.append(view)
+            cov = snapshot_coverage(snapshot)
             for key, row in rows.items():
+                if scope_unread(row.kind, row.namespace, cov):
+                    continue  # not seen is not fixed: this check could not read that scope
                 if key not in found and row.state == "open":
                     row.state, row.resolved_at = "resolved", now
                     resolved.append(issue_dict(row))

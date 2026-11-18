@@ -45,7 +45,18 @@ export interface KubeSettings {
   updated_by: string | null
 }
 
+export interface KubeCoverage {
+  line: string
+  total: number
+  read: number
+  percent: number
+  unreadable: string[]
+  cluster_unreadable: string[]
+}
+
 export interface KubeStatus {
+  coverage?: KubeCoverage | null
+  coverage_at?: string | null
   settings: KubeSettings
   last_check_at: string | null
   last_waste_at: string | null

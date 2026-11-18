@@ -448,23 +448,29 @@ class NerveTools:
         issues.sort(key=lambda r: (r["severity"] != "critical", r["mode"] != "normal"))
         events = [{k: _clip(e.get(k), 120) for k in ("namespace", "object", "reason", "message")}
                   | {"count": e.get("count")} for e in (snap.get("events") or [])[:8]]
+        cov = snap.get("coverage") or {}
+        coverage = {
+            "line": cov.get("line") or "coverage unknown: snapshot has no coverage record",
+            "percent": cov.get("percent"),
+            "unreadable_namespaces": (cov.get("unreadable") or [])[:40],
+            "not_read": cov.get("cluster_unreadable") or [],
+            "note": "Anything listed as unreadable was NOT checked. No issue there does not mean "
+                    "healthy; say so under Not checked."}
         return self._shrink({
-            "source": source, "collected_at": snap.get("collected_at"),
+            "source": source, "collected_at": snap.get("collected_at"), "coverage": coverage,
             "namespaces": snap.get("namespaces"), "issue_count": len(issues),
             "issues": issues, "warning_events": events,
             "warnings": [_clip(w, 120) for w in (snap.get("warnings") or [])[:5]],
         }, ("issues", "warning_events"))
 
     async def _kube_read(self, args: list[str]) -> str:
-        from backend.infra.policy import _REDACTIONS
+        from backend.infra.policy import redact
         _, infra, connector = await self._kube()
         res = await infra.run_read(connector, {"args": args})
         if not res.get("ok"):
             raise NerveToolError(str(res.get("denied_reason") or "read_failed")[:60])
         text = str(res.get("output") or "")
-        for pattern, repl in _REDACTIONS:  # not redact(): its cut would drop the Events tail
-            text = pattern.sub(repl, text)
-        return text
+        return redact(text, limit=len(text) + 1)  # no cut: it would drop the Events tail
 
     @staticmethod
     def _kube_name(args: dict[str, Any], key: str) -> str:

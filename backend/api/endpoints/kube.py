@@ -88,7 +88,11 @@ async def status(request: Request, claims: Claims) -> dict[str, Any]:
     now = datetime.now(UTC)
     issues = await _issue_views(svc, now)
     monitor = get_monitor(request.app)
+    latest = await svc.reports.latest("snapshot")
+    snap = (latest or {}).get("data") or {}
     return {
+        "coverage": snap.get("coverage"),
+        "coverage_at": _iso((latest or {}).get("created_at")),
         "settings": settings_view(settings),
         "last_check_at": _iso(settings["last_check_at"]),
         "last_waste_at": _iso(settings["last_waste_at"]),

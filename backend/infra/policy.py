@@ -264,6 +264,63 @@ def check_ssh_act_command(command: Any) -> str:
     return command
 
 
+_SENSITIVE = r"(?:password|passwd|secret|token|api[_-]?key|private[_-]?key|access[_-]?key)"
+#: ``key: value`` or ``key=value`` on one line, where the key name contains a credential word.
+_ASSIGNMENT = re.compile(
+    r"(?im)^(\s*[\"']?[\w.-]*" + _SENSITIVE + r"[\w.-]*[\"']?\s*[:=]\s*)(\S.*)$")
+#: the value part of a JSON line: a string or number, then an optional comma.
+_JSON_SCALAR = re.compile(r'("(?:[^"\\]|\\.)*"|-?\d[\w.+-]*)(\s*,?\s*)')
+_KEEP = re.compile(r"(?:true|false|null)\s*,?\s*|[\[{]\s*[\]}]?\s*,?\s*", re.I)
+#: a long mixed-case base64-looking value (certificates, keys, bundles).
+_B64_VALUE = re.compile(
+    r'(?m)^(\s*"?[\w.-]+"?\s*:\s*"?)'
+    r'(?=[A-Za-z0-9+/]*[A-Z])(?=[A-Za-z0-9+/]*[a-z])(?=[A-Za-z0-9+/]*\d)'
+    r'([A-Za-z0-9+/]{40,}={0,2})("?,?\s*)$')
+
+
+def _redact_assignment(m: re.Match[str]) -> str:
+    """Hide the value only. JSON lines keep their quotes, comma and structure so that
+    ``kubectl -o json`` output still parses; booleans and ``{``/``[`` openers are not secrets."""
+    head, rest = m.group(1), m.group(2)
+    if _KEEP.fullmatch(rest):
+        return m.group(0)
+    if head.lstrip().startswith('"'):
+        scalar = _JSON_SCALAR.fullmatch(rest)
+        if scalar:
+            return f'{head}"[redacted]"{scalar.group(2)}'
+    return f"{head}[redacted]"
+
+
+def _redact_b64(m: re.Match[str]) -> str:
+    return f"{m.group(1)}[redacted]{m.group(3)}"
+
+
+_DATA_BLOCK = re.compile(r'^(\s*)"?(?:data|binaryData|stringData)"?\s*:\s*\{?\s*$', re.I)
+_DATA_LINE = re.compile(r'^(\s*"?[^\s":]+"?\s*:\s*)(.+?)(\s*,?)$')
+
+
+def _redact_data_blocks(text: str) -> str:
+    """Values under ``data:``/``binaryData:``/``stringData:`` are base64 or plain secrets."""
+    out: list[str] = []
+    indent: int | None = None
+    for line in text.split("\n"):
+        if indent is not None:
+            stripped = line.lstrip()
+            if stripped and len(line) - len(stripped) <= indent:
+                indent = None
+            else:
+                m = _DATA_LINE.match(line)
+                if m and not _KEEP.fullmatch(m.group(2)):
+                    quoted = m.group(1).lstrip().startswith('"')  # JSON line: stay valid JSON
+                    mask = '"[redacted]"' if quoted else "[redacted]"
+                    line = f"{m.group(1)}{mask}{m.group(3)}"
+        block = _DATA_BLOCK.match(line)
+        if block and indent is None:
+            indent = len(block.group(1))
+        out.append(line)
+    return "\n".join(out)
+
+
 _REDACTIONS = (
     (re.compile(
         r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----", re.S),
@@ -272,19 +329,16 @@ _REDACTIONS = (
     (re.compile(r"(?i)\b(bearer)\s+[A-Za-z0-9._~+/=-]{12,}"), r"\1 [redacted]"),
     (re.compile(r"\b(?:sk|pk|ghp|gho|xox[abps])[-_][A-Za-z0-9_-]{16,}"), "[redacted key]"),
     (re.compile(r"\bAKIA[0-9A-Z]{16}\b"), "[redacted key]"),
-    (re.compile(
-        r"(?im)^(\s*[\"']?[\w.-]*(?:password|passwd|secret|token|api[_-]?key|private[_-]?key)"
-        r"[\w.-]*[\"']?\s*[:=]\s*)\S.*$"), r"\1[redacted]"),
+    (_ASSIGNMENT, _redact_assignment),
+    (_B64_VALUE, _redact_b64),
 )
-
-
-def redact(text: str) -> str:
-    """Remove credentials from command output and cap its size."""
-    out = text or ""
+def redact(text: str, limit: int = MAX_OUTPUT_CHARS) -> str:
+    """Remove credentials from command output and cap its size (``limit`` characters)."""
+    out = _redact_data_blocks(text or "")
     for pattern, repl in _REDACTIONS:
         out = pattern.sub(repl, out)
-    if len(out) > MAX_OUTPUT_CHARS:
-        out = out[:MAX_OUTPUT_CHARS] + "\n[truncated]"
+    if len(out) > limit:
+        out = out[:limit] + "\n[truncated]"
     return out
 
 

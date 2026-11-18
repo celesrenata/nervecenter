@@ -39,7 +39,7 @@ class Cluster:
         self.answers = answers or {}
         self.calls: list[list[str]] = []
 
-    async def run_read(self, connector: str, step: dict[str, Any]) -> dict[str, Any]:
+    async def run_read(self, connector: str, step: dict[str, Any], **_: Any) -> dict[str, Any]:
         args = list(step["args"])
         self.calls.append(args)
         text = self.answers.get(" ".join(args))
@@ -295,7 +295,7 @@ def test_kube_doctor_is_a_builtin_with_exactly_the_kube_tools() -> None:
     assert policy.infra_allowed(SimpleNamespace(type="kube_doctor", tools=manifest.tools))
     assert not policy.nerve_tools_for(_agent("planner")) & {"kube_health", "kube_runbook"}
     from backend.agents.runner.runner import RUN_CAPS
-    assert RUN_CAPS["kube_doctor"] == 12 and RUN_CAPS["pentest"] == 4
+    assert RUN_CAPS["kube_doctor"] == 12 and RUN_CAPS["pentest"] == 8
 
 
 def test_prompt_carries_the_tuned_rules() -> None:

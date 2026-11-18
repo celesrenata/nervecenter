@@ -276,14 +276,16 @@ class InfraService:
     # -- running ----------------------------------------------------------------------
 
     async def _execute(self, row: InfraConnector, step: dict[str, Any], *, act: bool,
-                       on_output: Any = None, kube_guard: bool = False) -> executor.RunResult:
+                       on_output: Any = None, kube_guard: bool = False,
+                       max_chars: int | None = None) -> executor.RunResult:
         secret = await self._secret(row.id)
         if row.kind == "kubernetes":
             args = check_kubectl(step.get("args"), act=act, stdin=step.get("stdin"),
                                  kube_guard=kube_guard)
             return await executor.run_kubectl(row.config or {}, secret, args,
-                                              on_output=on_output,
-                                              stdin=step.get("stdin"), act=act)
+                                              on_output=on_output, stdin=step.get("stdin"),
+                                              act=act, **({"max_chars": max_chars}
+                                                          if max_chars else {}))
         if row.host_key_status != "pinned":
             raise executor.ExecutorError("host_key_not_pinned")
         if act:
@@ -293,12 +295,16 @@ class InfraService:
         return await executor.run_ssh(row.config or {}, secret, command, act=act,
                                       on_output=on_output)
 
-    async def run_read(self, connector: str, step: dict[str, Any]) -> dict[str, Any]:
-        """Plan mode: one read-only command. ``{"ok", "exit", "output"}`` or a refusal."""
+    async def run_read(self, connector: str, step: dict[str, Any], *,
+                       max_chars: int | None = None) -> dict[str, Any]:
+        """Plan mode: one read-only command. ``{"ok", "exit", "output"}`` or a refusal.
+
+        ``max_chars`` raises the output cap for the deterministic kube/pentest collectors
+        (code, never an agent argument); the default cap protects agent context."""
         try:
             async with self._sessions() as s:
                 row = await self._row(s, connector)
-            res = await self._execute(row, step, act=False)
+            res = await self._execute(row, step, act=False, max_chars=max_chars)
         except KeyError:
             return {"ok": False, "denied_reason": "unknown_connector"}
         except (PolicyError, executor.ExecutorError) as exc:

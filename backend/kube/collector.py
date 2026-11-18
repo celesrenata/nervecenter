@@ -241,6 +241,89 @@ async def _cluster_items(infra: Any, connector: str, kind: str, warnings: list[s
     return out
 
 
+#: A check that read fewer than this share of the namespaces raises a "blind check" issue.
+LOW_COVERAGE_PCT = 90
+COVERAGE_KEY = "coverage/_cluster/cluster/Unreadable"
+#: issue kind -> the kind of read that backs it, for "was this issue's scope readable?"
+_ISSUE_READ = {"pod": "pods", "pvc": "persistentvolumeclaims",
+               "cert": "certificates.cert-manager.io"}
+_ISSUE_CLUSTER_READ = {"node": "nodes", "pv": "persistentvolumes", "volume": "longhorn"}
+
+
+async def _read_ns(infra: Any, connector: str, kind: str, ns: str, warnings: list[str],
+                   failed: dict[str, list[str]]) -> list[dict[str, Any]]:
+    """``_items`` that also records which namespaces could not be read for ``kind``."""
+    local: list[str] = []
+    items = await _items(infra, connector, kind, ns, local)
+    if local:
+        warnings.extend(local)
+        failed.setdefault(kind, []).append(ns)
+    return items
+
+
+def coverage_line(cov: dict[str, Any]) -> str:
+    """"read X of Y namespaces, N unreadable (a, b); also unreadable: ..." for people and agents."""
+    unread = cov.get("unreadable") or []
+    line = (f"read {cov.get('read', 0)} of {cov.get('total', 0)} namespaces, "
+            f"{len(unread)} unreadable")
+    if unread:
+        line += f" ({', '.join(unread[:20])}{', ...' if len(unread) > 20 else ''})"
+    extra = list(cov.get("cluster_unreadable") or [])
+    by_kind = cov.get("unreadable_by_kind") or {}
+    for kind in ("persistentvolumeclaims", "events", "certificates.cert-manager.io"):
+        if by_kind.get(kind):
+            extra.append(f"{kind} in {len(by_kind[kind])} namespaces")
+    if cov.get("over_cap"):
+        extra.append(f"{cov['over_cap']} namespaces beyond the read cap")
+    return line + (f"; also not read: {', '.join(extra)}" if extra else "")
+
+
+def build_coverage(total: int, namespaces: list[str], by_kind: dict[str, list[str]],
+                   cluster_unreadable: list[str], over_cap: int) -> dict[str, Any]:
+    unread = sorted(set(by_kind.get("pods", [])) | set(by_kind.get("persistentvolumeclaims", [])))
+    read = len(namespaces) - len(unread)
+    cov: dict[str, Any] = {
+        "total": total, "read": read, "unreadable": unread, "over_cap": over_cap,
+        "unreadable_by_kind": {k: sorted(v) for k, v in by_kind.items()},
+        "cluster_unreadable": cluster_unreadable,
+        "percent": round(100 * read / total) if total else 0,
+        "all_unreadable": not namespaces}
+    cov["line"] = coverage_line(cov)
+    return cov
+
+
+def snapshot_coverage(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """The coverage block of a snapshot; None for snapshots stored before it existed."""
+    cov = snapshot.get("coverage")
+    return cov if isinstance(cov, dict) else None
+
+
+def scope_unread(kind: str, namespace: str, cov: dict[str, Any] | None) -> bool:
+    """True when the check could not see the scope an issue lives in, so its absence from the
+    snapshot proves nothing (the issue stays open instead of counting as resolved)."""
+    if not cov or kind == "coverage":
+        return False
+    if cov.get("all_unreadable"):
+        return True
+    if kind in _ISSUE_READ:
+        return namespace in (cov.get("unreadable_by_kind") or {}).get(_ISSUE_READ[kind], [])
+    if kind in _ISSUE_CLUSTER_READ:
+        return _ISSUE_CLUSTER_READ[kind] in (cov.get("cluster_unreadable") or [])
+    return False
+
+
+def coverage_problem(cov: dict[str, Any]) -> dict[str, Any] | None:
+    """A visible issue when the check was (partly) blind."""
+    if cov.get("total") and cov.get("percent", 0) >= LOW_COVERAGE_PCT and not cov.get(
+            "cluster_unreadable"):
+        return None
+    return _problem("coverage", "", "cluster", "Unreadable", "critical",
+                    message=f"cluster could not be read (coverage {cov.get('percent', 0)}%, "
+                            f"below {LOW_COVERAGE_PCT}%): {cov.get('line', '')}"[:800],
+                    percent=cov.get("percent", 0), unreadable=(cov.get("unreadable") or [])[:50],
+                    cluster_unreadable=cov.get("cluster_unreadable") or [])
+
+
 async def _crd_present(infra: Any, connector: str, crd: str) -> bool:
     return await _kubectl(infra, connector, ["get", "crd", crd, "-o", "name"]) is not None
 
@@ -250,52 +333,74 @@ async def collect_snapshot(infra: Any, connector: str, now: datetime | None = No
     """Read-only snapshot of the cluster behind ``connector``."""
     now = now or datetime.now(UTC)
     warnings: list[str] = []
+    failed: dict[str, list[str]] = {}
+    cluster_unreadable: list[str] = []
     ns_text = await _kubectl(infra, connector, ["get", "namespaces", "-o", "name"])
-    namespaces = [ln.strip().split("/", 1)[-1] for ln in (ns_text or "").splitlines()
-                  if ln.strip()][:MAX_NAMESPACES]
+    all_ns = [ln.strip().split("/", 1)[-1] for ln in (ns_text or "").splitlines() if ln.strip()]
+    namespaces = all_ns[:MAX_NAMESPACES]
     if not namespaces:
         warnings.append("namespaces could not be read")
     pods: list[dict[str, Any]] = []
     pvcs: list[dict[str, Any]] = []
     events: list[dict[str, Any]] = []
     for ns in namespaces:
-        for p in await _items(infra, connector, "pods", ns, warnings):
+        for p in await _read_ns(infra, connector, "pods", ns, warnings, failed):
             problem = classify_pod(p, now)
             if problem:
                 pods.append(problem)
-        pvcs.extend(c for c in (classify_pvc(i) for i in await _items(
-            infra, connector, "persistentvolumeclaims", ns, warnings)) if c)
-        events.extend(await _items(infra, connector, "events", ns, warnings))
+        pvcs.extend(c for c in (classify_pvc(i) for i in await _read_ns(
+            infra, connector, "persistentvolumeclaims", ns, warnings, failed)) if c)
+        events.extend(await _read_ns(infra, connector, "events", ns, warnings, failed))
     unhealthy = _merge(pods)
-    pvs = [p for p in (classify_pv(i) for i in await _cluster_items(
-        infra, connector, "persistentvolumes", warnings)) if p]
+
+    async def cluster_kind(kind: str) -> list[dict[str, Any]]:
+        local: list[str] = []
+        items = await _cluster_items(infra, connector, kind, local)
+        if local:
+            warnings.extend(local)
+            cluster_unreadable.append(kind)
+        return items
+
+    pvs = [p for p in (classify_pv(i) for i in await cluster_kind("persistentvolumes")) if p]
     nodes: list[dict[str, Any]] = []
-    for n in await _cluster_items(infra, connector, "nodes", warnings):
+    for n in await cluster_kind("nodes"):
         nodes.extend(classify_node(n))
     volumes: list[dict[str, Any]] = []
     if await _crd_present(infra, connector, LONGHORN_CRD):
-        replicas = await _items(infra, connector, "replicas.longhorn.io", LONGHORN_NS, warnings)
+        local: list[str] = []
+        replicas = await _items(infra, connector, "replicas.longhorn.io", LONGHORN_NS, local)
         volumes = [v for v in (classify_volume(i, replicas) for i in await _items(
-            infra, connector, LONGHORN_CRD, LONGHORN_NS, warnings)) if v]
+            infra, connector, LONGHORN_CRD, LONGHORN_NS, local)) if v]
+        if local:
+            warnings.extend(local)
+            cluster_unreadable.append("longhorn")
     else:
         warnings.append("Longhorn volumes skipped: CRD volumes.longhorn.io is not installed")
     certs: list[dict[str, Any]] = []
     if await _crd_present(infra, connector, CERT_CRD):
         for ns in namespaces:
-            certs.extend(c for c in (classify_cert(i, now) for i in await _items(
-                infra, connector, CERT_CRD, ns, warnings)) if c)
+            certs.extend(c for c in (classify_cert(i, now) for i in await _read_ns(
+                infra, connector, CERT_CRD, ns, warnings, failed)) if c)
     else:
         warnings.append("certificates skipped: CRD certificates.cert-manager.io is not installed")
-    return {
+    cov = build_coverage(len(all_ns), namespaces, failed, cluster_unreadable,
+                         len(all_ns) - len(namespaces))
+    snapshot = {
         "collected_at": now.isoformat(), "namespaces": len(namespaces),
         "pods_unhealthy": unhealthy,
         "pending_pods": [p for p in unhealthy if p["reason"] == "Pending"],
         "pvcs": pvcs, "pvs": pvs, "longhorn_volumes": volumes, "nodes": nodes,
         "events": dedupe_events(events, now), "certificates": certs, "warnings": warnings,
+        "coverage": cov, "coverage_issues": [],
     }
+    blind = coverage_problem(cov)
+    if blind:
+        snapshot["coverage_issues"].append(blind)
+    return snapshot
 
 
-SECTIONS = ("pods_unhealthy", "pvcs", "pvs", "longhorn_volumes", "nodes", "certificates")
+SECTIONS = ("pods_unhealthy", "pvcs", "pvs", "longhorn_volumes", "nodes", "certificates",
+            "coverage_issues")
 
 
 def snapshot_problems(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
