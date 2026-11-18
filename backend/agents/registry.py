@@ -88,6 +88,9 @@ class AgentManifest:
     #: "model": str}`` (either key optional) or ``None`` = use the default.
     #: Process-wide (in-process store) — not persisted.
     inference: dict[str, Any] | None = None
+    #: True when a report without any tool call is worthless: the run fails instead of
+    #: completing if the agent never calls a tool (no-evidence guard, see tools/protocol.py).
+    requires_tools: bool = False
 
     def __post_init__(self) -> None:
         if self.capabilities is None:
@@ -801,6 +804,7 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "nerve.task_create", "nerve.task_update", "sequential-thinking",
             ],
             loop_protection={"max_iterations": 10, "blackboard_change_threshold": 0.1},
+            requires_tools=True,
         ),
         AGENT_KUBE_DOCTOR: AgentManifest(
             agent_type=AGENT_KUBE_DOCTOR,
@@ -830,11 +834,22 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "must accept.\n"
                 "- nerve/task_update {task_id, ...}: edit a draft you created.\n"
                 + _INFRA_TOOLS,
-                "1. Round 1, three calls together: kube_health, kube_known_down and "
+                "0. Your tools are the only source of facts. The owner's issue list in the run "
+                "material only tells you where to look; it is not evidence. Your first reply "
+                "is TOOL_CALL lines only, no report.\n"
+                "1. Round 1: kube_health (its coverage line) and kube_known_down, plus "
                 "kube_waste.\n"
-                "2. Round 2, at most three calls in total: kube_describe and kube_logs (current "
-                "and, for a crashed container, previous) for at most 3 problems that have mode "
-                "normal or override_active, the most severe first.\n"
+                "2. Then, for EACH open issue you were given or kube_health lists (most severe "
+                "first), at most three calls per round: kube_describe for the pod (its events "
+                "are at the end), kube_logs for the pod, and kube_logs again with "
+                "previous=true when the container crashed or restarted. Use the namespace and "
+                "pod names exactly as kube_health returns them. Do not write any finding until "
+                "you have these results; a call that fails or is refused is reported as "
+                "unavailable, never guessed.\n"
+                "2a. In every finding quote the actual error lines from the tool results "
+                "(an exact log line, a Last State reason, an event message) next to the "
+                "restart count, and give a probable root cause. When the logs show nothing, "
+                "say that and name the next thing to check.\n"
                 "3. Round 3, only now: propose_plan, at most 3 plans in this run and ONE plan "
                 "per problem. Then stop calling tools and write the report.\n"
                 "4. Classify each problem with its cause, the evidence you saw and the blast "
@@ -879,6 +894,7 @@ def _create_native_manifests() -> dict[AgentType, AgentManifest]:
                 "nerve.task_create", "nerve.task_update", "sequential-thinking",
             ],
             loop_protection={"max_iterations": 10, "blackboard_change_threshold": 0.1},
+            requires_tools=True,
         ),
     }
 

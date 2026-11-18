@@ -14,8 +14,11 @@ from backend.agents.tools.fetch_guard import FetchGuard
 from backend.agents.tools.protocol import (
     MAX_ROUNDS,
     CutOffToolCall,
+    NoToolEvidence,
+    ToolsUnavailable,
     is_cut_off_call,
     parse_calls,
+    parse_lines,
     run_with_tools,
 )
 
@@ -209,7 +212,8 @@ async def test_tool_loop_is_bounded_and_sums_tokens() -> None:
 
     result = await run_with_tools(infer, "p", mcp.gateway(), AGENT)
     # One extra model call asks for the final report once the rounds are spent.
-    assert len(prompts) == MAX_ROUNDS + 2 and len(mcp.tool_calls()) == MAX_ROUNDS
+    # The calls in the last reply still run (never dropped), then the report is requested.
+    assert len(prompts) == MAX_ROUNDS + 2 and len(mcp.tool_calls()) == MAX_ROUNDS + 1
     assert result["input_tokens"] == 2 * (MAX_ROUNDS + 2)
     assert "no tool rounds are left" in prompts[-1]
     assert "TOOL_RESULT fetch/fetch" in prompts[-1]
@@ -325,3 +329,93 @@ def test_cut_off_detection_needs_a_broken_call_that_hit_the_limit() -> None:
     assert not is_cut_off_call('TOOL_CALL {"server":"a","tool":"b","args":{}}', 8192)
     assert not is_cut_off_call("TOOL_CALL not json}", 10)  # complete but malformed: left alone
     assert not is_cut_off_call("## Summary\nno calls here", 8192)
+
+
+PENTEST_ROUND_4 = (
+    'TOOL_CALL {"server": "nerve", "tool": "pentest_scan_start", "args": {"slice": "4a724f4fb5"}}\n'
+    'TOOL_CALL {"server": "nerve", "tool": "task_create", "args": {"title": "Patch router (CVE-1)", '
+    '"description": "Firmware is old (3.2): \\"admin\\" panel \u2014 exposed; fix: update, then '
+    're-scan (see notes)", "priority": 10}}\n'
+    'TOOL_CALL {"server": "nerve", "tool": "task_create", "args": {"title": "Close port 23", '
+    '"description": "telnet (open) \u2014 why: cleartext; who: lan", "priority": 10}}'
+)
+
+
+def test_every_well_formed_line_parses_in_order_even_with_long_text() -> None:
+    calls = parse_calls(PENTEST_ROUND_4)
+    assert [c.tool for c in calls] == ["pentest_scan_start", "task_create", "task_create"]
+    assert calls[1].args["priority"] == 10 and "\u2014" in calls[1].args["description"]
+
+
+def test_a_malformed_line_is_reported_not_dropped() -> None:
+    items = parse_lines('TOOL_CALL {bad\nTOOL_CALL {"server":"fetch","tool":"fetch","args":{}}')
+    assert items[0].line_no == 1 and "JSON" in items[0].reason
+    assert items[1].tool == "fetch"
+
+
+async def test_calls_in_the_reply_after_the_last_round_still_run() -> None:
+    mcp = Mcp()
+    call = 'TOOL_CALL {"server":"fetch","tool":"fetch","args":{"url":"https://example.org/a"}}'
+    replies = iter([call] * MAX_ROUNDS + [PENTEST_ROUND_4.replace("nerve", "fetch"), "## Summary\nx\n## Not checked\nnone"])
+    events: list[tuple[str, str]] = []
+
+    async def infer(prompt: str) -> dict[str, Any]:
+        return {"content": next(replies), "input_tokens": 1, "output_tokens": 1}
+
+    await run_with_tools(
+        infer, "p", mcp.gateway(), AGENT, lambda k, t, d: events.append((k, t))
+    )
+    # three calls in the last reply, all three executed (cap is 3 per round)
+    assert len([e for e in events if e[0] == "tool_call"]) == MAX_ROUNDS + 3
+
+
+async def test_calls_over_the_round_cap_are_skipped_visibly_and_bad_lines_error() -> None:
+    mcp = Mcp()
+    one = 'TOOL_CALL {"server":"fetch","tool":"fetch","args":{"url":"https://example.org/a"}}'
+    replies = iter(["\n".join([one, "TOOL_CALL {oops", one, one, one]), "done"])
+    prompts: list[str] = []
+
+    async def infer(prompt: str) -> dict[str, Any]:
+        prompts.append(prompt)
+        return {"content": next(replies), "input_tokens": 1, "output_tokens": 1}
+
+    await run_with_tools(infer, "p", mcp.gateway(), AGENT)
+    assert len(mcp.tool_calls()) == 3
+    assert "error in your TOOL_CALL on line 2" in prompts[1]
+    assert "skipped: round limit" in prompts[1]
+
+
+async def test_a_required_tools_run_without_tool_calls_is_asked_once_then_fails() -> None:
+    mcp = Mcp()
+    prompts: list[str] = []
+
+    async def infer(prompt: str) -> dict[str, Any]:
+        prompts.append(prompt)
+        return {"content": "## Summary\nmade up\n## Not checked\nnone", "output_tokens": 5}
+
+    with pytest.raises(NoToolEvidence, match="without calling any tool"):
+        await run_with_tools(infer, "p", mcp.gateway(), AGENT, requires_tools=True)
+    assert len(prompts) == 2 and "must call your tools" in prompts[1]
+
+
+async def test_a_required_tools_run_recovers_when_the_second_ask_calls_a_tool() -> None:
+    mcp = Mcp()
+    replies = iter([
+        "## Summary\nguess",
+        'TOOL_CALL {"server":"fetch","tool":"fetch","args":{"url":"https://example.org/a"}}',
+        "## Summary\nok\n## Not checked\nnone",
+    ])
+
+    async def infer(prompt: str) -> dict[str, Any]:
+        return {"content": next(replies), "input_tokens": 1, "output_tokens": 1}
+
+    result = await run_with_tools(infer, "p", mcp.gateway(), AGENT, requires_tools=True)
+    assert len(mcp.tool_calls()) == 1 and result["content"].endswith("none")
+
+
+async def test_a_required_tools_run_without_a_gateway_fails_explicitly() -> None:
+    async def infer(prompt: str) -> dict[str, Any]:
+        raise AssertionError("must not call the model")
+
+    with pytest.raises(ToolsUnavailable):
+        await run_with_tools(infer, "p", None, AGENT, requires_tools=True)

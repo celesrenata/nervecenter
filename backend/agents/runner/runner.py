@@ -19,6 +19,7 @@ from zoneinfo import ZoneInfo
 
 import structlog
 
+from backend.agents.registry import get_agent_registry
 from backend.agents.runner.backoff import BACKED_OFF, BackoffController
 from backend.agents.runner.live import LiveLog
 from backend.agents.runner.skillhub import SkillHubClient, SkillSelection
@@ -252,8 +253,14 @@ class AgentRunner:
                     f" ({selection.status})",
                     {"skills": list(selection.used), "status": selection.status},
                 )
+                manifest = get_agent_registry().get(str(getattr(agent, "type", "") or ""))
                 result = await run_with_tools(
-                    lambda text: self.infer(agent, text), prompt, self.tools, agent, on_event
+                    lambda text: self.infer(agent, text),
+                    prompt,
+                    self.tools,
+                    agent,
+                    on_event,
+                    requires_tools=bool(manifest is not None and manifest.requires_tools),
                 )
                 if len(str(result.get("content") or "").strip()) < MIN_REPORT_CHARS:
                     raise NoReportError("no report produced")

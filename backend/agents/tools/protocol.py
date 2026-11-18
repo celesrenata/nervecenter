@@ -20,15 +20,15 @@ from typing import Any
 from backend.agents.tools import policy
 from backend.infra.policy import SSH_READ_COMMANDS
 
-MAX_ROUNDS = 3
+MAX_ROUNDS = 5
 MAX_CALLS_PER_ROUND = 3
 RESULT_CHARS = 6_000
 #: A reply this long (output tokens) has hit the model's reply limit (8,192 on the routes in use).
 CUT_OFF_TOKENS = 8_000
 
-_LINE = re.compile(r"^\s*TOOL_CALL\s+(\{.*\})\s*$", re.MULTILINE)
 _RESULT_LINE = re.compile(r"^\s*TOOL_RESULT\b", re.MULTILINE)
 _CALL_START = re.compile(r"^\s*TOOL_CALL\b.*$", re.MULTILINE)
+_CALL_BODY = re.compile(r"^\s*TOOL_CALL\b(.*)$")
 
 
 @dataclass(frozen=True)
@@ -48,22 +48,57 @@ def strip_invented_results(text: str) -> str:
     return text[: match.start()].rstrip() if match else text
 
 
+@dataclass(frozen=True)
+class BadCall:
+    """A ``TOOL_CALL`` line that cannot run, with the reason shown to the model."""
+
+    line_no: int
+    reason: str
+
+
+def _parse_line(body: str) -> ToolCall | str:
+    """A call from the text after ``TOOL_CALL``, or the reason it is malformed."""
+    try:
+        raw = json.loads(body.strip())
+    except ValueError as exc:
+        return f"not valid JSON ({str(exc)[:80]})"
+    if not isinstance(raw, dict):
+        return "the call must be a JSON object"
+    server, tool, args = raw.get("server"), raw.get("tool"), raw.get("args", {})
+    if not isinstance(server, str) or not isinstance(tool, str):
+        return 'needs string fields "server" and "tool"'
+    if not isinstance(args, dict):
+        return '"args" must be a JSON object'
+    return ToolCall(server, tool, args)
+
+
+def parse_lines(text: str) -> list[ToolCall | BadCall]:
+    """Every ``TOOL_CALL`` line in ``text`` in order: a call, or a ``BadCall`` for a bad line."""
+    out: list[ToolCall | BadCall] = []
+    for number, line in enumerate((text or "").splitlines(), start=1):
+        match = _CALL_BODY.match(line)
+        if match is None:
+            continue
+        parsed = _parse_line(match.group(1))
+        out.append(BadCall(number, parsed) if isinstance(parsed, str) else parsed)
+    return out
+
+
 def parse_calls(text: str) -> list[ToolCall]:
-    """The well-formed ``TOOL_CALL`` lines in ``text`` (malformed ones are ignored)."""
-    calls: list[ToolCall] = []
-    for match in _LINE.finditer(text or ""):
-        try:
-            raw = json.loads(match.group(1))
-        except ValueError:
-            continue
-        if not isinstance(raw, dict):
-            continue
-        server, tool, args = raw.get("server"), raw.get("tool"), raw.get("args", {})
-        if isinstance(server, str) and isinstance(tool, str) and isinstance(args, dict):
-            calls.append(ToolCall(server, tool, args))
-        if len(calls) >= MAX_CALLS_PER_ROUND:
-            break
-    return calls
+    """The well-formed ``TOOL_CALL`` lines in ``text``, in order (malformed ones left out).
+
+    Not capped: the per-round cap is applied by :func:`run_with_tools`, which defers the rest
+    visibly instead of dropping them.
+    """
+    return [item for item in parse_lines(text) if isinstance(item, ToolCall)]
+
+
+class NoToolEvidence(RuntimeError):
+    """A run that must use tools ended without calling any."""
+
+
+class ToolsUnavailable(RuntimeError):
+    """A run that must use tools has no tool gateway configured."""
 
 
 class CutOffToolCall(RuntimeError):
@@ -198,12 +233,17 @@ async def run_with_tools(
     gateway: Any,
     agent: Any,
     on_event: Callable[[str, str, dict[str, Any] | None], None] | None = None,
+    requires_tools: bool = False,
 ) -> dict[str, Any]:
     """Run ``infer_once`` and serve its tool calls through ``gateway`` (bounded).
 
     Token counts and latency are summed over the rounds. Without a configured
-    gateway this is exactly one call with the original prompt. ``on_event``
-    (kind, text, data) reports progress for the live log; it never raises.
+    gateway this is exactly one call with the original prompt, unless the agent
+    ``requires_tools``: then it raises :class:`ToolsUnavailable`. Every well-formed
+    ``TOOL_CALL`` line runs in order, up to :data:`MAX_CALLS_PER_ROUND` per round; the rest
+    get a "skipped" result, and a malformed line gets an error result (never silence).
+    A ``requires_tools`` run that never calls a tool raises :class:`NoToolEvidence`.
+    ``on_event`` (kind, text, data) reports progress for the live log; it never raises.
     """
     def emit(kind: str, text: str, data: dict[str, Any] | None = None) -> None:
         if on_event is not None:
@@ -228,8 +268,17 @@ async def run_with_tools(
         return reply
 
     if gateway is None or not gateway.configured:
+        if requires_tools:
+            emit("tools_unavailable", "No tool gateway is configured for this run", None)
+            raise ToolsUnavailable("tools are not configured; this agent cannot run without them")
         return await call_model(prompt, 1)
     current = prompt + "\n\n" + instructions(agent)
+    if requires_tools:
+        current += (
+            "\n\nYou have no data yet. Your next reply must be TOOL_CALL lines only (at most "
+            f"{MAX_CALLS_PER_ROUND}); write the report only after TOOL_RESULT lines are in front "
+            "of you, and quote them as evidence."
+        )
     result = await call_model(current, 1)
     round_no = 1
     totals = {k: int(result.get(k) or 0) for k in ("input_tokens", "output_tokens")}
@@ -254,42 +303,86 @@ async def run_with_tools(
             raise CutOffToolCall("model reply was cut off mid tool call")
         return retry
     result = await mend(result, current)
-    for _ in range(MAX_ROUNDS):
-        calls = parse_calls(strip_invented_results(str(result.get("content", ""))))
-        if not calls:
-            break
-        result = {**result, "content": strip_invented_results(str(result.get("content", "")))}
-        lines = []
-        for c in calls:
-            emit(
-                "tool_call",
-                f"{c.server}.{c.tool}",
-                {"server": c.server, "tool": c.tool, "args": c.args},
-            )
-            line = format_result(
-                c, await gateway.call(agent, c.server, c.tool, c.args, context=prompt)
-            )
-            emit("tool_result", line, {"server": c.server, "tool": c.tool})
-            lines.append(line)
-        current = f"{current}\n\n{result.get('content', '')}\n\n" + "\n".join(lines)
+    executed = 0
+
+    def add_tokens(reply: dict[str, Any]) -> None:
+        nonlocal latency
+        for k in totals:
+            totals[k] += int(reply.get(k) or 0)
+        latency += float(reply.get("e2e_latency_ms") or 0)
+
+    def wants_tools(reply: dict[str, Any]) -> bool:
+        return bool(parse_lines(strip_invented_results(str(reply.get("content", "")))))
+
+    if requires_tools and not wants_tools(result):
+        # No-evidence guard: a report written without any data is not accepted.
+        emit("model_retry", "Reply has no TOOL_CALL; asking once more for tool calls")
+        current = (
+            f"{current}\n\n{result.get('content', '')}\n\nTOOL_RESULT: you wrote no TOOL_CALL. "
+            "You must call your tools before writing the report: emit TOOL_CALL lines now."
+        )
         round_no += 1
         result = await call_model(current, round_no)
-        for k in totals:
-            totals[k] += int(result.get(k) or 0)
-        latency += float(result.get("e2e_latency_ms") or 0)
+        add_tokens(result)
         result = await mend(result, current)
-    if parse_calls(strip_invented_results(str(result.get("content", "")))):
-        # The round budget ran out while the model still wanted tools: ask for the report.
+        if not wants_tools(result):
+            raise NoToolEvidence("agent produced a report without calling any tool")
+
+    async def serve(reply: dict[str, Any]) -> None:
+        """Run the reply's TOOL_CALL lines in order and append their results to the prompt."""
+        nonlocal current, executed
+        text = strip_invented_results(str(reply.get("content", "")))
+        lines: list[str] = []
+        ran = 0
+        for item in parse_lines(text):
+            if isinstance(item, BadCall):
+                line = f"TOOL_RESULT: error in your TOOL_CALL on line {item.line_no}: {item.reason}"
+                emit("tool_result", line, {"error": "malformed_call", "line": item.line_no})
+                lines.append(line)
+                continue
+            if ran >= MAX_CALLS_PER_ROUND:
+                line = (
+                    f"TOOL_RESULT {item.server}/{item.tool}: skipped: round limit "
+                    f"({MAX_CALLS_PER_ROUND} calls per round), call again"
+                )
+                emit("tool_result", line, {"server": item.server, "tool": item.tool, "skipped": True})
+                lines.append(line)
+                continue
+            ran += 1
+            executed += 1
+            emit(
+                "tool_call",
+                f"{item.server}.{item.tool}",
+                {"server": item.server, "tool": item.tool, "args": item.args},
+            )
+            line = format_result(
+                item,
+                await gateway.call(agent, item.server, item.tool, item.args, context=prompt),
+            )
+            emit("tool_result", line, {"server": item.server, "tool": item.tool})
+            lines.append(line)
+        current = f"{current}\n\n{text}\n\n" + "\n".join(lines)
+
+    for _ in range(MAX_ROUNDS):
+        if not wants_tools(result):
+            break
+        await serve(result)
+        round_no += 1
+        result = await call_model(current, round_no)
+        add_tokens(result)
+        result = await mend(result, current)
+    if wants_tools(result):
+        # The round budget ran out while the model still wanted tools: serve those last calls
+        # (never drop them silently), then ask for the report.
+        await serve(result)
         current = (
-            f"{current}\n\n{strip_invented_results(str(result.get('content', '')))}\n\n"
+            f"{current}\n\n"
             "TOOL_RESULT: no tool rounds are left. Do not write any TOOL_CALL. Write the final "
             "Markdown report now from the results above, listing what you could not check."
         )
         round_no += 1
         result = await call_model(current, round_no)
-        for k in totals:
-            totals[k] += int(result.get(k) or 0)
-        latency += float(result.get("e2e_latency_ms") or 0)
+        add_tokens(result)
         result = await mend(result, current)
     content = str(result.get("content", ""))
     if "## Summary" in content and "## Not checked" not in content:
@@ -301,9 +394,7 @@ async def run_with_tools(
         )
         round_no += 1
         result = await call_model(current, round_no)
-        for k in totals:
-            totals[k] += int(result.get(k) or 0)
-        latency += float(result.get("e2e_latency_ms") or 0)
+        add_tokens(result)
     merged = dict(result)
     merged.update(totals)
     if latency:
