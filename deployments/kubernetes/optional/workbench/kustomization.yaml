@@ -11,6 +11,7 @@ resources:
   - fsworker.yaml
   - networkpolicy.yaml
   - rbac.yaml
+  - opencode-web.yaml
 patches:
   - path: api-patch.yaml
     target:

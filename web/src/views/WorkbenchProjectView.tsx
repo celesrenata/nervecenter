@@ -8,6 +8,7 @@ import {
   type WorkbenchSession,
 } from '../api/workbench'
 import IdeFrame from '../components/workbench/IdeFrame'
+import QrLink from '../components/workbench/QrLink'
 
 export const TASK_STATUS_POLL_MS = 30_000
 
@@ -91,6 +92,17 @@ export default function WorkbenchProjectView() {
 
   // Menagerie task status, refreshed while the project is open (Req 3.11).
   const isMenagerie = kind === 'menagerie'
+  const [opencodeWebUrl, setOpencodeWebUrl] = useState<string | null>(null)
+  useEffect(() => {
+    let alive = true
+    workbenchApi
+      .config()
+      .then((c) => alive && setOpencodeWebUrl(c.opencode_web_url ?? null))
+      .catch(() => undefined)
+    return () => {
+      alive = false
+    }
+  }, [])
   const [taskStatus, setTaskStatus] = useState<WorkbenchIdeTaskStatus | null>(null)
   const [taskErr, setTaskErr] = useState<string | null>(null)
   useEffect(() => {
@@ -205,7 +217,27 @@ export default function WorkbenchProjectView() {
               </p>
             </section>
           )}
-          {(isOpencode || isMenagerie) && <IdeFrame kind={kind as WorkbenchKind} slug={slug} />}
+          {isOpencode && opencodeWebUrl && (
+            <section className="space-y-1" aria-label="opencode web" data-testid="wb-opencode-web">
+              <h2 className="text-sm font-medium">opencode</h2>
+              <p className="text-xs text-secondary">
+                Opens opencode&apos;s own web UI. Pick the project{' '}
+                <code>/projects/{slug}</code>; other directories are refused.
+              </p>
+              <QrLink url={opencodeWebUrl} label="Open opencode" />
+            </section>
+          )}
+          {isMenagerie && (
+            <>
+              <IdeFrame kind={kind as WorkbenchKind} slug={slug} />
+              <section className="space-y-1" aria-label="Open on another device">
+                <QrLink
+                  url={`${window.location.origin}/workbench/menagerie/${encodeURIComponent(slug)}`}
+                  label="Link to this project"
+                />
+              </section>
+            </>
+          )}
           <section className="space-y-2" data-testid="wb-controls">
             <div className="flex gap-2">
               <button type="button" className={btn} disabled={busy || !!project.archived}

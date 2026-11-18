@@ -1,0 +1,168 @@
+# opencode web UI on its own host (Workbench). Traefik -> this oauth2-proxy
+# (Keycloak SSO, host-only cookie) -> api:8000, where HostDispatch sends the
+# host to backend/workbench/oc_proxy.py. That proxy verifies the Keycloak ID
+# token passed in Authorization, limits `directory` to registered opencode
+# Projects, and adds the opencode password server-side.
+#
+# Prerequisites: DNS for the host; redirect URI
+# https://opencode.nervecenter.celestium.life/oauth2/callback on the Keycloak
+# client `nervecenter`; Secret nervecenter-oauth-oc with key cookie-secret
+# (32 random bytes, base64). The api needs WORKBENCH_OPENCODE_WEB_HOST.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nervecenter-oauth-oc
+  namespace: nervecenter
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: nervecenter-oauth-oc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nervecenter-oauth-oc
+  template:
+    metadata:
+      labels:
+        app: nervecenter-oauth-oc
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: oauth
+          image: quay.io/oauth2-proxy/oauth2-proxy:v7.15.4
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--http-address=0.0.0.0:4180"
+            - "--provider=keycloak-oidc"
+            - "--oidc-issuer-url=https://sso.celestium.life/realms/celestium"
+            - "--client-id=nervecenter"
+            - "--redirect-url=https://opencode.nervecenter.celestium.life/oauth2/callback"
+            - "--upstream=http://api.nervecenter.svc.cluster.local:8000"
+            - "--pass-host-header=true"
+            - "--reverse-proxy=true"
+            - "--code-challenge-method=S256"
+            - "--approval-prompt=auto"
+            - "--skip-provider-button"
+            - "--scope=openid profile email"
+            - "--email-domain=*"
+            # Keycloak ID token to the api, which verifies it (no header trust).
+            - "--pass-authorization-header=true"
+            - "--pass-access-token=false"
+            # Host-only cookie: never sent to nervecenter.celestium.life.
+            - "--cookie-name=__Host-nervecenter_oc"
+            - "--cookie-secure=true"
+            - "--cookie-httponly=true"
+            - "--cookie-samesite=lax"
+            - "--cookie-refresh=2m"
+            - "--cookie-expire=8h"
+            - "--proxy-websockets=true"
+          env:
+            - name: OAUTH2_PROXY_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-oauth
+                  key: client-secret
+            - name: OAUTH2_PROXY_COOKIE_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: nervecenter-oauth-oc
+                  key: cookie-secret
+          ports:
+            - name: http
+              containerPort: 4180
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "1"
+              memory: "256Mi"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: nervecenter-oauth-oc
+  namespace: nervecenter
+spec:
+  selector:
+    app: nervecenter-oauth-oc
+  ports:
+    - name: http
+      port: 4180
+      targetPort: http
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: nervcenter-opencode
+  namespace: nervecenter
+  annotations:
+    cert-manager.io/cluster-issuer: celestium-le-production
+spec:
+  ingressClassName: traefik
+  tls:
+    - hosts: [opencode.nervecenter.celestium.life]
+      secretName: nervecenter-opencode-tls
+  rules:
+    - host: opencode.nervecenter.celestium.life
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: nervecenter-oauth-oc
+                port:
+                  number: 4180
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-traefik-to-oauth-oc
+  namespace: nervecenter
+spec:
+  podSelector:
+    matchLabels:
+      app: nervecenter-oauth-oc
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: traefik}
+      ports:
+        - {protocol: TCP, port: 4180}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-oauth-oc-to-api
+  namespace: nervecenter
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels: {app: nervecenter-oauth-oc}
+      ports:
+        - {protocol: TCP, port: 8000}

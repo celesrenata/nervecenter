@@ -6,6 +6,8 @@ export type WorkbenchKind = 'opencode' | 'menagerie'
 export interface WorkbenchConfig {
   phase: number
   ide_enabled: boolean
+  /** https URL of the opencode web UI host, or null when not configured. */
+  opencode_web_url?: string | null
   default_models?: Record<string, string>
   [key: string]: unknown
 }

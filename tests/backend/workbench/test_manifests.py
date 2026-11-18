@@ -109,9 +109,25 @@ def test_base_kustomization_does_not_reference_workbench():
             assert "workbench" not in p.read_text().lower(), p
 
 
+SSO_GATES = {"nervecenter-oauth", "nervecenter-oauth-oc"}
+
+
+def _assert_sso_gated(ing):
+    """Req 6.3: an Ingress may only reach an oauth2-proxy (SSO) service, over TLS."""
+    assert ing["metadata"]["name"] == "nervcenter-opencode"
+    issuer = ing["metadata"]["annotations"]["cert-manager.io/cluster-issuer"]
+    assert issuer == "celestium-le-production"
+    hosts = {h for t in ing["spec"]["tls"] for h in t["hosts"]}
+    for rule in ing["spec"]["rules"]:
+        assert rule["host"] in hosts
+        for path in rule["http"]["paths"]:
+            assert path["backend"]["service"]["name"] in SSO_GATES
+
+
 def test_no_new_ingress():
     for d in _load_all():
-        assert d["kind"] != "Ingress"
+        if d["kind"] == "Ingress":
+            _assert_sso_gated(d)
 
 
 def _run(env_extra):
@@ -204,13 +220,23 @@ def test_no_pod_template_mounts_both_stores_with_patches():
             assert len(claims) <= 1, d["metadata"]["name"]
 
 
-def test_no_ingress_resource_anywhere_in_workbench_dir():
-    for d in _all_with_patches():
-        assert d["kind"] != "Ingress"
+def test_only_the_sso_gated_opencode_ingress_in_workbench_dir():
+    found = []
     for p in WB.glob("*.y*ml"):
         for d in yaml.safe_load_all(p.read_text()):
-            if d:
-                assert d.get("kind") != "Ingress", p
+            if d and d.get("kind") == "Ingress":
+                _assert_sso_gated(d)
+                found.append(p.name)
+    assert found == ["opencode-web.yaml"]
+
+
+def test_opencode_oauth_proxy_cookie_is_host_only_and_passes_id_token():
+    (dep,) = [d for d in _load_all() if d["kind"] == "Deployment"
+              and d["metadata"]["name"] == "nervecenter-oauth-oc"]
+    args = dep["spec"]["template"]["spec"]["containers"][0]["args"]
+    assert "--pass-authorization-header=true" in args
+    assert not any(a.startswith("--cookie-domain") for a in args)
+    assert any(a.startswith("--cookie-name=__Host-") for a in args)
 
 
 def _netpols(name):

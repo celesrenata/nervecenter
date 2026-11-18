@@ -274,6 +274,44 @@ def _install_ide_proxy(target: FastAPI) -> None:
         log.warning("api.ide_proxy_unavailable", error=type(exc).__name__)
 
 
+def _install_opencode_web(target: FastAPI) -> None:
+    """Serve the opencode web UI on its own host (WORKBENCH_OPENCODE_WEB_HOST).
+
+    Requests for that host are dispatched before routing, so NerveCenter's
+    routes and default-deny dependency never see them; the opencode app
+    verifies the Keycloak ID token from its own oauth2-proxy on every request.
+    """
+    from backend.workbench import oc_proxy, phase
+
+    host = oc_proxy.configured_host()
+    if not host or not phase.phase_at_least(2):
+        return
+    state: dict[str, object] = {}
+
+    def build() -> object:
+        if "app" in state:
+            return state["app"]
+        url = os.environ.get("NERVE_OPENCODE_URL", "")
+        password = os.environ.get("NERVE_OPENCODE_PASSWORD", "")
+        issuer = os.environ.get("NERVE_SSO_ISSUER", "")
+        client_id = os.environ.get("NERVE_SSO_CLIENT_ID", "")
+        if not (url and password and issuer and client_id):
+            log.warning("api.opencode_web_unconfigured")
+            return None
+        state["app"] = oc_proxy.create_oc_app(
+            host=host,
+            upstream=url,
+            password=password,
+            verify_token=oc_proxy.make_keycloak_verifier(issuer, client_id),
+            allowed_slugs=oc_proxy.make_slug_provider(
+                lambda: getattr(target.state, "db_engine", None)
+            ),
+        )
+        return state["app"]
+
+    target.add_middleware(oc_proxy.HostDispatch, host=host, other=build)
+
+
 def _install_control_plane_wiring(target: FastAPI) -> None:
     """Wrap the dependency-wiring lifespan to install the control plane.
 
@@ -513,6 +551,7 @@ def _configure(target: FastAPI) -> None:
     for router in ALL_ROUTERS:
         target.include_router(router)
     _install_ide_proxy(target)
+    _install_opencode_web(target)
     target.include_router(canonical_aliases())
 
     @target.get("/api/openapi.json", include_in_schema=False)

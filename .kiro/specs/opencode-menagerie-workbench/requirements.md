@@ -160,6 +160,8 @@ Assumptions to confirm during review:
 1. THE Workbench_API SHALL require a valid, unexpired SSO session for every request to a path beginning with `/api/workbench/`.
 2. THE Workbench SHALL route every request to a path beginning with `/ide/` through the existing oauth2-proxy gate.
 3. THE Workbench SHALL add no Ingress path that reaches the Workbench_API, an IDE_Instance or the Opencode_Server without passing the SSO check.
+3a. WHERE the opencode web UI is enabled, THE Workbench SHALL serve it only on a dedicated host behind its own oauth2-proxy (Keycloak SSO, host-only cookie), and THE Workbench_API SHALL verify the Keycloak ID token on every request, SHALL refuse any `directory` outside a registered `opencode` Project_Root, and SHALL NOT expose the Opencode_Server password to the browser.
+3b. THE Workbench_UI SHALL offer a QR code for the opencode web UI and for each `menagerie` Project page; the QR code SHALL contain only the URL, so opening it on another device still requires the SSO login.
 4. IF a request to a Workbench endpoint has no valid SSO session, THEN THE Workbench_API SHALL return 401, SHALL perform no file or cluster operation, and SHALL leave all Project files and cluster resources unchanged.
 5. THE Workbench_API SHALL read the Opencode_Server password from the existing Secret `nervecenter-opencode` and SHALL NOT include the password in any response body, response header or browser-visible log.
 6. THE Workbench_API SHALL start each IDE_Instance with code-server's own password authentication disabled, and SHALL start it only while both the oauth2-proxy gate and a NetworkPolicy that admits only the oauth2-proxy and Workbench_API pods are in effect.

@@ -252,6 +252,10 @@ async def get_config() -> dict[str, Any]:
         "ide_enabled": phase.phase_at_least(3)
         and phase.ide_enabled()
         and bool((os.environ.get("WORKBENCH_IDE_IMAGE") or "").strip()),
+        "opencode_web_url": (
+            f"https://{h}" if (h := (os.environ.get("WORKBENCH_OPENCODE_WEB_HOST") or "").strip())
+            else None
+        ),
         "default_models": {
             "model": phase.default_model(),
             "small_model": phase.default_small_model(),

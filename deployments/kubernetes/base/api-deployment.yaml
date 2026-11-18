@@ -232,6 +232,8 @@ spec:
               value: registry.celestium.life/nervecenter/workbench-ide@sha256:eebfdaea4657e04d3694752a9a03e0a6cbdbde02c88b7661a3502d20530485d2
             - name: WORKBENCH_IDE_ALLOWED_ORIGINS
               value: https://nervecenter.celestium.life
+            - name: WORKBENCH_OPENCODE_WEB_HOST
+              value: opencode.nervecenter.celestium.life
             - name: WORKBENCH_IDE_TICKET_KEY
               valueFrom:
                 secretKeyRef:
