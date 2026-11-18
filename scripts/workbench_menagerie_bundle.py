@@ -124,6 +124,7 @@ def main() -> int:
     )
     ap.add_argument("--settings", type=Path, default=HOME / "Downloads/zoo-code-settings.json")
     ap.add_argument("--namespace", default="workbench")
+    ap.add_argument("--name", default="workbench-menagerie-settings")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     settings = json.dumps(build_settings(a.profiles, a.settings), indent=2)
@@ -133,7 +134,7 @@ def main() -> int:
     cm = {
         "apiVersion": "v1",
         "kind": "ConfigMap",
-        "metadata": {"name": "workbench-menagerie-settings", "namespace": a.namespace},
+        "metadata": {"name": a.name, "namespace": a.namespace},
         "data": {
             "settings.json": settings,
             "vscode-settings.json": json.dumps(build_vscode_settings(), indent=2),

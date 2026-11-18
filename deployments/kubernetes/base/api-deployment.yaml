@@ -236,7 +236,7 @@ spec:
             - name: WORKBENCH_IDE_ENABLED
               value: "true"
             - name: WORKBENCH_IDE_IMAGE
-              value: registry.celestium.life/nervecenter/workbench-ide@sha256:eebfdaea4657e04d3694752a9a03e0a6cbdbde02c88b7661a3502d20530485d2
+              value: registry.celestium.life/nervecenter/workbench-ide@sha256:5b4b23d0f0983c7b6322ff0d72ae872d3af859deb880a24ae0a8a0dcb30bd5cf
             - name: WORKBENCH_IDE_ALLOWED_ORIGINS
               value: https://nervecenter.celestium.life
             - name: WORKBENCH_OPENCODE_WEB_HOST

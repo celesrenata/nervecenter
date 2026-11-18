@@ -16,14 +16,15 @@ if [ -f /etc/menagerie/home.tgz ]; then
 fi
 /usr/lib/code-server/lib/node -e '
 const fs = require("fs");
-const key = process.env.OMNIROUTE_API_KEY || "";
+// Trim, and JSON-escape before substituting: a stray newline or quote in the
+// key must not break the JSON (a parse error would print the key in the log).
+const key = (process.env.OMNIROUTE_API_KEY || "").trim();
+const esc = (v) => JSON.stringify(v).slice(1, -1);
 const base = process.env.OMNIROUTE_BASE_URL || "http://omniroute.omniroute.svc.cluster.local:20128/v1";
 const model = process.env.MENAGERIE_DEFAULT_MODEL || "local/code";
 let owner = null;
 try { owner = fs.readFileSync("/etc/menagerie/settings.json", "utf8"); } catch {}
-const profile = owner
-  ? JSON.parse(owner.split("__OMNIROUTE_API_KEY__").join(key).split("__OMNIROUTE_BASE_URL__").join(base))
-  : {
+const fallback = {
   providerProfiles: {
     currentApiConfigName: "omniroute",
     apiConfigs: {
@@ -37,6 +38,16 @@ const profile = owner
     },
   },
 };
+let profile = fallback;
+if (owner) {
+  try {
+    profile = JSON.parse(
+      owner.split("__OMNIROUTE_API_KEY__").join(esc(key)).split("__OMNIROUTE_BASE_URL__").join(esc(base))
+    );
+  } catch {
+    console.error("menagerie settings: invalid JSON after substitution; using the default profile");
+  }
+}
 fs.writeFileSync("/tmp/menagerie-import.json", JSON.stringify(profile));
 const settingsPath = process.argv[1];
 let settings = {};
