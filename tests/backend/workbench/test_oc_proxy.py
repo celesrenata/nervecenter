@@ -92,3 +92,33 @@ def test_host_dispatch():
     c = TestClient(d, base_url=f"http://{HOST}")
     assert c.get("/x").text == "other" and calls == ["/x"]
     asyncio.run(asyncio.sleep(0))
+
+
+def test_keycloak_id_token_is_accepted(monkeypatch):
+    """A verified Keycloak ID token (typ "ID", no NerveCenter typ) is a person."""
+    import jwt
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    now = int(__import__("time").time())
+    tok = jwt.encode({"iss": "https://sso.test/realms/r", "aud": "nervecenter", "exp": now + 60,
+                      "sub": "u1", "typ": "ID", "email": "o@x"}, key, algorithm="RS256")
+
+    class _Key:
+        def __init__(self):
+            self.key = key.public_key()
+
+    class _Jwks:
+        def __init__(self, *a, **k):
+            pass
+
+        def get_signing_key_from_jwt(self, _t):
+            return _Key()
+
+    monkeypatch.setattr(jwt, "PyJWKClient", _Jwks)
+    verify = p.make_keycloak_verifier("https://sso.test/realms/r", "nervecenter")
+    assert asyncio.run(verify(tok)) is not None
+    assert asyncio.run(verify(tok + "x")) is None
+    other_aud = jwt.encode({"iss": "https://sso.test/realms/r", "aud": "other", "exp": now + 60,
+                            "sub": "u1"}, key, algorithm="RS256")
+    assert asyncio.run(verify(other_aud)) is None

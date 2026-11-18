@@ -112,6 +112,7 @@ def make_keycloak_verifier(issuer: str, client_id: str) -> TokenVerifier:
     """Verify a Keycloak ID token (RS256 via JWKS, iss, aud, exp)."""
     import jwt
 
+    from backend.api.auth_service import SSO_SOURCE_CLAIM
     from backend.api.endpoints.mail_security import _eligible_for_server_scopes
 
     jwks = jwt.PyJWKClient(f"{issuer.rstrip('/')}/protocol/openid-connect/certs", cache_keys=True)
@@ -127,10 +128,15 @@ def make_keycloak_verifier(issuer: str, client_id: str) -> TokenVerifier:
                 audience=client_id,
                 options={"require": ["exp", "iss", "aud"]},
             )
-        except Exception:  # noqa: BLE001 - any failure is "no session"
+        except Exception as exc:  # noqa: BLE001 - any failure is "no session"
+            log.info("workbench.oc_proxy.token_refused", reason=type(exc).__name__)
             return None
-        claims.setdefault("sso", True)
-        return claims if _eligible_for_server_scopes(claims) else None
+        # Verified as issuer-minted: mark it the way NerveCenter's own SSO path does.
+        claims[SSO_SOURCE_CLAIM] = "sso"
+        if not _eligible_for_server_scopes(claims):
+            log.info("workbench.oc_proxy.token_refused", reason="not_a_person")
+            return None
+        return claims
 
     async def verify(token: str) -> dict[str, Any] | None:
         return await asyncio.to_thread(_verify, token)
