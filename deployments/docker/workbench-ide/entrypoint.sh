@@ -9,12 +9,21 @@ mkdir -p "$(dirname "${ROO_CODE_IPC_SOCKET_PATH}")" 2>/dev/null || true
 DATA_DIR=/tmp/code-server/data
 mkdir -p "$DATA_DIR/User"
 umask 077
+# The Owner's skills, rules and skillhub (ConfigMap workbench-menagerie-settings,
+# built by scripts/workbench_menagerie_bundle.py) go into ~/.roo and ~/.agents.
+if [ -f /etc/menagerie/home.tgz ]; then
+  tar -xzf /etc/menagerie/home.tgz -C "$HOME" --no-same-owner 2>/dev/null || true
+fi
 /usr/lib/code-server/lib/node -e '
 const fs = require("fs");
 const key = process.env.OMNIROUTE_API_KEY || "";
 const base = process.env.OMNIROUTE_BASE_URL || "http://omniroute.omniroute.svc.cluster.local:20128/v1";
 const model = process.env.MENAGERIE_DEFAULT_MODEL || "local/code";
-const profile = {
+let owner = null;
+try { owner = fs.readFileSync("/etc/menagerie/settings.json", "utf8"); } catch {}
+const profile = owner
+  ? JSON.parse(owner.split("__OMNIROUTE_API_KEY__").join(key).split("__OMNIROUTE_BASE_URL__").join(base))
+  : {
   providerProfiles: {
     currentApiConfigName: "omniroute",
     apiConfigs: {
@@ -32,6 +41,7 @@ fs.writeFileSync("/tmp/menagerie-import.json", JSON.stringify(profile));
 const settingsPath = process.argv[1];
 let settings = {};
 try { settings = JSON.parse(fs.readFileSync(settingsPath, "utf8")); } catch {}
+try { Object.assign(settings, JSON.parse(fs.readFileSync("/etc/menagerie/vscode-settings.json", "utf8"))); } catch {}
 settings["menagerie.autoImportSettingsPath"] = "/tmp/menagerie-import.json";
 fs.writeFileSync(settingsPath, JSON.stringify(settings, null, 2));
 ' "$DATA_DIR/User/settings.json"

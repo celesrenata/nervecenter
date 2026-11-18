@@ -162,6 +162,9 @@ def build_pod_spec(project: IdeProject, config: IdeConfig, key_secret_name: str)
             {"name": "local", "mountPath": "/home/coder/.local"},
             {"name": "config", "mountPath": "/home/coder/.config"},
             {"name": "cache", "mountPath": "/home/coder/.cache"},
+            {"name": "roo", "mountPath": "/home/coder/.roo"},
+            {"name": "agents", "mountPath": "/home/coder/.agents"},
+            {"name": "menagerie-settings", "mountPath": "/etc/menagerie", "readOnly": True},
         ],
     }
     return {
@@ -192,6 +195,12 @@ def build_pod_spec(project: IdeProject, config: IdeConfig, key_secret_name: str)
                 {"name": "local", "emptyDir": {}},
                 {"name": "config", "emptyDir": {}},
                 {"name": "cache", "emptyDir": {}},
+                {"name": "roo", "emptyDir": {}},
+                {"name": "agents", "emptyDir": {}},
+                {
+                    "name": "menagerie-settings",
+                    "configMap": {"name": "workbench-menagerie-settings", "optional": True},
+                },
             ],
         },
     }
