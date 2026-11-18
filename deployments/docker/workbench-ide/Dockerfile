@@ -3,7 +3,7 @@
 #   docker build --build-arg MENAGERIE_VSIX=menagerie.vsix --build-arg MENAGERIE_VERSION=1.2.3 .
 # No provider API key and no git credentials are baked in (Req 8.4); the pod supplies the
 # OmniRoute key at runtime.
-ARG CODE_SERVER_VERSION=4.96.4
+ARG CODE_SERVER_VERSION=4.105.1
 FROM codercom/code-server:${CODE_SERVER_VERSION}
 
 ARG MENAGERIE_VSIX

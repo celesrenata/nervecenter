@@ -230,13 +230,13 @@ VSIX into that directory first.
 |-----------|----------|---------|
 | `MENAGERIE_VSIX` | yes | File name of the VSIX in the build context. The build fails if it is empty or the file is missing. |
 | `MENAGERIE_VERSION` | yes | Version string written to `/opt/menagerie/VERSION`. The build fails if empty. |
-| `CODE_SERVER_VERSION` | no | Tag of `codercom/code-server` (default `4.96.4`). |
+| `CODE_SERVER_VERSION` | no | Tag of `codercom/code-server` (default `4.105.1 (needs VS Code >= 1.100 for menagerie 3.84.5)`). |
 
 ```
 cd deployments/docker/workbench-ide
 docker build --build-arg MENAGERIE_VSIX=menagerie.vsix \
   --build-arg MENAGERIE_VERSION=<version> \
-  --build-arg CODE_SERVER_VERSION=4.96.4 \
+  --build-arg CODE_SERVER_VERSION=4.105.1 \
   -t registry.celestium.life/nervecenter/workbench-ide:<version> .
 ```
 Push the image to Harbor and note its digest. The IDE manager rejects an image that is

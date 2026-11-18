@@ -37,7 +37,8 @@ cleanup() { $kc -n "$ns" delete pod "$pod" --ignore-not-found --wait=false >/dev
 trap cleanup EXIT
 
 $kc -n "$ns" run "$pod" --image="$image" --restart=Never --labels=app=ide \
-  --command -- sleep 600 >/dev/null || { echo "FAIL setup: cannot create pod" >&2; exit 1; }
+  --overrides='{"spec":{"securityContext":{"runAsNonRoot":true,"runAsUser":1000,"runAsGroup":1000,"seccompProfile":{"type":"RuntimeDefault"}},"containers":[{"name":"'"$pod"'","image":"'"$image"'","command":["sleep","600"],"securityContext":{"allowPrivilegeEscalation":false,"capabilities":{"drop":["ALL"]}}}]}}' \
+  >/dev/null || { echo "FAIL setup: cannot create pod" >&2; exit 1; }
 $kc -n "$ns" wait --for=condition=Ready "pod/$pod" --timeout=120s >/dev/null \
   || { echo "FAIL setup: pod not ready" >&2; exit 1; }
 

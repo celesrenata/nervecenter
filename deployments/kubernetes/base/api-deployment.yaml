@@ -225,7 +225,13 @@ spec:
               value: http://opencode.opencode.svc.cluster.local:4096
             # Workbench phase gate (0 off, 1 catalogue, 2 editor+Sessions, 3 IDE).
             - name: WORKBENCH_PHASE
-              value: "2"
+              value: "3"
+            - name: WORKBENCH_IDE_ENABLED
+              value: "true"
+            - name: WORKBENCH_IDE_IMAGE
+              value: registry.celestium.life/nervecenter/workbench-ide@sha256:07892e8b18734311025287bfddfb165db2752d0d435b4bb2eb18333485376230
+            - name: WORKBENCH_IDE_ALLOWED_ORIGINS
+              value: https://nervecenter.celestium.life
             - name: NERVE_OPENCODE_PASSWORD
               valueFrom:
                 secretKeyRef:
