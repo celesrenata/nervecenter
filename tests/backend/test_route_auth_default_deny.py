@@ -42,6 +42,7 @@ DOCUMENTED_PUBLIC = {
     ("POST", "/api/relay/messages"),
     ("POST", "/api/relay/contacts"),
     ("POST", "/api/relay/import-request"),
+    ("POST", "/api/voicemail/ingest"),
     ("POST", "/api/health/ingest"),
     ("POST", "/api/handoffs/device/claim"),
     ("POST", "/api/handoffs/device/result"),
@@ -75,9 +76,9 @@ def _concrete(path: str) -> str:
     return re.sub(r"\{[^}]+\}", "x", path)
 
 
-def test_allowlist_is_the_documented_sixteen() -> None:
+def test_allowlist_is_the_documented_seventeen() -> None:
     assert set(PUBLIC_ROUTES) == DOCUMENTED_PUBLIC
-    assert len(PUBLIC_ROUTES) == 16
+    assert len(PUBLIC_ROUTES) == 17
     assert PERSON_OR_DEVICE_ROUTES == {
         ("GET", "/api/approvals/{approval_id}/verify"),
         ("POST", "/api/approvals/{approval_id}/verify"),

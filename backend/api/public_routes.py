@@ -32,6 +32,7 @@ PUBLIC_ROUTES: dict[tuple[str, str], str] = {
     ("POST", "/api/relay/messages"): "device relay token (SSO-free ingress path)",
     ("POST", "/api/relay/contacts"): "device relay token (SSO-free ingress path)",
     ("POST", "/api/relay/import-request"): "device relay token",
+    ("POST", "/api/voicemail/ingest"): "device relay token (SSO-free ingress path)",
     ("POST", "/api/health/ingest"): "device token (SSO-free ingress path)",
     ("POST", "/api/handoffs/device/claim"): "device token (SSO-free ingress path)",
     ("POST", "/api/handoffs/device/result"): "device token (SSO-free ingress path)",
