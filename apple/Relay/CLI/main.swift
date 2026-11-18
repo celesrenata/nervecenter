@@ -300,6 +300,7 @@ func usage() -> Never {
       nerve-personal-relay pair
       nerve-personal-relay health
       nerve-personal-relay import --consent [--window-hours N]
+      nerve-personal-relay voicemail-scan [store-path]   (dry run, counts only)
 
     CHANNELS (Phase 4 D5')
       email / voicemail / calendar / contacts capture planes. Each is
@@ -312,6 +313,7 @@ func usage() -> Never {
     ENV OVERRIDES
       NERVE_RELAY_BASE_URL, NERVE_RELAY_TOKEN, NERVE_RELAY_STORE,
       NERVE_RELAY_OUTBOX, NERVE_RELAY_<CHANNEL>_ENABLED,
+      NERVE_RELAY_VOICEMAIL_SOURCE (store|folder),
       NERVE_RELAY_MAIL_TOKEN (mailbox credential for the email plane —
       env only, never in the config file)
     """
@@ -416,7 +418,12 @@ case "run":
         // D5' channel planes — one engine per *enabled* channel. A channel
         // whose outbox cannot be opened is skipped (and logged) without
         // stopping the rest: each plane owns its durable outbox (§70).
+        let voicemailWake = WakeSignal()
+        var voicemailSignalled = false
+        var lastVoicemailRun: Date? = nil
+        var voicemailBacklog = 0
         var channelEngines: [ChannelEngine] = []
+        var voicemailWatcher: VoicemailStoreWatcher? = nil
         for channel in config.channels.enabledChannels {
             let cc = config.channels[channel]
             let source: ChannelCaptureSource
@@ -428,6 +435,20 @@ case "run":
                 // The token itself is env-only and never logged.
                 source = MailConnectorPlane(config: MailConnectorPlane.Config())
                 sourceName = "mail-connector (NERVE_RELAY_MAIL_TOKEN env)"
+            } else if channel == .voicemail, config.voicemailSource == .store {
+                // The Mac's Phone/FaceTime voicemail store (read-only): Apple's
+                // transcript plus metadata, never audio. Changes wake the run
+                // loop via FSEvents; a 60s poll covers missed events.
+                source = VoicemailStoreSource(reader: VoicemailStoreReader(url: config.voicemailStorePath))
+                sourceName = "mac phone voicemail store (read-only, transcript + metadata only)"
+                if !once {
+                    let watcher = VoicemailStoreWatcher(storeURL: config.voicemailStorePath, signal: voicemailWake)
+                    if watcher.start() {
+                        voicemailWatcher = watcher
+                    } else {
+                        log("channel voicemail: file watcher unavailable — polling every \(Int(config.interval))s")
+                    }
+                }
             } else {
                 // Operator-supplied capture file: <source_dir>/<channel>.json.
                 source = FolderChannelSource(channel: channel, sourceDir: cc.sourceDir)
@@ -459,8 +480,19 @@ case "run":
                 // always executes first; each channel error is caught and
                 // logged — its outbox keeps the data queued (§70).
                 for plane in channelEngines {
+                    // With the store watcher active the voicemail plane runs on
+                    // a file event, on a queued backlog, or on the 60s safety poll.
+                    if plane.channel == .voicemail, voicemailWatcher != nil,
+                       !voicemailSignalled, voicemailBacklog == 0,
+                       let last = lastVoicemailRun, Date().timeIntervalSince(last) < 60 {
+                        continue
+                    }
                     do {
                         let c = try await plane.runOnce()
+                        if plane.channel == .voicemail {
+                            lastVoicemailRun = Date()
+                            voicemailBacklog = c.backlog
+                        }
                         if c.captured > 0 || c.sent > 0 || c.failed > 0 || c.skipped > 0 {
                             log("[\(plane.channel.rawValue)] captured=\(c.captured) sent=\(c.sent) replayed=\(c.replayed) skipped=\(c.skipped) failed=\(c.failed) backlog=\(c.backlog) delivered=\(c.delivered) pruned=\(c.pruned)\(c.note.isEmpty ? "" : " note=\(c.note)")")
                         }
@@ -494,7 +526,12 @@ case "run":
                 log("cycle error: \(error) — retrying next interval")
             }
             if once { break }
-            try? await Task.sleep(nanoseconds: UInt64(config.interval) * 1_000_000_000)
+            if voicemailWatcher != nil {
+                // Wake on a store change or after the normal interval.
+                voicemailSignalled = await voicemailWake.wait(timeout: config.interval)
+            } else {
+                try? await Task.sleep(nanoseconds: UInt64(config.interval) * 1_000_000_000)
+            }
         }
     } catch let e as RelayConfig.ConfigError {
         fail(.config, "config: \(e)")
@@ -907,6 +944,31 @@ case "import":
         }
     } catch {
         fail(.transport, "import failed: \(error.localizedDescription)")
+    }
+case "voicemail-scan":
+    // Dry run against the Mac's voicemail store: counts only, nothing is sent
+    // or written (no outbox, no state file), no content is printed.
+    let storeURL = args.count > 1
+        ? RelayConfig.expand(args[1])
+        : ((try? RelayConfig.load(path: nil))?.voicemailStorePath
+            ?? RelayConfig.expand(VoicemailStoreReader.defaultPath))
+    do {
+        let rows = try VoicemailStoreReader(url: storeURL).readAll()
+        let s = VoicemailStoreReader.summarize(rows)
+        let resolver = VoicemailCallerResolver()
+        let resolved = rows.filter { !$0.isDeleted && $0.hasTranscript }
+            .filter { resolver.name(forPhone: $0.phone, receivedAtUnix: $0.receivedAtUnix) != nil }
+            .count
+        print("voicemails found: \(s.found), transcript decoded: \(s.transcribed), withheld (no transcript): \(s.withheld), deleted: \(s.deleted), unread: \(s.unread), name resolved: \(resolved)")
+    } catch let e as StoreError {
+        switch e {
+        case .missing: fail(.refused, "voicemail-scan: store not found")
+        case .openFailed: fail(.refused, "voicemail-scan: cannot open the store read-only (grant Full Disk Access)")
+        case .schemaIncompatible: fail(.refused, "voicemail-scan: store schema not recognized")
+        default: fail(.refused, "voicemail-scan: store could not be read")
+        }
+    } catch {
+        fail(.refused, "voicemail-scan: store could not be read")
     }
 case "probe":
     // Read-only structure probe (voicemail/contacts discovery); no content.

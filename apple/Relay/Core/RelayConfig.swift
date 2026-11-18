@@ -1,5 +1,11 @@
 import Foundation
 
+/// Which local source feeds the voicemail plane.
+public enum VoicemailSourceKind: String, Sendable, Equatable {
+    case store
+    case folder
+}
+
 /// Personal Relay configuration (prompt2 §47: runs under the user's
 /// account, explicit configuration — no remote config, no auto-discovery).
 ///
@@ -10,7 +16,7 @@ import Foundation
 /// `NERVE_RELAY_TOKEN`, `NERVE_RELAY_STORE`, `NERVE_RELAY_OUTBOX`,
 /// and per-channel enables `NERVE_RELAY_EMAIL_ENABLED`,
 /// `NERVE_RELAY_VOICEMAIL_ENABLED`, `NERVE_RELAY_CALENDAR_ENABLED`,
-/// `NERVE_RELAY_CONTACTS_ENABLED`. Mailbox credentials never live in this
+/// `NERVE_RELAY_CONTACTS_ENABLED`, and `NERVE_RELAY_VOICEMAIL_SOURCE` (`store`|`folder`). Mailbox credentials never live in this
 /// file — the mail-connector plane reads `NERVE_RELAY_MAIL_TOKEN` (env) only.
 public struct RelayConfig: Sendable, Equatable {
     public var baseURL: URL
@@ -22,6 +28,11 @@ public struct RelayConfig: Sendable, Equatable {
     /// Phase 4 D5' capture planes (email/voicemail/calendar/contacts).
     /// Disabled by default; tokens are env-only.
     public var channels: ChannelConfigs
+    /// Where the voicemail plane reads from: `store` (the Mac's Phone/FaceTime
+    /// message store) or `folder` (the capture folder). Default `folder`.
+    public var voicemailSource: VoicemailSourceKind
+    /// Override for the voicemail store path (default: the FaceTime group container).
+    public var voicemailStorePath: URL
     /// When set, the engine posts to `POST /api/relay/messages` (batch format,
     /// authenticated with the paired DEVICE token in `token`, durable and
     /// deduplicated server-side) instead of the legacy unauthenticated
@@ -41,7 +52,9 @@ public struct RelayConfig: Sendable, Equatable {
         batchSize: Int = 200,
         interval: TimeInterval = 5,
         channels: ChannelConfigs = ChannelConfigs(),
-        relayDeviceID: String? = nil
+        relayDeviceID: String? = nil,
+        voicemailSource: VoicemailSourceKind = .folder,
+        voicemailStorePath: URL = RelayConfig.expand(VoicemailStoreReader.defaultPath)
     ) {
         self.baseURL = baseURL
         self.token = token
@@ -51,6 +64,8 @@ public struct RelayConfig: Sendable, Equatable {
         self.interval = max(1, interval)
         self.channels = channels
         self.relayDeviceID = relayDeviceID
+        self.voicemailSource = voicemailSource
+        self.voicemailStorePath = voicemailStorePath
     }
 
     /// Durable outbox path for one capture plane — a separate SQLite file
@@ -190,6 +205,15 @@ public struct RelayConfig: Sendable, Equatable {
             contacts: makeChannel("contacts", envEnable: "NERVE_RELAY_CONTACTS_ENABLED")
         )
 
+        var vmSource = VoicemailSourceKind(rawValue: (kv["voicemail_source"] ?? "folder").lowercased())
+        if let v = ProcessInfo.processInfo.environment["NERVE_RELAY_VOICEMAIL_SOURCE"], !v.isEmpty {
+            vmSource = VoicemailSourceKind(rawValue: v.lowercased())
+        }
+        guard let vmSource else {
+            throw ConfigError.invalidValue("voicemail_source must be 'store' or 'folder'")
+        }
+        let vmStore = chDir("voicemail_store_path") ?? expand(VoicemailStoreReader.defaultPath)
+
         return RelayConfig(
             baseURL: base,
             token: token,
@@ -197,7 +221,9 @@ public struct RelayConfig: Sendable, Equatable {
             outboxPath: outbox,
             batchSize: batch,
             interval: interval,
-            channels: channels
+            channels: channels,
+            voicemailSource: vmSource,
+            voicemailStorePath: vmStore
         )
     }
 
@@ -221,6 +247,10 @@ public struct RelayConfig: Sendable, Equatable {
         # (NERVE_RELAY_MAIL_TOKEN) — never in this file.
         email_enabled = false
         voicemail_enabled = false
+        # Voicemail plane source: "folder" (capture dir) or "store" (the Mac's
+        # Phone/FaceTime voicemail store; needs Full Disk Access). Optional
+        # override: voicemail_store_path = <path to FaceTimeMessageStore-local.sqlitedb>
+        voicemail_source = folder
         calendar_enabled = false
         contacts_enabled = false
         """

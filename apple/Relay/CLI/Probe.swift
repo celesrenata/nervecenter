@@ -8,6 +8,11 @@ import SQLite3
 /// extension, SQLite table names with row counts, and column names. Never
 /// prints a row value, a file name inside a store, or any content. Opens
 /// every database `SQLITE_OPEN_READONLY`.
+///
+/// The voicemail store itself is under `group.com.apple.FaceTime`
+/// (`com.apple.facetimemessagestored/Data Store/FaceTimeMessageStore-local.sqlitedb`);
+/// the relay reads it with `VoicemailStoreReader`, and `voicemail-scan` prints
+/// counts for it.
 enum Probe {
     static let roots = [
         "~/Library/Application Support/CallHistoryDB",

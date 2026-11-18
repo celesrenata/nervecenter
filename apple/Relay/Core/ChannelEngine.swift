@@ -259,6 +259,8 @@ public final class ChannelEngine {
                 let transcript: String
                 let duration_seconds: Int
                 let received_at: String
+                let read: Bool
+                let deleted: Bool
                 let source: String
             }
             let p = Payload(
@@ -269,6 +271,8 @@ public final class ChannelEngine {
                 duration_seconds: v.durationSeconds,
                 received_at: ISO8601DateFormatter.iso8601Second
                     .string(from: Date(timeIntervalSince1970: v.receivedAtUnix)),
+                read: v.read,
+                deleted: v.deleted,
                 source: v.source
             )
             return String(data: try encoder.encode(p), encoding: .utf8) ?? "{}"

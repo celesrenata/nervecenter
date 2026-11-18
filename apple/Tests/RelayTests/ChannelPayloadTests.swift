@@ -165,6 +165,30 @@ final class ChannelPayloadTests: XCTestCase {
         XCTAssertEqual(p["source"] as? String, "share-sheet")
     }
 
+    func testVoicemailPayloadHasReadAndDeletedKeys() throws {
+        let p = try object(try ChannelEngine.payloadJSON(for: voicemailRecord(), encoder: encoder))
+        XCTAssertEqual(p["read"] as? Bool, false)
+        XCTAssertEqual(p["deleted"] as? Bool, false)
+        XCTAssertEqual(Set(p.keys), [
+            "voicemail_id", "caller_phone", "caller_name", "transcript",
+            "duration_seconds", "received_at", "read", "deleted", "source",
+        ])
+    }
+
+    func testVoicemailRetractionPayloadAndStableID() throws {
+        let rec = ChannelRecord.voicemail(VoicemailCapture(
+            voicemailID: "AB12", callerPhone: "+15550100001", callerName: nil,
+            transcript: "", durationSeconds: 0, receivedAtUnix: 0,
+            source: "mac-phone-store", read: true, deleted: true
+        ))
+        XCTAssertEqual(rec.stableID, "AB12#d")
+        let p = try object(try ChannelEngine.payloadJSON(for: rec, encoder: encoder))
+        XCTAssertEqual(p["deleted"] as? Bool, true)
+        XCTAssertEqual(p["read"] as? Bool, true)
+        XCTAssertEqual(p["voicemail_id"] as? String, "AB12")
+        XCTAssertEqual(p["source"] as? String, "mac-phone-store")
+    }
+
     func testVoicemailEmptyCallerThrows() {
         let bad = ChannelRecord.voicemail(VoicemailCapture(
             voicemailID: "vm-2", callerPhone: "", callerName: nil,

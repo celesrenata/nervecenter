@@ -207,3 +207,47 @@ First run against a real `chat.db` (see `specs/personal-ops-production-activatio
 - The reader supports both the real schema (`message.ROWID`, `chat_message_join`) and the old
   fixture names, decodes `attributedBody` when `text` is NULL, and skips (counts) rows it
   cannot read. `status` prints counts only.
+
+## 9. Voicemail from the Mac Phone store
+
+The relay can capture iPhone voicemails that the Mac syncs into its Phone/FaceTime
+message store. It sends metadata and Apple's own transcript only (caller number and
+name, time, duration, read state, transcript). It never reads or sends the audio and does
+not transcribe anything itself.
+
+1. Enable the plane and pick the store source in `~/.nervcenter/relay.conf` (or via env):
+
+   ```
+   voicemail_enabled = true
+   voicemail_source = store     # NERVE_RELAY_VOICEMAIL_SOURCE=store
+   # voicemail_store_path = ...  # optional, defaults to the FaceTime group container
+   ```
+
+2. The store lives under `~/Library/Group Containers/group.com.apple.FaceTime/`, so the
+   relay needs Full Disk Access (step 3) and should run under launchd (section 8 notes).
+   The store is opened read-only; Apple's files are never written.
+3. Run `nerve-personal-relay run`. The relay watches the store directory with FSEvents
+   and also polls every 60 seconds as a safety net.
+
+Behavior to know about:
+
+- A voicemail is sent only once Apple's transcript exists. Voicemails without one
+  (including failed transcriptions) are withheld, and are sent later if a transcript
+  appears.
+- A voicemail deleted on the phone is retracted in NerveCenter: the relay posts the same
+  ingest request with `deleted: true`. A voicemail already deleted when first seen is
+  never sent. The relay keeps the ids it has sent in
+  `~/.nervcenter/relay/voicemail-store-state.json` (ids only) to know what to retract.
+- Caller names come from Contacts, then from a number-plus-time match against call
+  history. A caller with no match is sent by number only.
+- Transcript text, numbers and names are never written to the relay log.
+
+Dry run (reads the store, prints counts only, sends and writes nothing):
+
+```
+nerve-personal-relay voicemail-scan
+# voicemails found: N, transcript decoded: M, withheld (no transcript): W, deleted: D, unread: U, name resolved: R
+```
+
+From a terminal this can report that the store cannot be opened (Full Disk Access is
+attributed to the launching app); run it as a one-shot launchd job in that case.

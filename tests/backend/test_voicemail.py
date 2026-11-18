@@ -31,7 +31,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.app import create_app
-from backend.api.models import VoicemailSource
+from backend.api.models import AttentionState, VoicemailSource
 from backend.attention import get_attention_service, reset_attention_service
 from backend.voicemail import VoicemailService, reset_voicemail_service
 from backend.voicemail.service import detect_callback
@@ -81,6 +81,7 @@ def test_source_enum_values():
     assert VoicemailSource.SHARE_SHEET.value == "share-sheet"
     assert VoicemailSource.CARRIER_EMAIL.value == "carrier-email"
     assert VoicemailSource.IMPORTED.value == "imported"
+    assert VoicemailSource.MAC_PHONE_STORE.value == "mac-phone-store"
 
 
 def test_unknown_source_is_rejected_with_422(client):
@@ -334,3 +335,70 @@ def test_service_reset_hook():
     reset_voicemail_service()
     fresh = VoicemailService()
     assert fresh is not svc
+
+
+# -- mac-phone-store source: read state and retraction -------------------------
+def _post(client, vid, phone="+1 415-555-0134", **extra):
+    payload = {
+        "voicemail_id": vid,
+        "caller_phone": phone,
+        "transcript": extra.pop("transcript", "hello"),
+        "duration_seconds": 10,
+        "received_at": extra.pop("received_at", _now().isoformat()),
+        "source": "mac-phone-store",
+        **extra,
+    }
+    return client.post("/api/voicemail/ingest", json=payload)
+
+
+def test_mac_phone_store_source_accepted(client):
+    r = _post(client, "vm-s1")
+    assert r.status_code == 201
+    assert r.json()["voicemail"]["source"] == "mac-phone-store"
+
+
+def test_read_voicemail_adds_no_unread_and_no_attention(client):
+    body = _post(client, "vm-r1", read=True).json()
+    assert body["voicemail"]["read"] is True
+    assert body["thread"]["unread"] == 0
+    assert body["new_attention"] is None
+    assert body["thread"]["attention_id"] is None
+
+
+def test_delete_one_of_two_recomputes_thread(client):
+    t0 = _now() - timedelta(hours=2)
+    _post(client, "vm-d1", transcript="first", received_at=t0.isoformat())
+    _post(client, "vm-d2", transcript="please call me", received_at=_now().isoformat())
+    r = _post(client, "vm-d2", deleted=True)
+    assert r.status_code == 200
+    body = r.json()
+    assert body["deleted"] is True and body["found"] is True
+    thread = body["thread"]
+    assert thread["voicemail_count"] == 1
+    assert thread["unread"] == 1
+    assert thread["last_transcript"] == "first"
+    assert thread["needs_callback"] is False
+    assert thread["callback_reason"] is None
+
+
+def test_delete_last_removes_thread_and_resolves_attention(client):
+    created = _post(client, "vm-l1").json()
+    attention_id = created["new_attention"]["attention_id"]
+    r = _post(client, "vm-l1", deleted=True)
+    assert r.status_code == 200
+    assert r.json()["thread"] is None
+    assert client.get("/api/voicemail").json()["meta"]["pagination"]["total"] == 0
+    item = get_attention_service().get(attention_id)
+    assert item.status not in (
+        AttentionState.NOW, AttentionState.TODAY, AttentionState.SOON, AttentionState.WAITING_ON
+    )
+
+
+def test_delete_unknown_id_is_noop_and_replay_safe(client):
+    r = _post(client, "vm-nope", deleted=True)
+    assert r.status_code == 200
+    assert r.json()["found"] is False
+    _post(client, "vm-k1")
+    assert _post(client, "vm-k1", deleted=True).json()["found"] is True
+    again = _post(client, "vm-k1", deleted=True)
+    assert again.status_code == 200 and again.json()["found"] is False

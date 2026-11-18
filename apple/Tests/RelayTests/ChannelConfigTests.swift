@@ -81,6 +81,22 @@ final class ChannelConfigTests: XCTestCase {
         XCTAssertEqual(cfg.channels.enabledChannels, [.email, .voicemail])
     }
 
+    func testVoicemailSourceDefaultsToFolder() throws {
+        let cfg = try RelayConfig.load(path: writeConfig(baseConfig()))
+        XCTAssertEqual(cfg.voicemailSource, .folder)
+        XCTAssertEqual(cfg.voicemailStorePath, RelayConfig.expand(VoicemailStoreReader.defaultPath))
+    }
+    func testVoicemailSourceStoreAndPathParse() throws {
+        let cfg = try RelayConfig.load(path: writeConfig(baseConfig() + """
+            voicemail_source = store
+            voicemail_store_path = /tmp/fixture-store.sqlitedb
+            """))
+        XCTAssertEqual(cfg.voicemailSource, .store)
+        XCTAssertEqual(cfg.voicemailStorePath.path, "/tmp/fixture-store.sqlitedb")
+    }
+    func testVoicemailSourceInvalidThrows() throws {
+        XCTAssertThrowsError(try RelayConfig.load(path: writeConfig(baseConfig() + "voicemail_source = cloud\n")))
+    }
     func testChannelRetentionFloorAtZero() throws {
         let cfg = try RelayConfig.load(path: writeConfig(baseConfig() + """
             calendar_enabled = true

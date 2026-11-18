@@ -414,6 +414,31 @@ recent_activity:
           files (was 16), incl. test_attention.py,
           test_attention_policy.py, test_email.py,
           test_mail_connector.py, test_voicemail.py, tests/backend/policy/.
+      - id: relay-voicemail-store
+        title: Relay captures iPhone voicemails from the Mac Phone store
+        detail: >
+          With voicemail_source = store (NERVE_RELAY_VOICEMAIL_SOURCE=store)
+          the Personal Relay reads the Mac's FaceTime message store
+          (ZSTOREDMESSAGE, ZMESSAGETYPE=1, ZFILETYPE='amr', read-only) and
+          posts metadata plus Apple's own transcript to POST
+          /api/voicemail/ingest as source mac-phone-store; no audio is read
+          or sent and nothing is re-transcribed. ZTRANSCRIPT is an
+          NSKeyedArchiver plist decoded generically (no private frameworks).
+          A voicemail is sent only once its transcript exists; rows without
+          one (failed transcription) are withheld. Deletes on the phone are
+          retracted through the same endpoint with deleted=true, which
+          removes the voicemail and recomputes its thread (and resolves the
+          attention item when the thread empties). Changes are picked up via
+          FSEvents on the store directory with a 60s safety poll.
+          Caller names come from Contacts, then a number-plus-time match
+          against call history, because ZCALLUUID does NOT match call-history
+          ids (verified 0/100). Files: apple/Relay/Core/VoicemailStore*.swift,
+          VoicemailTranscriptDecoder.swift, VoicemailCallerResolver.swift,
+          backend/voicemail/service.py (delete, read). Tests:
+          apple/Tests/RelayTests/Voicemail*Tests.swift,
+          tests/backend/test_voicemail.py. Dry run:
+          NervePersonalRelay voicemail-scan prints counts only. Setup in
+          apple/Relay/INSTALL.md section 9.
       - id: r107-pdp-wired
         title: R107 PDP wired into ask + drafts pipelines
         detail: >

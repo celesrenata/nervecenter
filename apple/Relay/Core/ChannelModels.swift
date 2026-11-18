@@ -175,7 +175,28 @@ public struct VoicemailCapture: Sendable, Equatable {
     public let transcript: String
     public let durationSeconds: Int
     public let receivedAtUnix: TimeInterval
-    public let source: String   // "share-sheet" | "carrier-email" | "imported"
+    public let source: String   // "share-sheet" | "carrier-email" | "imported" | "mac-phone-store"
+    /// Read state as reported by the phone (mac-phone-store source).
+    public let read: Bool
+    /// Retraction: the voicemail was deleted on the phone. Only the id and
+    /// phone are required; the backend removes the voicemail.
+    public let deleted: Bool
+
+    public init(
+        voicemailID: String, callerPhone: String, callerName: String?,
+        transcript: String, durationSeconds: Int, receivedAtUnix: TimeInterval,
+        source: String, read: Bool = false, deleted: Bool = false
+    ) {
+        self.voicemailID = voicemailID
+        self.callerPhone = callerPhone
+        self.callerName = callerName
+        self.transcript = transcript
+        self.durationSeconds = durationSeconds
+        self.receivedAtUnix = receivedAtUnix
+        self.source = source
+        self.read = read
+        self.deleted = deleted
+    }
 }
 
 /// A captured calendar event (§42/§43).
@@ -223,11 +244,12 @@ public enum ChannelRecord: Sendable, Equatable {
     }
 
     /// Stable, non-empty id used for local dedupe (`seen` index) and backend
-    /// idempotency.
+    /// idempotency. A voicemail retraction uses `<id>#d` so it never collides
+    /// with the original record.
     public var stableID: String {
         switch self {
         case .email(let m): return m.messageID
-        case .voicemail(let v): return v.voicemailID
+        case .voicemail(let v): return v.deleted ? "\(v.voicemailID)#d" : v.voicemailID
         case .calendar(let e): return e.eventID
         case .contact(let c): return c.personID
         }

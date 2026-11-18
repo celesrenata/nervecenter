@@ -143,6 +143,7 @@ class VoicemailService:
         duration = int(payload.get("duration_seconds", 0) or 0)
         source = VoicemailSource(payload.get("source", VoicemailSource.SHARE_SHEET.value))
 
+        is_read = bool(payload.get("read", False))
         callback_reason = detect_callback(transcript)
         needs_callback = callback_reason is not None
 
@@ -154,7 +155,7 @@ class VoicemailService:
             transcript=transcript,
             duration_seconds=duration,
             received_at=timestamp,
-            read=False,
+            read=is_read,
             needs_callback=needs_callback,
             callback_reason=callback_reason,
             source=source,
@@ -174,7 +175,8 @@ class VoicemailService:
 
         # Thread update: counts + unread bookkeeping. A voicemail is always an
         # inbound from the caller; acknowledging is the only way to clear it.
-        thread.unread += 1
+        if not is_read:
+            thread.unread += 1
         thread.voicemail_count += 1
         thread.last_transcript = transcript
         thread.last_duration_seconds = duration
@@ -193,7 +195,8 @@ class VoicemailService:
         # live item: if the thread already has an unresolved item we *refresh*
         # it in place instead of stacking duplicates.
         new_attention = None
-        should_escalate = thread.unread == 1 or needs_callback
+        # A voicemail already read on the phone raises no attention.
+        should_escalate = not is_read and (thread.unread == 1 or needs_callback)
         if should_escalate:
             apayload = self._attention_payload(thread, voicemail)
             existing = self._attention.get(thread.attention_id) if thread.attention_id else None
@@ -213,6 +216,37 @@ class VoicemailService:
             "new_attention": new_attention,
             "duplicate": False,
         }
+
+    def delete(self, voicemail_id: str) -> dict[str, Any]:
+        """Remove one voicemail (retraction from the relay) and recompute its
+        thread. Unknown ids are a no-op (``found=False``) so replays are safe.
+        When the last voicemail of a thread goes, the thread is removed and its
+        AttentionItem resolved. Returns ``{"found": bool, "thread": ... | None}``.
+        """
+        voicemail = self._voicemails.pop(voicemail_id, None)
+        if voicemail is None:
+            return {"found": False, "thread": None}
+        thread = self._threads.get(voicemail.thread_id)
+        if thread is None:
+            return {"found": True, "thread": None}
+        remaining = self.get_voicemails(thread.thread_id)
+        if not remaining:
+            if thread.attention_id:
+                self._attention.resolve(thread.attention_id)
+            del self._threads[thread.thread_id]
+            return {"found": True, "thread": None}
+        newest = remaining[-1]
+        thread.voicemail_count = len(remaining)
+        thread.unread = sum(1 for m in remaining if not m.read)
+        thread.last_transcript = newest.transcript
+        thread.last_duration_seconds = newest.duration_seconds
+        thread.last_received_at = newest.received_at
+        thread.needs_callback = newest.needs_callback
+        thread.callback_reason = newest.callback_reason
+        thread.updated_at = _now()
+        if thread.unread == 0 and thread.attention_id:
+            self._attention.resolve(thread.attention_id)
+        return {"found": True, "thread": thread}
 
     def _attention_payload(self, thread: VoicemailThread, voicemail: Voicemail) -> dict[str, Any]:
         who = thread.caller_name or thread.caller_phone

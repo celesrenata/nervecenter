@@ -15,9 +15,9 @@
 #
 # Expected per-bundle counts (XCTest, as of 2026-10-27):
 #   NerveSharedTests  13
-#   NerveRelayTests  100
+#   NerveRelayTests  146
 #   NerveAppsTests    34
-#   Total            147, 0 failures
+#   Total            193, 0 failures
 #
 # Success criteria are structural, not summary-line dependent: each
 # 'Test Suite "<Bundle>.xctest" passed' line is paired with its
@@ -53,7 +53,7 @@ echo "==> [test-apple] (d) asserting per-bundle counts..."
 python3 - "$OUT" <<'PY'
 import re, sys
 
-expected = {"NerveSharedTests": 13, "NerveRelayTests": 100, "NerveAppsTests": 34}
+expected = {"NerveSharedTests": 13, "NerveRelayTests": 146, "NerveAppsTests": 34}
 TOTAL = sum(expected.values())
 text = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 lines = text.splitlines()
@@ -96,7 +96,7 @@ if counts:
         ok = False
     if not ok:
         sys.exit(1)
-    print(f"PASS: {total} tests total (13/100/34), 0 failures")
+    print(f"PASS: {total} tests total (13/146/34), 0 failures")
 else:
     # Fallback (older toolchain): single global summary line.
     ms = list(re.finditer(r"Executed (\d+) tests, with (\d+) failures", text))

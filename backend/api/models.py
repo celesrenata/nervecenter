@@ -518,6 +518,7 @@ class VoicemailSource(StrEnum):
     SHARE_SHEET = "share-sheet"
     CARRIER_EMAIL = "carrier-email"
     IMPORTED = "imported"
+    MAC_PHONE_STORE = "mac-phone-store"
 
 
 class Voicemail(BaseModel):

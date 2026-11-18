@@ -83,6 +83,10 @@ class IngestVoicemailRequest(BaseModel):
     duration_seconds: int = 0
     received_at: datetime | None = None
     source: VoicemailSource = VoicemailSource.SHARE_SHEET
+    # Read state as reported by the phone (mac-phone-store source).
+    read: bool = False
+    # Retraction: the voicemail was deleted on the phone; remove it here.
+    deleted: bool = False
 
 
 # -- response models ---------------------------------------------------------
@@ -91,6 +95,14 @@ class IngestVoicemailResponse(BaseModel):
     thread: VoicemailThread
     new_attention: AttentionItem | None = None
     duplicate: bool = False
+
+
+class DeleteVoicemailResponse(BaseModel):
+    voicemail_id: str
+    deleted: bool = True
+    # False when the id was unknown (replayed retraction): a harmless no-op.
+    found: bool = False
+    thread: VoicemailThread | None = None
 
 
 class VoicemailThreadResponse(BaseModel):
@@ -118,13 +130,23 @@ async def list_threads(request: Request) -> ListResponse:
     )
 
 
-@router.post("/ingest", response_model=IngestVoicemailResponse)
+@router.post("/ingest", response_model=IngestVoicemailResponse | DeleteVoicemailResponse)
 async def ingest_voicemail(
     request: Request, payload: IngestVoicemailRequest, response: Response
-) -> IngestVoicemailResponse:
+) -> IngestVoicemailResponse | DeleteVoicemailResponse:
     """Ingest one normalized voicemail. 201 on a new voicemail, 200 on a
-    replayed duplicate id (the relay replays queued events on reconnect — §48)."""
+    replayed duplicate id (the relay replays queued events on reconnect — §48).
+    With ``deleted: true`` the voicemail is removed instead (200, also when the
+    id is unknown, so a replayed retraction is harmless)."""
     svc = _service(request)
+    if payload.deleted:
+        outcome = svc.delete(payload.voicemail_id)
+        response.status_code = 200
+        return DeleteVoicemailResponse(
+            voicemail_id=payload.voicemail_id,
+            found=outcome["found"],
+            thread=outcome["thread"],
+        )
     result = svc.ingest(payload.model_dump())
     response.status_code = 200 if result["duplicate"] else 201
     return IngestVoicemailResponse(
