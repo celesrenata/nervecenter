@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import structlog
 
@@ -46,6 +48,16 @@ async def _run(
     return domain, rows, False
 
 
+def _user_now(moment: datetime) -> datetime:
+    """``moment`` in the user's zone (``NERVE_USER_TIMEZONE``) so "today" and
+    "tonight" mean the user's day, not the UTC day. Unset or invalid: unchanged."""
+    name = os.environ.get("NERVE_USER_TIMEZONE", "").strip()
+    if not name:
+        return moment
+    try:
+        return moment.astimezone(ZoneInfo(name))
+    except Exception:  # noqa: BLE001 - a bad zone name must not break Ask
+        return moment
 async def retrieve(
     state: Any,
     question: str,
@@ -56,7 +68,7 @@ async def retrieve(
 ) -> RetrievalResult:
     """Search every allowed domain for ``question``. Deterministic, no model call."""
     moment = now or datetime.now(UTC)
-    intent = parse_intent(question, moment)
+    intent = parse_intent(question, _user_now(moment))
     table = adapters if adapters is not None else ADAPTERS
     outcomes = await asyncio.gather(
         *(_run(domain, fn, state, intent, timeout) for domain, fn in table.items())

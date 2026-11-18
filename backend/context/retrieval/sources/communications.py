@@ -13,13 +13,17 @@ from backend.context.retrieval.types import Record
 _UPCOMING_WORDS = ("upcoming", "next", "coming", "future", "soon", "later")
 
 
-def _when_text(row: Any) -> str:
-    """"Mon Nov 20, 10:00-11:00" (or the date alone for all-day events)."""
+def _when_text(row: Any, tz: Any = None) -> str:
+    """"Mon Nov 20, 10:00-11:00" (or the date alone for all-day events),
+    shown in ``tz`` (the user's zone) when given."""
     start, end = getattr(row, "start", None), getattr(row, "end", None)
     if start is None:
         return ""
     if getattr(row, "all_day", False):
         return f"{start:%a %b %d} (all day)"
+    if tz is not None:
+        start = aware(start).astimezone(tz)
+        end = aware(end).astimezone(tz) if end is not None else None
     text = f"{start:%a %b %d, %H:%M}"
     if end is not None:
         text += f"-{end:%H:%M}" if end.date() == start.date() else f" to {end:%a %b %d %H:%M}"
@@ -50,7 +54,7 @@ async def calendar(state: Any, intent: Intent, limit: int) -> list[Record] | Non
     specs: list[tuple[Any, ...]] = []
     for r in rows:
         ref = f"{getattr(r, 'account_id', '')}:{getattr(r, 'ical_uid', None) or getattr(r, 'event_id', '')}"
-        parts = [_when_text(r), getattr(r, "location", None), getattr(r, "description", None)]
+        parts = [_when_text(r, intent.now.tzinfo if intent.now else None), getattr(r, "location", None), getattr(r, "description", None)]
         specs.append(("calendar", ref, r.title, " | ".join(str(p) for p in parts if p), r.start))
     return await make_all(specs)
 

@@ -98,3 +98,14 @@ async def test_bills_adapter_returns_bills_and_proposed_candidates(monkeypatch: 
     titles = sorted(r.title for r in result.records if r.domain == "bills")
     assert titles == ["Bill: Water Co", "Possible bill: Power Co"]
     assert "42.50 USD" in next(r for r in result.records if r.title == "Bill: Water Co").snippet
+async def test_tonight_uses_the_user_timezone(monkeypatch: pytest.MonkeyPatch) -> None:
+    """6:30pm Pacific is 02:30 UTC the next day; it still counts as tonight."""
+    monkeypatch.setenv("NERVE_USER_TIMEZONE", "America/Los_Angeles")
+    now = datetime(2026, 11, 18, 21, 0, tzinfo=UTC)  # 1pm Pacific
+    family = _event("Family Video Call", 0)
+    family.start = datetime(2026, 11, 19, 2, 30, tzinfo=UTC)
+    family.end = family.start + timedelta(minutes=45)
+    state = SimpleNamespace(repository_registry=SimpleNamespace(calendar=_Calendar([family])))
+    result = await retrieve(state, "what do I have on my calendar tonight?", now)
+    hit = next(r for r in result.records if r.title == "Family Video Call")
+    assert "Wed Nov 18, 18:30-19:15" in hit.snippet

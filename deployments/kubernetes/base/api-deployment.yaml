@@ -136,6 +136,13 @@ spec:
             # undo token. The only switch between the two behaviours.
             - name: NERVE_ASK_CALENDAR_CONFIRM_FIRST
               value: "true"
+            # Poll Google calendars so Ask sees new events, and let Ask write to
+            # them. Without this the calendar only updates on a manual sync.
+            - name: NERVE_CALENDAR_SYNC_ENABLED
+              value: "1"
+            # The user's zone: "today"/"tonight" in Ask and event times.
+            - name: NERVE_USER_TIMEZONE
+              value: "America/Los_Angeles"
             # Skill Hub read key for the agent runner (NS-ADR-099). Out-of-band
             # Secret, scopes read:skills + read:catalog. Optional: without it
             # agent runs simply have no skills.
