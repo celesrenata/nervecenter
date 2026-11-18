@@ -223,6 +223,9 @@ spec:
               value: "8001"
             - name: NERVE_OPENCODE_URL
               value: http://opencode.opencode.svc.cluster.local:4096
+            # Workbench phase gate (0 off, 1 catalogue, 2 editor+Sessions, 3 IDE).
+            - name: WORKBENCH_PHASE
+              value: "2"
             - name: NERVE_OPENCODE_PASSWORD
               valueFrom:
                 secretKeyRef:

@@ -215,7 +215,7 @@ Phase routers are mounted only when `WORKBENCH_PHASE` is at least that phase. Ea
     - Exit non-zero and mark the phase incomplete when any test fails
     - _Requirements: 11.4, 11.5_
 
-- [~] 8. Checkpoint - Phase 1 gate
+- [x] 8. Checkpoint - Phase 1 gate
   - Ensure all tests pass, ask the user if questions arise.
   - Run `nfs-check.sh` from a node and generate `docs/workbench/evidence-phase-1.md`. Phase 2 stays disabled until the Owner reviews the evidence and raises `WORKBENCH_PHASE`.
 
@@ -399,7 +399,7 @@ Phase routers are mounted only when `WORKBENCH_PHASE` is at least that phase. Ea
     - Unsaved indicator and `beforeunload` prompt, same-origin-only request check, and Session usage in the model-policy panel
     - _Requirements: 4.7, 4.13, 8.9, 11.7_
 
-- [~] 14. Checkpoint - Phase 2 gate
+- [x] 14. Checkpoint - Phase 2 gate
   - Ensure all tests pass, ask the user if questions arise.
   - Generate `docs/workbench/evidence-phase-2.md`. Phase 3 stays disabled until the Owner reviews the evidence and raises `WORKBENCH_PHASE`.
 
