@@ -5,6 +5,8 @@
 #
 #     POST /api/relay/messages      (pathType Exact: nothing else matches)
 #     POST /api/relay/contacts      (NS-ADR-097, owner: "contacts: ok"; same rules)
+#     POST /api/voicemail/ingest    (iPhone voicemails from the Mac Phone store; same
+#                                    rules: the endpoint checks the relay device token)
 #
 # A THIRD Ingress at the end (nervcenter-handoff, NS-ADR-109; owner: "for
 # requests, we should use https since I'm not always home") exposes exactly two
@@ -76,6 +78,13 @@ spec:
                 port:
                   number: 8000
           - path: /api/relay/contacts
+            pathType: Exact
+            backend:
+              service:
+                name: api
+                port:
+                  number: 8000
+          - path: /api/voicemail/ingest
             pathType: Exact
             backend:
               service:

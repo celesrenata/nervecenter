@@ -37,12 +37,27 @@ from backend.voicemail import VoicemailService, reset_voicemail_service
 from backend.voicemail.service import detect_callback
 
 
+DEVICE = "dev-1"
+TOKEN = "relay-token"
+
+
+class _StubPlane:
+    """Stands in for the control plane: one paired device with one token."""
+
+    registry_configured = True
+
+    async def relay_verify_token(self, *, device_id: str, token: str) -> bool:
+        return device_id == DEVICE and token == TOKEN
+
+
 @pytest.fixture
 def client():
     reset_attention_service()
     reset_voicemail_service()
     app = create_app()
     with TestClient(app) as c:
+        app.state.connection_control_plane = _StubPlane()
+        c.headers.update({"X-Nerve-Device": DEVICE, "Authorization": f"Bearer {TOKEN}"})
         yield c
     reset_attention_service()
     reset_voicemail_service()
@@ -402,3 +417,173 @@ def test_delete_unknown_id_is_noop_and_replay_safe(client):
     assert _post(client, "vm-k1", deleted=True).json()["found"] is True
     again = _post(client, "vm-k1", deleted=True)
     assert again.status_code == 200 and again.json()["found"] is False
+
+
+# -- relay token auth (the ingest path is reachable without SSO) ----------------
+
+
+def _raw_post(client, headers, vid="vm-auth"):
+    payload = {"voicemail_id": vid, "caller_phone": "+1 415-555-0134",
+               "received_at": _now().isoformat()}
+    # Bypass the client's default auth headers.
+    return client.post("/api/voicemail/ingest", json=payload, headers=headers)
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"X-Nerve-Device": "", "Authorization": ""},
+        {"X-Nerve-Device": DEVICE, "Authorization": "Bearer wrong"},
+        {"X-Nerve-Device": "other", "Authorization": f"Bearer {TOKEN}"},
+        {"X-Nerve-Device": DEVICE, "Authorization": ""},
+    ],
+)
+def test_ingest_requires_relay_token(client, headers):
+    r = _raw_post(client, headers)
+    assert r.status_code == 401
+    assert client.get("/api/voicemail").json()["meta"]["pagination"]["total"] == 0
+
+
+def test_ingest_unauthenticated_invalid_body_is_401_not_422(client):
+    r = client.post(
+        "/api/voicemail/ingest", content=b"not json",
+        headers={"X-Nerve-Device": "", "Authorization": ""},
+    )
+    assert r.status_code == 401
+
+
+def test_ingest_without_registry_is_503(client):
+    client.app.state.connection_control_plane = None
+    assert _post(client, "vm-x").status_code == 503
+
+
+# -- durable persistence --------------------------------------------------------
+
+
+@pytest.fixture
+def durable(tmp_path):
+    """A SQLite-backed VoicemailRepository over the real ORM tables."""
+    import asyncio
+
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from backend.persistence.connection import make_session_factory
+    from backend.persistence.models.base import Base
+    from backend.persistence.models.voicemail import VoicemailRow, VoicemailThreadRow
+    from backend.persistence.repositories.voicemail_repo import VoicemailRepository
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{tmp_path / 'vm.db'}")
+
+    async def _create():
+        async with engine.begin() as conn:
+            await conn.run_sync(
+                Base.metadata.create_all,
+                tables=[VoicemailRow.__table__, VoicemailThreadRow.__table__],
+            )
+
+    asyncio.run(_create())
+    yield lambda: VoicemailRepository(make_session_factory(engine))
+    asyncio.run(engine.dispose())
+
+
+def _payload(vid, phone="+1 415-555-0134", **extra):
+    return {"voicemail_id": vid, "caller_phone": phone, "transcript": "hello",
+            "duration_seconds": 5, "received_at": _now(), "source": "mac-phone-store", **extra}
+
+
+def test_voicemails_survive_restart(durable):
+    import asyncio
+
+    async def run():
+        svc = VoicemailService(attention=get_attention_service())
+        svc.attach_store(durable())
+        svc.ingest(_payload("vm-p1", caller_name="A"))
+        svc.ingest(_payload("vm-p2", transcript="please call me", read=True))
+        svc.ingest(_payload("vm-p3", phone="+1 212-555-0000"))
+        await svc.flush()
+
+        again = VoicemailService(attention=get_attention_service())  # "restart"
+        again.attach_store(durable())
+        counts = await again.hydrate()
+        assert counts == {"voicemails": 3, "threads": 2}
+        thread = again.get_thread("vthr-14155550134")
+        assert thread.voicemail_count == 2 and thread.unread == 1
+        assert thread.needs_callback is True and thread.callback_reason == "please call me"
+        vms = {v.voicemail_id: v for v in again.get_voicemails("vthr-14155550134")}
+        assert vms["vm-p2"].read is True and vms["vm-p1"].read is False
+        assert vms["vm-p1"].source == VoicemailSource.MAC_PHONE_STORE
+        # replay after restart is still idempotent
+        assert again.ingest(_payload("vm-p1"))["duplicate"] is True
+
+    reset_attention_service()
+    asyncio.run(run())
+
+
+def test_delete_and_acknowledge_persist(durable):
+    import asyncio
+
+    async def run():
+        svc = VoicemailService(attention=get_attention_service())
+        svc.attach_store(durable())
+        svc.ingest(_payload("vm-a"))
+        svc.ingest(_payload("vm-b"))
+        svc.ingest(_payload("vm-c", phone="+1 212-555-0000"))
+        await svc.flush()
+        svc.delete("vm-b")
+        svc.delete("vm-c")  # last of its thread: thread row goes too
+        svc.acknowledge("vthr-14155550134")
+        await svc.flush()
+
+        again = VoicemailService(attention=get_attention_service())
+        again.attach_store(durable())
+        assert await again.hydrate() == {"voicemails": 1, "threads": 1}
+        thread = again.get_thread("vthr-14155550134")
+        assert thread.voicemail_count == 1 and thread.unread == 0
+        assert again.get_voicemails("vthr-14155550134")[0].read is True
+
+    reset_attention_service()
+    asyncio.run(run())
+
+
+def test_failed_flush_keeps_changes_pending_for_retry(durable):
+    import asyncio
+
+    class Flaky:
+        def __init__(self, inner):
+            self.inner, self.fail = inner, True
+
+        async def apply(self, **kw):
+            if self.fail:
+                raise RuntimeError("db down")
+            await self.inner.apply(**kw)
+
+        async def load_all(self):
+            return await self.inner.load_all()
+
+    async def run():
+        flaky = Flaky(durable())
+        svc = VoicemailService(attention=get_attention_service())
+        svc.attach_store(flaky)
+        svc.ingest(_payload("vm-f1"))
+        with pytest.raises(RuntimeError):
+            await svc.flush()
+        # the relay retries: in-memory ingest is now a duplicate, yet it persists
+        assert svc.ingest(_payload("vm-f1"))["duplicate"] is True
+        flaky.fail = False
+        await svc.flush()
+        again = VoicemailService(attention=get_attention_service())
+        again.attach_store(durable())
+        assert (await again.hydrate())["voicemails"] == 1
+
+    reset_attention_service()
+    asyncio.run(run())
+
+
+def test_endpoint_returns_503_when_store_write_fails(client):
+    class Broken:
+        async def apply(self, **kw):
+            raise RuntimeError("db down")
+
+    svc = client.app.state.voicemail_service
+    svc.attach_store(Broken())
+    assert _post(client, "vm-503").status_code == 503

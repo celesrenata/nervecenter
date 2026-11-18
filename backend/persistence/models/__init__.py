@@ -68,6 +68,7 @@ from .relationships import Relationship
 from .research import ResearchCheckpoint, ResearchProject, ResearchStep
 from .resources import AgentResourceLink, Resource
 from .tasks import Task, TaskRun
+from .voicemail import VoicemailRow, VoicemailThreadRow
 
 __all__ = [
     "Base",
@@ -132,4 +133,6 @@ __all__ = [
     "OBLIGATION_TYPES",
     "OBLIGATION_ORIGINS",
     "OBLIGATION_STATUSES",
+    "VoicemailRow",
+    "VoicemailThreadRow",
 ]

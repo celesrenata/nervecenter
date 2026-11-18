@@ -239,6 +239,27 @@ final class ChannelEngineTests: XCTestCase {
         XCTAssertEqual(replay.captured, 0)
     }
 
+    func testHTTP302RedirectIsAFailureNotDelivery() async throws {
+        let source = FixedSource(records: [emailRecord(id: "m1")])
+        let transport = ScriptedTransport(status: 302)
+        let engine = makeEngine(source: source, transport: transport)
+        _ = try engine.open()
+        let cycle = try await engine.runOnce()
+        XCTAssertEqual(cycle.sent, 0)
+        XCTAssertEqual(cycle.failed, 1)
+        XCTAssertEqual(cycle.backlog, 1, "a 3xx must not ack: the record stays queued")
+        XCTAssertTrue(cycle.note.contains("302"))
+    }
+
+    func testRelayDeviceHeaderSentWhenConfigured() throws {
+        var config = try makeConfig()
+        config.relayDeviceID = "dev-1"
+        let entry = OutboxEntry(seq: 1, storeID: 1, payloadJSON: "{}")
+        let req = ChannelEngine.makeRequest(channel: .voicemail, config: config, entry: entry)
+        XCTAssertEqual(req.value(forHTTPHeaderField: "X-Nerve-Device"), "dev-1")
+        XCTAssertEqual(req.url?.path, "/api/voicemail/ingest")
+    }
+
     func testHTTP4xxRetainsBacklogAndFailsLoudly() async throws {
         let source = FixedSource(records: [emailRecord(id: "m1")])
         let transport = ScriptedTransport(

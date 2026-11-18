@@ -17,10 +17,13 @@ Design notes
   computed; this service only ever sees normalized voicemail events posted via
   ``POST /api/voicemail/ingest`` — no audio, no model, no carrier access
   in-process.
-- **No persistence yet.** P2 deliberately stores threads in process memory so
-  the API, the Voicemail screen, and the tests all work without
-  ``NERVE_DB_URL`` — same convention as the P0/P1 stores. Public method
-  signatures are designed to survive a later swap to a real table.
+- **Write-through persistence.** Process memory is the read model, so the
+  screens and tests work without ``NERVE_DB_URL`` (same convention as the
+  P0/P1 stores). When a :class:`VoicemailRepository` is attached
+  (:meth:`attach_store`), every mutation is recorded as dirty and
+  :meth:`flush` writes it to Postgres; :meth:`hydrate` reloads everything at
+  startup. Dirty state survives a failed flush, so a retried request persists
+  it even though the in-memory ingest is already a duplicate.
 - **Idempotent ingest.** Voicemail ids are unique: re-posting the same
   ``voicemail_id`` is a no-op, which matters because the relay replays queued
   events when connectivity returns (§48) and must preserve ordering.
@@ -36,6 +39,7 @@ Design notes
 
 from __future__ import annotations
 
+import asyncio
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -121,6 +125,70 @@ class VoicemailService:
         self._attention = attention or get_attention_service()
         self._voicemails: dict[str, Voicemail] = {}
         self._threads: dict[str, VoicemailThread] = {}
+        self._store: Any = None
+        self._dirty_vms: set[str] = set()
+        self._dirty_threads: set[str] = set()
+        self._deleted_vms: set[str] = set()
+        self._deleted_threads: set[str] = set()
+        self._flush_lock = asyncio.Lock()
+
+    # -- persistence ---------------------------------------------------------
+
+    def attach_store(self, store: Any) -> None:
+        """Attach a durable :class:`VoicemailRepository` (write-through)."""
+        self._store = store
+
+    @property
+    def has_store(self) -> bool:
+        return self._store is not None
+
+    async def hydrate(self) -> dict[str, int]:
+        """Load stored voicemails and threads into memory (startup)."""
+        if self._store is None:
+            return {"voicemails": 0, "threads": 0}
+        vm_rows, thread_rows = await self._store.load_all()
+        for row in vm_rows:
+            row["received_at"] = _ensure_utc(row["received_at"])
+            self._voicemails[row["voicemail_id"]] = Voicemail(**row)
+        for row in thread_rows:
+            for key in ("last_received_at", "created_at", "updated_at"):
+                row[key] = _ensure_utc(row[key])
+            thread = VoicemailThread(**row)
+            # The attention service is in-memory; a stored id may be stale.
+            if thread.attention_id and self._attention.get(thread.attention_id) is None:
+                thread.attention_id = None
+            self._threads[thread.thread_id] = thread
+        return {"voicemails": len(vm_rows), "threads": len(thread_rows)}
+
+    async def flush(self) -> None:
+        """Write pending changes to the store. Raises if the write fails,
+        leaving the changes pending so the next flush retries them."""
+        if self._store is None:
+            return
+        async with self._flush_lock:
+            vm_ids, self._dirty_vms = self._dirty_vms, set()
+            thread_ids, self._dirty_threads = self._dirty_threads, set()
+            del_vms, self._deleted_vms = self._deleted_vms, set()
+            del_threads, self._deleted_threads = self._deleted_threads, set()
+            if not (vm_ids or thread_ids or del_vms or del_threads):
+                return
+            try:
+                await self._store.apply(
+                    voicemails=[
+                        self._voicemails[i].model_dump() for i in vm_ids if i in self._voicemails
+                    ],
+                    threads=[
+                        self._threads[i].model_dump() for i in thread_ids if i in self._threads
+                    ],
+                    deleted_voicemail_ids=del_vms,
+                    deleted_thread_ids=del_threads,
+                )
+            except Exception:
+                self._dirty_vms |= vm_ids
+                self._dirty_threads |= thread_ids
+                self._deleted_vms |= del_vms
+                self._deleted_threads |= del_threads
+                raise
 
     # -- ingestion -----------------------------------------------------------
     def ingest(self, payload: dict[str, Any]) -> dict[str, Any]:
@@ -161,7 +229,8 @@ class VoicemailService:
             source=source,
         )
         self._voicemails[voicemail_id] = voicemail
-
+        self._dirty_vms.add(voicemail_id)
+        self._deleted_vms.discard(voicemail_id)
         thread = self._threads.get(voicemail.thread_id)
         if thread is None:
             thread = VoicemailThread(
@@ -188,7 +257,8 @@ class VoicemailService:
         # list badge and the AttentionItem track the most recent ask.
         thread.needs_callback = needs_callback
         thread.callback_reason = callback_reason
-
+        self._dirty_threads.add(thread.thread_id)
+        self._deleted_threads.discard(thread.thread_id)
         # Attention generation (§77): a fresh voicemail the user has not yet
         # engaged with (unread == 1) — or one carrying a callback request —
         # (re)creates the thread's AttentionItem. A source keeps exactly ONE
@@ -226,6 +296,8 @@ class VoicemailService:
         voicemail = self._voicemails.pop(voicemail_id, None)
         if voicemail is None:
             return {"found": False, "thread": None}
+        self._dirty_vms.discard(voicemail_id)
+        self._deleted_vms.add(voicemail_id)
         thread = self._threads.get(voicemail.thread_id)
         if thread is None:
             return {"found": True, "thread": None}
@@ -234,6 +306,8 @@ class VoicemailService:
             if thread.attention_id:
                 self._attention.resolve(thread.attention_id)
             del self._threads[thread.thread_id]
+            self._dirty_threads.discard(thread.thread_id)
+            self._deleted_threads.add(thread.thread_id)
             return {"found": True, "thread": None}
         newest = remaining[-1]
         thread.voicemail_count = len(remaining)
@@ -244,6 +318,7 @@ class VoicemailService:
         thread.needs_callback = newest.needs_callback
         thread.callback_reason = newest.callback_reason
         thread.updated_at = _now()
+        self._dirty_threads.add(thread.thread_id)
         if thread.unread == 0 and thread.attention_id:
             self._attention.resolve(thread.attention_id)
         return {"found": True, "thread": thread}
@@ -296,8 +371,10 @@ class VoicemailService:
             return None
         thread.unread = 0
         thread.updated_at = _now()
+        self._dirty_threads.add(thread_id)
         for m in self.get_voicemails(thread_id):
             m.read = True
+            self._dirty_vms.add(m.voicemail_id)
         if thread.attention_id:
             self._attention.resolve(thread.attention_id)
         return thread

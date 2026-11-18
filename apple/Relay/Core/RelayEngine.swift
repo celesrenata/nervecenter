@@ -30,11 +30,22 @@ public protocol RelayTransport: Sendable {
 /// Authorization header is a bearer token (§47 "authenticate to
 /// NerveCenter") — no credentials in URLs, no query strings.
 public struct URLSessionRelayTransport: RelayTransport {
-    public init() {}
+    private let session: URLSession
+
+    /// Never follows HTTP redirects. A relay POST that gets a 3xx (for
+    /// example the SSO proxy answering with its login page) must be reported
+    /// as that 3xx, not as the 200 of the page it redirects to.
+    public init(configuration: URLSessionConfiguration = .default) {
+        self.session = URLSession(
+            configuration: configuration,
+            delegate: NoRedirectDelegate.shared,
+            delegateQueue: nil
+        )
+    }
 
     public func send(_ request: URLRequest) async throws -> RelayHTTPResult {
         do {
-            let (data, response) = try await URLSession.shared.data(for: request)
+            let (data, response) = try await session.data(for: request)
             let status = (response as? HTTPURLResponse)?.statusCode ?? 0
             if status == 0 {
                 throw RelayTransportError.network("no HTTP status in response")
@@ -45,6 +56,22 @@ public struct URLSessionRelayTransport: RelayTransport {
         } catch {
             throw RelayTransportError.network(error.localizedDescription)
         }
+    }
+}
+
+/// Session delegate that refuses every redirect, so the 3xx response itself
+/// is delivered to the caller.
+public final class NoRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    public static let shared = NoRedirectDelegate()
+
+    public func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
     }
 }
 

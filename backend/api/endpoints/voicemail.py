@@ -27,11 +27,14 @@ transcript and provenance are computed by the relay (out of scope, §46/§47).
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Annotated
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, Response
-from pydantic import BaseModel
+from fastapi import APIRouter, HTTPException, Request, Response, Security
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import BaseModel, ValidationError
 
+from backend.api.endpoints.relay import _plane, _require_relay_token
 from backend.api.models import (
     ApiResponseMeta,
     AttentionItem,
@@ -43,8 +46,18 @@ from backend.api.models import (
 from backend.voicemail.service import VoicemailService, get_voicemail_service
 
 router = APIRouter(prefix="/api/voicemail", tags=["voicemail"])
+_bearer = HTTPBearer(auto_error=False)
+
+#: Cap on one ingest body (a voicemail is a transcript, not audio).
+MAX_BODY_BYTES = 1_048_576
 
 
+async def _flush(svc: VoicemailService) -> None:
+    """Persist pending changes; a failure is a 503 so the relay retries."""
+    try:
+        await svc.flush()
+    except Exception:  # noqa: BLE001 - detail is withheld (it may hold content)
+        raise HTTPException(status_code=503, detail="durable storage write failed") from None
 def _meta(**pagination: int | None) -> ApiResponseMeta:
     return ApiResponseMeta(
         version="1.0.0",
@@ -132,15 +145,41 @@ async def list_threads(request: Request) -> ListResponse:
 
 @router.post("/ingest", response_model=IngestVoicemailResponse | DeleteVoicemailResponse)
 async def ingest_voicemail(
-    request: Request, payload: IngestVoicemailRequest, response: Response
+    request: Request,
+    response: Response,
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Security(_bearer)] = None,
 ) -> IngestVoicemailResponse | DeleteVoicemailResponse:
     """Ingest one normalized voicemail. 201 on a new voicemail, 200 on a
     replayed duplicate id (the relay replays queued events on reconnect — §48).
     With ``deleted: true`` the voicemail is removed instead (200, also when the
-    id is unknown, so a replayed retraction is harmless)."""
+    id is unknown, so a replayed retraction is harmless).
+
+    Authenticated with the paired relay device's bearer token (the same check
+    as ``/api/relay/messages``: ``X-Nerve-Device`` + ``Authorization``, one
+    generic 401). This path is reachable without SSO, so nothing is read or
+    stored before that check passes."""
+    plane = _plane(request)
+    if plane is None or not plane.registry_configured:
+        raise HTTPException(status_code=503, detail="durable storage is not configured")
+    await _require_relay_token(plane, request.headers.get("x-nerve-device", ""), credentials)
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="body too large")
+    body = await request.body()
+    if len(body) > MAX_BODY_BYTES:
+        raise HTTPException(status_code=413, detail="body too large")
+    try:
+        payload = IngestVoicemailRequest.model_validate_json(body)
+    except ValidationError as exc:
+        # Field locations only: the error context could echo transcript text.
+        raise HTTPException(
+            status_code=422,
+            detail=[{"loc": list(e["loc"]), "type": e["type"]} for e in exc.errors()],
+        ) from None
     svc = _service(request)
     if payload.deleted:
         outcome = svc.delete(payload.voicemail_id)
+        await _flush(svc)
         response.status_code = 200
         return DeleteVoicemailResponse(
             voicemail_id=payload.voicemail_id,
@@ -148,6 +187,7 @@ async def ingest_voicemail(
             thread=outcome["thread"],
         )
     result = svc.ingest(payload.model_dump())
+    await _flush(svc)
     response.status_code = 200 if result["duplicate"] else 201
     return IngestVoicemailResponse(
         voicemail=result["voicemail"],
@@ -174,6 +214,7 @@ async def acknowledge_thread(request: Request, thread_id: str) -> AcknowledgeVoi
     thread = svc.acknowledge(thread_id)
     if thread is None:
         raise _thread_not_found(thread_id)
+    await _flush(svc)
     return AcknowledgeVoicemailResponse(
         thread=thread,
         attention_id=thread.attention_id,

@@ -205,6 +205,11 @@ public final class ChannelEngine {
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(config.token)", forHTTPHeaderField: "Authorization")
+        // Relay-token endpoints that sit outside SSO (e.g. voicemail ingest)
+        // identify the paired device in this header.
+        if let device = config.relayDeviceID {
+            request.setValue(device, forHTTPHeaderField: "X-Nerve-Device")
+        }
         request.httpBody = entry.payloadJSON.data(using: .utf8)
         request.timeoutInterval = 15
         return request

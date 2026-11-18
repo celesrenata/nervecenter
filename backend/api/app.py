@@ -286,6 +286,18 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                     log.info("api.messages_rehydrated", **counts)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.messages_rehydrate_failed", error=str(exc))
+            # Voicemails and threads: durable in Postgres, in-memory read model.
+            try:
+                registry = getattr(app.state, "repository_registry", None)
+                if registry is not None:
+                    from backend.persistence.repositories.voicemail_repo import VoicemailRepository
+                    vm_service = getattr(app.state, "voicemail_service", None) or get_voicemail_service()
+                    vm_service.attach_store(VoicemailRepository(registry.session_factory))
+                    counts = await vm_service.hydrate()
+                    if any(counts.values()):
+                        log.info("api.voicemail_hydrated", **counts)
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.voicemail_hydrate_failed", error_type=type(exc).__name__)
             # Contact names into Messages + the Contacts screen (NS-ADR-097).
             try:
                 from backend.contacts.durable import hydrate_views

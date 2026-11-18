@@ -237,6 +237,22 @@ final class RelayEngineTests: XCTestCase {
         XCTAssertEqual(cycle.backlog, 0)
     }
 
+    /// 3xx (e.g. an SSO redirect) is not delivery: the entry stays queued.
+    func testHTTP302RedirectRetainsBacklog() async throws {
+        try addMessage(at: storeURL, guid: "G1", peer: peer, text: "a")
+
+        let t = TestTransport(status: 302, responseBody: "")
+        let engine = try makeEngine(transport: t)
+        _ = try engine.open()
+        _ = try await engine.runOnce() // seeds cursor at 1
+
+        try addMessage(at: storeURL, guid: "G2", peer: peer, text: "b")
+        let cycle = try await engine.runOnce()
+        XCTAssertEqual(cycle.sent, 0)
+        XCTAssertEqual(cycle.failed, 1)
+        XCTAssertEqual(cycle.backlog, 1)
+    }
+
     /// 4xx from ingest: entry is NOT acked, backlog retained, and the
     /// next cycle retries it (a bad token fails loudly, never drops data).
     func testHTTP4xxRetainsBacklogAndRetries() async throws {
