@@ -47,6 +47,9 @@ import { DownloadsView } from './views/DownloadsView'
 import { TodayView } from './views/TodayView'
 import { ConnectionsView } from './views/ConnectionsView'
 import { OauthCallbackView } from './views/OauthCallbackView'
+import WorkbenchView from './views/WorkbenchView'
+import WorkbenchProjectView from './views/WorkbenchProjectView'
+import WorkbenchEditorView from './views/WorkbenchEditorView'
 import { SettingsView } from './views/SettingsView'
 import { LoginView } from './views/LoginView'
 import { AuthCallback } from './auth/AuthCallback'
@@ -123,6 +126,9 @@ function App() {
             <Route path="/decisions" element={<DecisionsView />} />
             <Route path="/ask" element={<AskView />} />
             <Route path="/downloads" element={<DownloadsView />} />
+            <Route path="/workbench" element={<WorkbenchView />} />
+            <Route path="/workbench/:kind/:slug" element={<WorkbenchProjectView />} />
+            <Route path="/workbench/:slug/edit" element={<WorkbenchEditorView />} />
             <Route path="/settings" element={<SettingsView />} />
           </Route>
         </Routes>

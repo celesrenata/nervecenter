@@ -1,0 +1,46 @@
+# Second static NFS PV + PVC for the same Opencode_Store export, claimed in the
+# existing `opencode` namespace so the Opencode_Server can mount it at
+# /projects (Req 1.4, 1.5, 1.9). The existing Longhorn PVC `opencode-data` is
+# not touched. The `opencode` namespace is pre-existing and not created here.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: oc-opencode-projects
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/store: opencode
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+  nfs:
+    server: 192.168.42.8
+    path: /volume1/Kubernetes/opencode/projects
+  claimRef:
+    namespace: opencode
+    name: oc-opencode-projects
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: oc-opencode-projects
+  namespace: opencode
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/store: opencode
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: oc-opencode-projects
+  resources:
+    requests:
+      storage: 50Gi

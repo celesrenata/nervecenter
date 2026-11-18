@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { projectsApi, type OpenAIStatus, type ProjectDetail, type ProjectSummary } from '../api/projects'
 import { modelPolicyApi, type ModelPolicy } from '../api/modelPolicy'
+import { workbenchApi, type WorkbenchUsage } from '../api/workbench'
 
 /**
  * ProjectsView (NS-ADR-104): shared project context. Notes are append-only and
@@ -118,6 +119,7 @@ function NewProject({ onCreated }: { onCreated: () => void }) {
 
 function ModelUse() {
   const [p, setP] = useState<ModelPolicy | null>(null)
+  const [usage, setUsage] = useState<WorkbenchUsage[]>([])
   const [err, setErr] = useState<string | null>(null)
   const [kind, setKind] = useState('agent')
   const [id, setId] = useState('')
@@ -125,6 +127,8 @@ function ModelUse() {
   const load = useCallback(async () => {
     try {
       setP(await modelPolicyApi.get())
+      // Session usage exists only at workbench phase 2+; absence is not an error.
+      setUsage((await workbenchApi.listUsage(undefined, 20).catch(() => ({ usage: [] }))).usage)
       setErr(null)
     } catch (e) {
       setErr(e instanceof Error ? e.message : 'Could not load model use')
@@ -157,6 +161,18 @@ function ModelUse() {
       <p className="text-xs text-muted">
         Limits: {o.limits.concurrency} at a time, {o.limits.min_spacing_s}s apart, {o.limits.max_requests_hour}/h, {o.limits.max_requests_day}/day.
       </p>
+      {usage.length > 0 && (
+        <>
+          <h3 className="mt-2 font-semibold text-primary">Session usage</h3>
+          <ul data-testid="session-usage">
+            {usage.map((u) => (
+              <li key={u.id}>
+                Session {u.session_id}: {u.model}, {u.input_tokens} in / {u.output_tokens} out tokens
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
       <h3 className="mt-2 font-semibold text-primary">OpenAI permissions</h3>
       <ul data-testid="grants">
         {p.grants.length === 0 && <li className="text-xs text-muted">None. Everything stays local.</li>}

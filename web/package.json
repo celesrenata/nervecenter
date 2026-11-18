@@ -9,14 +9,17 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "test": "vitest run --dir src"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@monaco-editor/react": "^4.7.0",
     "axios": "^1.7.2",
     "dompurify": "^3.4.18",
+    "monaco-editor": "^0.57.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-markdown": "^9.1.0",
@@ -32,9 +35,11 @@
     "@types/react-router-dom": "^5.3.3",
     "@vitejs/plugin-react": "^4.3.1",
     "autoprefixer": "^10.4.20",
+    "fast-check": "^3.23.2",
     "postcss": "^8.4.41",
     "tailwindcss": "^3.4.7",
     "typescript": "^5.5.3",
-    "vite": "^5.4.0"
+    "vite": "^5.4.0",
+    "vitest": "^2.1.9"
   }
 }

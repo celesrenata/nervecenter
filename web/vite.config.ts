@@ -10,6 +10,11 @@ export default defineConfig({
       '@': path.resolve(__dirname, './src'),
     },
   },
+  // Monaco workers are bundled via `?worker` imports (see monacoSetup.ts).
+  // ES format lets workers share chunks and avoids the IIFE code-splitting error.
+  worker: {
+    format: 'es',
+  },
   server: {
     port: 3000,
     proxy: {

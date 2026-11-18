@@ -1,0 +1,20 @@
+# Strategic-merge patch for the base `api` Deployment. Points the API at the
+# Workbench ServiceAccount and re-enables the token mount that the base turns
+# off (the IDE manager needs the token to call the Kubernetes API in the
+# `workbench` namespace). WORKBENCH_PHASE is intentionally not set here: it
+# defaults to 0 and the Owner raises it after reviewing evidence (Req 11.3-11.5).
+#
+# This file is applied against the base, not by this kustomization alone:
+#   kubectl kustomize deployments/kubernetes/optional/workbench-with-api
+# or, on a live cluster:
+#   kubectl -n nervecenter patch deployment api --patch-file api-patch.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: nervecenter
+spec:
+  template:
+    spec:
+      serviceAccountName: nervecenter-workbench
+      automountServiceAccountToken: true

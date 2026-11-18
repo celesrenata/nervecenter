@@ -1,0 +1,153 @@
+# Workbench file workers (Req 1.5, 7.7). One Deployment per store; each mounts
+# exactly one PVC. Reachable only from API pods (see networkpolicy.yaml).
+# UID/GID 1000 must match WORKBENCH_UID/WORKBENCH_GID (default 1000).
+# Image is retagged by deployments/harbor/deploy.sh like the api image.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wb-fs-opencode
+  namespace: workbench
+  labels:
+    app: wb-fs-opencode
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/role: fsworker
+    workbench.nervcenter/store: opencode
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wb-fs-opencode
+  template:
+    metadata:
+      labels:
+        app: wb-fs-opencode
+        app.kubernetes.io/name: workbench
+        workbench.nervcenter/role: fsworker
+        workbench.nervcenter/store: opencode
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fsworker
+          image: "registry.celestium.life/nervecenter/api:latest"
+          imagePullPolicy: Always
+          command: ["python", "-m", "backend.workbench.fsworker", "--kind", "opencode"]
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - {name: WORKBENCH_UID, value: "1000"}
+            - {name: WORKBENCH_GID, value: "1000"}
+            - {name: WORKBENCH_FSWORKER_PORT, value: "8090"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: store, mountPath: /projects}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: store
+          persistentVolumeClaim:
+            claimName: wb-opencode-projects
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wb-fs-opencode
+  namespace: workbench
+  labels:
+    app: wb-fs-opencode
+    app.kubernetes.io/name: workbench
+spec:
+  selector:
+    app: wb-fs-opencode
+  ports:
+    - {name: http, port: 8090, targetPort: http}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: wb-fs-menagerie
+  namespace: workbench
+  labels:
+    app: wb-fs-menagerie
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/role: fsworker
+    workbench.nervcenter/store: menagerie
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: wb-fs-menagerie
+  template:
+    metadata:
+      labels:
+        app: wb-fs-menagerie
+        app.kubernetes.io/name: workbench
+        workbench.nervcenter/role: fsworker
+        workbench.nervcenter/store: menagerie
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: fsworker
+          image: "registry.celestium.life/nervecenter/api:latest"
+          imagePullPolicy: Always
+          command: ["python", "-m", "backend.workbench.fsworker", "--kind", "menagerie"]
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - {name: WORKBENCH_UID, value: "1000"}
+            - {name: WORKBENCH_GID, value: "1000"}
+            - {name: WORKBENCH_FSWORKER_PORT, value: "8090"}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          resources:
+            requests: {cpu: 100m, memory: 128Mi}
+            limits: {cpu: "1", memory: 512Mi}
+          volumeMounts:
+            - {name: store, mountPath: /projects}
+            - {name: tmp, mountPath: /tmp}
+      volumes:
+        - name: store
+          persistentVolumeClaim:
+            claimName: wb-menagerie-projects
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: wb-fs-menagerie
+  namespace: workbench
+  labels:
+    app: wb-fs-menagerie
+    app.kubernetes.io/name: workbench
+spec:
+  selector:
+    app: wb-fs-menagerie
+  ports:
+    - {name: http, port: 8090, targetPort: http}

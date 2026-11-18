@@ -1,0 +1,122 @@
+# Workbench NetworkPolicies (Req 7.7-7.10). Default deny, then explicit allows.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: workbench
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+---
+# fs-workers accept traffic only from API pods in nervecenter.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fsworker-ingress-from-api
+  namespace: workbench
+spec:
+  podSelector:
+    matchLabels:
+      workbench.nervcenter/role: fsworker
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nervecenter}
+          podSelector:
+            matchLabels: {app: api}
+      ports:
+        - {protocol: TCP, port: 8090}
+---
+# fs-workers: DNS, plus public TCP 443/22 (git clone). No private ranges,
+# no link-local (metadata service), so no DB, API server or RFC1918 hosts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: fsworker-egress
+  namespace: workbench
+spec:
+  podSelector:
+    matchLabels:
+      workbench.nervcenter/role: fsworker
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 22}
+---
+# IDE pods (app=ide): ingress only from API pods, on code-server (8080) and
+# menagerie-status (8081).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ide-ingress-from-api
+  namespace: workbench
+spec:
+  podSelector:
+    matchLabels: {app: ide}
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: nervecenter}
+          podSelector:
+            matchLabels: {app: api}
+      ports:
+        - {protocol: TCP, port: 8080}
+        - {protocol: TCP, port: 8081}
+---
+# IDE pods: DNS, OmniRoute :20128, and public TCP 443/22. No private ranges
+# and no link-local, so no DB, API port, API server or metadata service.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ide-egress
+  namespace: workbench
+spec:
+  podSelector:
+    matchLabels: {app: ide}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports:
+        - {protocol: UDP, port: 53}
+        - {protocol: TCP, port: 53}
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: omniroute}
+          podSelector:
+            matchLabels: {app.kubernetes.io/name: omniroute}
+      ports:
+        - {protocol: TCP, port: 20128}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - {protocol: TCP, port: 443}
+        - {protocol: TCP, port: 22}

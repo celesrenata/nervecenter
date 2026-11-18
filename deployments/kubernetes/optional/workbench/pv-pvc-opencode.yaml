@@ -1,0 +1,45 @@
+# Static NFS PV + PVC for the Workbench opencode project store (Req 1.1-1.4).
+# Retain reclaim policy, ReadWriteMany, hard NFSv4.1 mounts. No emptyDir
+# fallback: if the NFS export is unreachable, pods stay Pending.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wb-opencode-projects
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/store: opencode
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+  nfs:
+    server: 192.168.42.8
+    path: /volume1/Kubernetes/opencode/projects
+  claimRef:
+    namespace: workbench
+    name: wb-opencode-projects
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wb-opencode-projects
+  namespace: workbench
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/store: opencode
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: wb-opencode-projects
+  resources:
+    requests:
+      storage: 50Gi

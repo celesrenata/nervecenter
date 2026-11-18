@@ -9,6 +9,7 @@
 #   /            -> static SPA, deep links fall back to /index.html
 #   /api/        -> proxied to the api service (FastAPI, :8000)
 #   /mcp/        -> proxied to the api service (MCP streamable-HTTP, :8000)
+#   /ide/        -> proxied to the api service (Workbench IDE, HTTP + WebSocket)
 
 worker_processes auto;
 error_log /dev/stderr warn;
@@ -37,6 +38,14 @@ http {
   map $http_x_forwarded_proto $public_scheme {
     default $http_x_forwarded_proto;
     ""      $scheme;
+  }
+
+  # WebSocket upgrade: send `Connection: upgrade` only when the client asked
+  # for an Upgrade; otherwise close the hop-by-hop header so plain HTTP
+  # requests to /ide/ keep normal keepalive behaviour.
+  map $http_upgrade $connection_upgrade {
+    default upgrade;
+    ""      "";
   }
 
   server {
@@ -93,6 +102,29 @@ http {
       proxy_request_buffering off;
       proxy_read_timeout 300s;
       chunked_transfer_encoding on;
+    }
+
+    # Workbench Browser_IDE (HTTP + WebSocket). Served by the API, which
+    # validates the SSO session and Origin and forwards to the IDE pod. No
+    # separate Ingress path: the request arrives through the oauth2-proxy
+    # gate on `/` like every other route.
+    location /ide/ {
+      proxy_pass http://${API_UPSTREAM}:${API_PORT};
+      proxy_http_version 1.1;
+      proxy_set_header Upgrade $http_upgrade;
+      proxy_set_header Connection $connection_upgrade;
+      proxy_set_header Host $host;
+      # The API checks Origin on WebSocket upgrades; pass it through as sent.
+      proxy_set_header Origin $http_origin;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $public_scheme;
+      proxy_buffering off;
+      proxy_cache off;
+      proxy_request_buffering off;
+      # Long-lived editor sockets: keep idle connections open.
+      proxy_read_timeout 3600s;
+      proxy_send_timeout 3600s;
     }
 
     # Self-hosted app distribution (ad-hoc, no App Store): static files

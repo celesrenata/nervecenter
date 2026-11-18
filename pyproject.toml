@@ -60,6 +60,7 @@ dev = [
     "alembic>=1.14.0",
     "pgvector>=0.3.0",
     "tabulate>=0.9",
+    "hypothesis>=6.100",
 ]
 ml = [
     # NerveShield 6.3 benchmark only; never installed in the service image

@@ -1,0 +1,38 @@
+# Workbench RBAC (Req 5.3, 7.12, 9.1). Namespaced only: no ClusterRole and no
+# ClusterRoleBinding. The ServiceAccount lives in `nervecenter` (where the API
+# runs); the Role and RoleBinding live in `workbench` (where IDE pods run).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: nervecenter-workbench
+  namespace: nervecenter
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: nervecenter-workbench
+  namespace: workbench
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: nervecenter-workbench
+  namespace: workbench
+subjects:
+  - kind: ServiceAccount
+    name: nervecenter-workbench
+    namespace: nervecenter
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: nervecenter-workbench

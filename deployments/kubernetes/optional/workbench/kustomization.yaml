@@ -1,0 +1,19 @@
+# Optional Workbench base. Deliberately NOT referenced by
+# deployments/kubernetes/kustomization.yaml or base/. Apply with
+# `kubectl apply -k deployments/kubernetes/optional/workbench`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - pv-pvc-opencode.yaml
+  - pv-pvc-opencode-ns.yaml
+  - pv-pvc-menagerie.yaml
+  - fsworker.yaml
+  - networkpolicy.yaml
+  - rbac.yaml
+patches:
+  - path: api-patch.yaml
+    target:
+      kind: Deployment
+      name: api
+      namespace: nervecenter

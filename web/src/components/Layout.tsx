@@ -2,6 +2,7 @@ import { useEffect, useState, type ComponentType } from 'react'
 import { Link, Outlet, useLocation } from 'react-router-dom'
 import { useAuth } from '../auth/AuthContext'
 import { ThemeToggle } from './ThemeToggle'
+import { workbenchApi } from '../api/workbench'
 import {
   AgentsIcon,
   BriefingIcon,
@@ -77,6 +78,7 @@ const navItems: NavItem[] = [
   { path: '/decisions', label: 'Decisions', Icon: DecisionsIcon },
   { path: '/ask', label: 'Ask', Icon: AskIcon },
   { path: '/downloads', label: 'Downloads', Icon: DownloadsIcon },
+  { path: '/workbench', label: 'Workbench', Icon: TasksIcon },
   { path: '/connections', label: 'Connections', Icon: ConnectionsIcon },
   { path: '/settings', label: 'Settings', Icon: SettingsIcon },
 ]
@@ -98,6 +100,23 @@ export function Layout() {
   const { user, logout } = useAuth()
   const location = useLocation()
   const [menuOpen, setMenuOpen] = useState(false)
+  // Workbench nav is shown only once the feature phase is >= 1 (Req 3.1, 3.2).
+  const [workbenchOn, setWorkbenchOn] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    workbenchApi
+      .config()
+      .then((c) => {
+        if (!cancelled) setWorkbenchOn(c.phase >= 1)
+      })
+      .catch(() => {
+        if (!cancelled) setWorkbenchOn(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const activePath = location.pathname === '/' ? '/' : location.pathname.replace(/\/+$/, '')
 
@@ -164,7 +183,7 @@ export function Layout() {
               <CloseIcon size={18} />
             </button>
           </div>
-          <NavLinks activePath={activePath} onNavigate={closeMenu} />
+          <NavLinks activePath={activePath} onNavigate={closeMenu} workbenchOn={workbenchOn} />
           <UserFooter user={user} onLogout={logout} />
         </div>
       )}
@@ -178,7 +197,7 @@ export function Layout() {
           <h1 className="text-2xl font-bold text-primary">NerveCenter</h1>
           <p className="text-sm text-muted">Personal Intelligence Core</p>
         </div>
-        <NavLinks activePath={activePath} />
+        <NavLinks activePath={activePath} workbenchOn={workbenchOn} />
         <UserFooter user={user} onLogout={logout} />
       </div>
 
@@ -195,14 +214,20 @@ export function Layout() {
 function NavLinks({
   activePath,
   onNavigate,
+  workbenchOn,
 }: {
   activePath: string
   onNavigate?: () => void
+  workbenchOn: boolean
 }) {
   return (
     <nav id="app-nav" className="mt-4">
-      {navItems.map((item) => {
-        const active = activePath === item.path
+      {navItems
+        .filter((item) => item.path !== '/workbench' || workbenchOn)
+        .map((item) => {
+        const active =
+          activePath === item.path ||
+          (item.path === '/workbench' && activePath.startsWith('/workbench/'))
         const { Icon } = item
         return (
           <Link

@@ -69,6 +69,13 @@ from .research import ResearchCheckpoint, ResearchProject, ResearchStep
 from .resources import AgentResourceLink, Resource
 from .tasks import Task, TaskRun
 from .voicemail import VoicemailRow, VoicemailThreadRow
+from .workbench import (
+    WorkbenchAudit,
+    WorkbenchIde,
+    WorkbenchModelUsage,
+    WorkbenchProject,
+    WorkbenchSession,
+)
 
 __all__ = [
     "Base",
@@ -135,4 +142,9 @@ __all__ = [
     "OBLIGATION_STATUSES",
     "VoicemailRow",
     "VoicemailThreadRow",
+    "WorkbenchAudit",
+    "WorkbenchIde",
+    "WorkbenchModelUsage",
+    "WorkbenchProject",
+    "WorkbenchSession",
 ]

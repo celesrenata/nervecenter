@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { workbenchApi, type WorkbenchProject } from '../api/workbench'
+import { browserIdeSlug } from '../components/workbench/handoffLink'
 import { handoffsApi, type Handoff, type HandoffRunnerStatus } from '../api/handoffs'
 
 /**
@@ -45,7 +48,8 @@ function NewHandoff({ onCreated }: { onCreated: () => void }) {
   )
 }
 
-function Row({ h, onChanged }: { h: Handoff; onChanged: () => void }) {
+function Row({ h, onChanged, projects }: { h: Handoff; onChanged: () => void; projects: WorkbenchProject[] }) {
+  const ideSlug = browserIdeSlug(h, projects)
   const [err, setErr] = useState<string | null>(null)
   const act = async (fn: () => Promise<unknown>) => {
     try {
@@ -69,6 +73,9 @@ function Row({ h, onChanged }: { h: Handoff; onChanged: () => void }) {
       {h.result_summary && <pre className="mt-1 whitespace-pre-wrap text-sm" data-testid="ho-result">{h.result_summary}</pre>}
       {h.error && <p className="text-xs text-danger">Error: {h.error}</p>}
       <div className="mt-1 flex gap-2 text-xs">
+        {ideSlug && (
+          <Link to={`/workbench/menagerie/${encodeURIComponent(ideSlug)}`} className="rounded border border-border px-2" data-testid="ho-open-ide">Open in Browser IDE</Link>
+        )}
         {h.status === 'queued' && !h.push_approved && (
           <button type="button" className="rounded border border-border px-2" onClick={() => void act(() => handoffsApi.approvePush(h.id))}>Approve push</button>
         )}
@@ -89,6 +96,21 @@ export default function HandoffsView() {
   const [status, setStatus] = useState<HandoffRunnerStatus | null>(null)
   const [error, setError] = useState<string | null>(null)
 
+  const [projects, setProjects] = useState<WorkbenchProject[]>([])
+  useEffect(() => {
+    let live = true
+    void (async () => {
+      try {
+        const cfg = await workbenchApi.config()
+        if (!(cfg.ide_enabled && cfg.phase >= 3)) return
+        const r = await workbenchApi.listProjects()
+        if (live) setProjects(r.projects)
+      } catch {
+        /* fail quietly: no link */
+      }
+    })()
+    return () => { live = false }
+  }, [])
   const load = useCallback(async () => {
     try {
       setItems(await handoffsApi.list())
@@ -123,7 +145,7 @@ export default function HandoffsView() {
         <h2 className="text-sm font-semibold text-primary">Queue and results</h2>
         {items.length === 0 && <p className="text-xs text-muted">No handoffs yet.</p>}
         <ul className="mt-2 space-y-2 text-sm text-secondary">
-          {items.map((h) => <Row key={h.id} h={h} onChanged={load} />)}
+          {items.map((h) => <Row key={h.id} h={h} onChanged={load} projects={projects} />)}
         </ul>
       </section>
       <section className="rounded border border-border p-4">

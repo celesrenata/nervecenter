@@ -55,6 +55,7 @@ from backend.api.endpoints import (
     projects,
     mcp_projects,
     handoffs,
+    workbench,
     model_policy,
     calendar,
     calendar_deletions,
@@ -193,6 +194,7 @@ ALL_ROUTERS = (
     projects.router,
     mcp_projects.router,
     handoffs.router,
+    *workbench.mounted_routers(),
     model_policy.router,
     health_samples.router,
     mental_health.router,
@@ -241,6 +243,27 @@ def _install_connection_control_plane(app: FastAPI) -> None:
         install_connection_wiring(app)
     except Exception as exc:  # noqa: BLE001 - startup must not crash
         log.warning("api.connection_wiring_failed", error=str(exc))
+
+
+def _install_ide_proxy(target: FastAPI) -> None:
+    """Mount ``/ide/<slug>/`` (HTTP + WebSocket) at WORKBENCH_PHASE>=3 with the IDE enabled."""
+    from backend.workbench import ide_runtime
+
+    if not ide_runtime.ide_active():
+        return
+    try:
+        from backend.workbench.ide_proxy import create_ide_router
+
+        manager = ide_runtime.get_ide_manager(target)
+        target.include_router(
+            create_ide_router(
+                manager,
+                ide_runtime.make_session_validator(target),
+                allowed_origins=ide_runtime.allowed_origins(),
+            )
+        )
+    except Exception as exc:  # noqa: BLE001 - the API must still boot
+        log.warning("api.ide_proxy_unavailable", error=type(exc).__name__)
 
 
 def _install_control_plane_wiring(target: FastAPI) -> None:
@@ -375,9 +398,20 @@ def _install_control_plane_wiring(target: FastAPI) -> None:
                 infra_mcp = await mcp_listener.start(app)
             except Exception as exc:  # noqa: BLE001 - startup must not crash
                 log.warning("api.infra_mcp_listener_failed", error=type(exc).__name__)
+            ide_tasks: list = []
+            try:
+                from backend.workbench import ide_runtime
+
+                ide_tasks = await ide_runtime.start_background(app)
+            except Exception as exc:  # noqa: BLE001 - startup must not crash
+                log.warning("api.ide_background_failed", error=type(exc).__name__)
             try:
                 yield
             finally:
+                if ide_tasks:
+                    from backend.workbench import ide_runtime
+
+                    await ide_runtime.stop_background(ide_tasks)
                 if infra_mcp is not None:
                     from backend.infra import mcp_listener
 
@@ -470,6 +504,7 @@ def _configure(target: FastAPI) -> None:
 
     for router in ALL_ROUTERS:
         target.include_router(router)
+    _install_ide_proxy(target)
     target.include_router(canonical_aliases())
 
     @target.get("/api/openapi.json", include_in_schema=False)

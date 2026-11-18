@@ -18,8 +18,10 @@ The password is never logged.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import posixpath
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -136,6 +138,135 @@ class OpenCodeClient:
             "GET", f"/api/session/{sid}/message", params={"order": "desc", "limit": "50"}
         )
         return sid, last_assistant_text((page or {}).get("data", []))
+
+    # ------------------------------------------------------------------
+    # Workbench session API (opencode-menagerie-workbench, task 11.1).
+    #
+    # Assumptions, checked against the v2 API contract published for
+    # opencode 2.3.0-era servers (noblepayne/opencode-mcp api-contract.md,
+    # anomalyco/opencode specs/v2/event-stream-architecture.md) and NOT
+    # against a live pinned pod; re-verify with the live checks in
+    # docs/workbench/README.md when upgrading the image:
+    #   * list    GET  /api/session?limit=&order=   -> {"data": [...]}
+    #   * abort   POST /api/session/{id}/abort      body {} -> 200/204
+    #   * events  GET  /api/event  (text/event-stream, one global feed for
+    #     all sessions and locations, so callers must filter by session).
+    #     Each frame is ``data: {"id","type","data"}``. Known types:
+    #     server.connected, session.created/updated/deleted,
+    #     session.inbox.enqueued, session.execution.started/finished,
+    #     session.step.started/finished, session.reasoning.delta,
+    #     session.message.added. Where the session id sits inside ``data``
+    #     is not documented, so ``event_session_id`` checks several keys.
+    #   * prompt body is flat ``{"text": ...}`` (the v1 ``parts`` form is a 400).
+    # Methods below are additive; ``run`` and ``_call`` are unchanged.
+    # ------------------------------------------------------------------
+
+    async def create_session(
+        self,
+        *,
+        title: str,
+        directory: str,
+        push_approved: bool,
+        model: str | None = None,
+        small_model: str | None = None,
+    ) -> str:
+        """Create a session rooted at ``directory``; returns the session id."""
+        body: dict[str, Any] = {
+            "title": title,
+            "location": {"directory": directory},
+            "permissions": session_permissions(push_approved),
+        }
+        for key, value in (("model", model), ("small_model", small_model)):
+            ref = _model_ref(value)
+            if ref:
+                body[key] = ref
+        created = await self._call("POST", "/api/session", json=body)
+        sid = (created or {}).get("data", {}).get("id")
+        if not sid:
+            raise OpenCodeError("opencode returned no session id")
+        return str(sid)
+
+    async def send_message(self, session_id: str, text: str) -> None:
+        await self._call("POST", f"/api/session/{session_id}/prompt", json={"text": text})
+
+    async def abort_session(self, session_id: str) -> None:
+        await self._call("POST", f"/api/session/{session_id}/abort", json={})
+
+    async def list_sessions(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        page = await self._call(
+            "GET", "/api/session", params={"limit": str(limit), "order": "desc"}
+        )
+        data = (page or {}).get("data", [])
+        return data if isinstance(data, list) else []
+
+    async def stream_events(self) -> AsyncIterator[dict[str, Any]]:
+        """Yield decoded events from the global ``/api/event`` SSE feed, in order.
+
+        Not filtered: the feed spans every session. No read timeout, since the
+        stream idles between events; the connect timeout still applies.
+        """
+        timeout = httpx.Timeout(self._timeout, read=None)
+        try:
+            async with httpx.AsyncClient(
+                base_url=self._base,
+                auth=self._auth,
+                transport=self._transport,
+                timeout=timeout,
+            ) as client:
+                async with client.stream(
+                    "GET", "/api/event", headers={"Accept": "text/event-stream"}
+                ) as resp:
+                    if resp.status_code >= 400:
+                        raise OpenCodeError(f"opencode GET event -> HTTP {resp.status_code}")
+                    lines: list[str] = []
+                    async for line in resp.aiter_lines():
+                        if line:
+                            if line.startswith("data:"):
+                                lines.append(line[5:].lstrip())
+                            continue
+                        event = _decode_sse("\n".join(lines))
+                        lines = []
+                        if event is not None:
+                            yield event
+                    event = _decode_sse("\n".join(lines))
+                    if event is not None:
+                        yield event
+        except httpx.HTTPError as exc:
+            raise OpenCodeError(f"cannot reach opencode ({exc.__class__.__name__})") from None
+
+
+def _model_ref(model: str | None) -> dict[str, str] | None:
+    if not model or "/" not in model:
+        return None
+    provider, model_id = model.split("/", 1)
+    return {"providerID": provider, "id": model_id}
+
+
+def _decode_sse(payload: str) -> dict[str, Any] | None:
+    if not payload:
+        return None
+    try:
+        event = json.loads(payload)
+    except ValueError:
+        return None
+    return event if isinstance(event, dict) else None
+
+
+def event_session_id(event: dict[str, Any]) -> str | None:
+    """Best-effort session id of an event (location of the field is undocumented)."""
+    data = event.get("data")
+    if isinstance(data, dict):
+        for key in ("sessionID", "sessionId", "session_id"):
+            if isinstance(data.get(key), str):
+                return data[key]
+        if event.get("type", "").startswith("session.") and isinstance(data.get("id"), str):
+            return data["id"]
+        info = data.get("info")
+        if isinstance(info, dict):
+            for key in ("sessionID", "id"):
+                if isinstance(info.get(key), str):
+                    return info[key]
+    return None
 
 
 class CentralExecutor:

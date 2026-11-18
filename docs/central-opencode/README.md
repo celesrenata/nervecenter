@@ -63,3 +63,31 @@ Any node IP 10.1.1.12-15 works only on the node running the pod when
 The config denies `git push` and `git remote` for every session; NerveCenter
 sessions also deny them unless the owner approved push for that handoff in the
 Handoffs view.
+
+## Workbench Phase 2: NFS `/projects` mount
+
+Workbench Phase 2 adds a second volume to the opencode Deployment. It is optional
+and is not part of `deployment.yaml` in this mirror until the owner enables Phase 2.
+
+- Claim: `oc-opencode-projects` in namespace `opencode`. Its PV and PVC are defined in
+  `deployments/kubernetes/optional/workbench/pv-pvc-opencode-ns.yaml`. They point at
+  the Opencode_Store export `/volume1/Kubernetes/opencode/projects` (NFSv4.1, `hard`,
+  `Retain`), the same export the `wb-fs-opencode` file worker mounts in namespace
+  `workbench`.
+- Mount: add the claim as a volume and mount it at `/projects` in the `opencode`
+  container (and in any init container that needs it):
+  ```yaml
+  volumeMounts:
+    - {name: projects, mountPath: /projects}
+  volumes:
+    - name: projects
+      persistentVolumeClaim: {claimName: oc-opencode-projects}
+  ```
+- Working directory: a Workbench Session for project `<slug>` runs in
+  `/projects/<slug>`.
+- Unchanged: the Longhorn PVC `opencode-data`, its `/data` mount and the
+  `/workspaces` subPath mount stay as they are. Handoff clones keep using them.
+- Only the Opencode_Store is mounted here. The Menagerie_Store is never mounted in
+  namespace `opencode`.
+- Rollback: remove the `projects` volume and mount from the Deployment, then follow
+  the Phase 2 rollback in `docs/workbench/README.md`. Files on the NFS export stay.

@@ -1,0 +1,45 @@
+# Static NFS PV + PVC for the Workbench menagerie project store (Req 1.1-1.4).
+# Retain reclaim policy, ReadWriteMany, hard NFSv4.1 mounts. No emptyDir
+# fallback: if the NFS export is unreachable, pods stay Pending.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: wb-menagerie-projects
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/store: menagerie
+spec:
+  capacity:
+    storage: 50Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  mountOptions:
+    - nfsvers=4.1
+    - hard
+  nfs:
+    server: 192.168.42.8
+    path: /volume1/Kubernetes/menagerie/projects
+  claimRef:
+    namespace: workbench
+    name: wb-menagerie-projects
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wb-menagerie-projects
+  namespace: workbench
+  labels:
+    app: nervcenter
+    app.kubernetes.io/name: workbench
+    workbench.nervcenter/store: menagerie
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: ""
+  volumeName: wb-menagerie-projects
+  resources:
+    requests:
+      storage: 50Gi
