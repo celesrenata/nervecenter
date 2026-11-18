@@ -26,6 +26,8 @@ spec:
         workbench.nervcenter/store: opencode
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: harbor-pull
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -35,7 +37,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: fsworker
-          image: "registry.celestium.life/nervecenter/api:latest"
+          image: "registry.celestium.life/nervecenter/api:c05cc7d4"
           imagePullPolicy: Always
           command: ["python", "-m", "backend.workbench.fsworker", "--kind", "opencode"]
           ports:
@@ -101,6 +103,8 @@ spec:
         workbench.nervcenter/store: menagerie
     spec:
       automountServiceAccountToken: false
+      imagePullSecrets:
+        - name: harbor-pull
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -110,7 +114,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: fsworker
-          image: "registry.celestium.life/nervecenter/api:latest"
+          image: "registry.celestium.life/nervecenter/api:c05cc7d4"
           imagePullPolicy: Always
           command: ["python", "-m", "backend.workbench.fsworker", "--kind", "menagerie"]
           ports:
