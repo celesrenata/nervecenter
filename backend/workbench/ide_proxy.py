@@ -131,9 +131,11 @@ def create_ide_router(
     manager: IdeManager,
     validate_session: SessionValidator,
     *,
+    validate_ticket: Callable[[Mapping[str, str], str], bool] | None = None,
     allowed_origins: Iterable[str] = (),
     http_client: httpx.AsyncClient | None = None,
     clock: Callable[[], float] = time.monotonic,
+    prefix: str = "/ide",
 ) -> APIRouter:
     router = APIRouter()
     configured = list(allowed_origins)
@@ -147,6 +149,11 @@ def create_ide_router(
             return None
         return inst.pod_ip if inst and inst.pod_ip else None
 
+    async def authorized(headers: Mapping[str, str], slug: str) -> bool:
+        if await validate_session(headers):
+            return True
+        return bool(validate_ticket and validate_ticket(headers, slug))
+
     async def touch(slug: str) -> None:
         now = clock()
         if should_record_traffic(last_traffic.get(slug), now):
@@ -156,10 +163,10 @@ def create_ide_router(
             except Exception:  # noqa: BLE001
                 pass
 
-    @router.websocket("/ide/{slug}/{path:path}")
+    @router.websocket(prefix + "/{slug}/{path:path}")
     async def ide_ws(websocket: WebSocket, slug: str, path: str = "") -> None:
         headers = {k.lower(): v for k, v in websocket.headers.items()}
-        session_ok = await validate_session(headers)
+        session_ok = await authorized(headers, slug)
         refusal = check_ws_gate(
             session_ok, headers.get("origin"), allowed_origins_for(configured, headers)
         )
@@ -230,11 +237,11 @@ def create_ide_router(
                 pass
 
     @router.api_route(
-        "/ide/{slug}/{path:path}",
+        prefix + "/{slug}/{path:path}",
         methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
     )
     async def ide_http(request: Request, slug: str, path: str = "") -> Any:
-        if not await validate_session(dict(request.headers)):
+        if not await authorized({k.lower(): v for k, v in request.headers.items()}, slug):
             return Response(status_code=401)
         ip = await upstream_ip(slug)
         if ip is None:

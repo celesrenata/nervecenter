@@ -120,6 +120,11 @@ export const workbenchApi = {
   listIdeInstances: () => request<{ instances: WorkbenchIdeInstance[] }>(`${base}/ide`),
   startIde: (kind: string, slug: string) =>
     request<WorkbenchIdeInstance>(`${idePath(kind, slug)}/start`, write('POST')),
+  /** Sets the path-scoped nc_ide cookie the IDE iframe authenticates with. */
+  ideTicket: async (kind: string, slug: string): Promise<void> => {
+    const res = await apiFetch(`${idePath(kind, slug)}/ticket`, write('POST'))
+    if (!res.ok) throw await apiErrorFromResponse(res)
+  },
   stopIde: (kind: string, slug: string) =>
     request<WorkbenchIdeInstance>(`${idePath(kind, slug)}/stop`, write('POST')),
   /** Menagerie task status for a running IDE_Instance (Req 3.11). */

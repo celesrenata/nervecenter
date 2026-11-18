@@ -252,16 +252,24 @@ def _install_ide_proxy(target: FastAPI) -> None:
     if not ide_runtime.ide_active():
         return
     try:
+        from backend.workbench import ide_ticket
         from backend.workbench.ide_proxy import create_ide_router
 
         manager = ide_runtime.get_ide_manager(target)
-        target.include_router(
+        # A mounted sub-app does not inherit the app-level require_person
+        # dependency (bearer only); the proxy authenticates every request
+        # itself with a bearer token or the path-scoped nc_ide ticket cookie.
+        ide_app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
+        ide_app.include_router(
             create_ide_router(
                 manager,
                 ide_runtime.make_session_validator(target),
+                validate_ticket=ide_ticket.from_headers,
                 allowed_origins=ide_runtime.allowed_origins(),
+                prefix="",
             )
         )
+        target.mount("/ide", ide_app)
     except Exception as exc:  # noqa: BLE001 - the API must still boot
         log.warning("api.ide_proxy_unavailable", error=type(exc).__name__)
 

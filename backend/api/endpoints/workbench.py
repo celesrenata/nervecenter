@@ -15,7 +15,7 @@ from collections.abc import AsyncIterator
 from typing import Annotated, Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import async_sessionmaker
@@ -587,6 +587,28 @@ async def _start_ide(request: Request, kind: str, slug: str) -> dict[str, Any]:
         IdeProject(slug=slug, kind=kind, push_approved=bool(project.get("push_approved")))
     )
     return _ide_json(inst, "running", kind)
+
+
+@phase3_router.post("/ide/{kind}/{slug}/ticket", status_code=204)
+async def ide_ticket_cookie(kind: str, slug: str, claims: Claims) -> Response:
+    """Set the path-scoped ``nc_ide`` cookie the IDE iframe authenticates with."""
+    from backend.workbench.validation import validate_slug
+
+    if kind not in ("opencode", "menagerie") or not validate_slug(slug):
+        raise HTTPException(status_code=422, detail={"error": "invalid_project"})
+    from backend.workbench import ide_ticket
+
+    resp = Response(status_code=204)
+    resp.set_cookie(
+        ide_ticket.COOKIE_NAME,
+        ide_ticket.issue(_actor(claims), slug),
+        max_age=ide_ticket.TTL_S,
+        path=ide_ticket.cookie_path(slug),
+        secure=True,
+        httponly=True,
+        samesite="strict",
+    )
+    return resp
 
 
 @phase3_router.post("/ide/{kind}/{slug}/start")

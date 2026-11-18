@@ -77,6 +77,23 @@ export default function IdeFrame({ kind, slug, ideEnabled, pollMs = IDE_POLL_MS 
     return () => clearInterval(t)
   }, [enabled, state, refresh, pollMs])
 
+  // The iframe cannot send the bearer token, so get the path-scoped nc_ide
+  // cookie first and renew it well before its 8 h expiry.
+  const [ticketReady, setTicketReady] = useState(false)
+  useEffect(() => {
+    if (!enabled || state !== 'running') {
+      setTicketReady(false)
+      return
+    }
+    const issue = () =>
+      workbenchApi
+        .ideTicket(kind, slug)
+        .then(() => alive.current && setTicketReady(true))
+        .catch((e) => alive.current && setError(messageOf(e)))
+    issue()
+    const t = setInterval(issue, 4 * 60 * 60 * 1000)
+    return () => clearInterval(t)
+  }, [enabled, state, kind, slug])
   const start = async () => {
     setBusy(true)
     setError(null)
@@ -131,7 +148,7 @@ export default function IdeFrame({ kind, slug, ideEnabled, pollMs = IDE_POLL_MS 
         </div>
       )}
       {error && <div role="alert">{error}</div>}
-      {state === 'running' && (
+      {state === 'running' && ticketReady && (
         <iframe
           title="Browser IDE"
           src={ideIframeSrc(slug)}
