@@ -23,3 +23,11 @@ def test_from_headers_reads_cookie():
     assert not t.from_headers({"cookie": f"{t.COOKIE_NAME}={tok}"}, "proj-b")
     assert not t.from_headers({}, "proj-a")
     assert not t.from_headers({"cookie": "garbage;;=="}, "proj-a")
+
+
+def test_ws_upstream_headers_drop_forwarded_host():
+    from backend.workbench.ide_proxy import filter_request_headers
+
+    h = {"x-forwarded-host": "nervecenter.celestium.life", "x-forwarded-proto": "https"}
+    assert "x-forwarded-host" not in filter_request_headers(h.items(), websocket=True)
+    assert "x-forwarded-host" in filter_request_headers(h.items())

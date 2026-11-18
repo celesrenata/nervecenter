@@ -101,6 +101,10 @@ def filter_request_headers(
             continue
         if websocket and (lk in _WS_HANDSHAKE or lk == "origin" or lk.startswith("sec-websocket")):
             continue
+        # code-server checks Origin against X-Forwarded-Host on upgrades; the
+        # upstream Origin is the pod address, so the public host must not leak.
+        if websocket and lk == "x-forwarded-host":
+            continue
         out[k] = v
     return out
 

@@ -161,6 +161,7 @@ def build_pod_spec(project: IdeProject, config: IdeConfig, key_secret_name: str)
             {"name": "tmp", "mountPath": "/tmp"},
             {"name": "local", "mountPath": "/home/coder/.local"},
             {"name": "config", "mountPath": "/home/coder/.config"},
+            {"name": "cache", "mountPath": "/home/coder/.cache"},
         ],
     }
     return {
@@ -190,6 +191,7 @@ def build_pod_spec(project: IdeProject, config: IdeConfig, key_secret_name: str)
                 {"name": "tmp", "emptyDir": {}},
                 {"name": "local", "emptyDir": {}},
                 {"name": "config", "emptyDir": {}},
+                {"name": "cache", "emptyDir": {}},
             ],
         },
     }
