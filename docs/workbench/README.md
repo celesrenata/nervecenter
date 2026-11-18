@@ -368,3 +368,25 @@ from a node to confirm the exports respond.
 
 Because the mounts are `hard`, an already running pod whose server goes away blocks
 on I/O until the server returns instead of failing the write.
+
+## Menagerie settings, rules and skills in IDE pods
+
+IDE pods start with the Owner's Menagerie setup from ConfigMap
+`workbench/workbench-menagerie-settings`, built from this Mac by:
+
+```sh
+scripts/workbench_menagerie_bundle.py          # --dry-run to only print sizes
+```
+
+- `settings.json`: provider profiles and global settings (custom modes,
+  experiments, auto-approval). Every API key becomes `__OMNIROUTE_API_KEY__`
+  and every OmniRoute base URL `__OMNIROUTE_BASE_URL__`; the entrypoint
+  substitutes the pod's key and the in-cluster URL. The script refuses to
+  publish if a key-like value or a `/Users/` path remains.
+- `vscode-settings.json`: the `menagerie.*` editor settings.
+- `home.tgz`: `~/.roo` (rules, skills, commands, references) and
+  `~/.agents` (skillhub), extracted into the pod's home.
+
+Codebase indexing is disabled in the pod: Qdrant and the embedder are on
+RFC 1918 addresses that the IDE NetworkPolicy blocks. Re-run the script
+after changing settings or skills; running pods keep their copy until restarted.
