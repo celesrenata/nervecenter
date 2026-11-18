@@ -64,8 +64,9 @@ class InferenceThrottled(Exception):
 
 MAX_RUN_CONTEXT = 20_000
 #: Runs per rolling 24 h by agent type (NS-ADR-125: the pentest agent costs scans and tokens).
-#: Pentest is 8 since NS-ADR-126: testing and retries used up the original 4.
-RUN_CAPS: dict[str, int] = {"pentest": 8, "kube_doctor": 12}
+#: Pentest is 8 since NS-ADR-126: testing and retries used up the original 4. kube_doctor is
+#: a hard ceiling of 50; the owner's ``daily_run_cap`` setting (default 24) is the working limit.
+RUN_CAPS: dict[str, int] = {"pentest": 8, "kube_doctor": 50}
 
 
 def utcnow() -> datetime:

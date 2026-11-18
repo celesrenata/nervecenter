@@ -81,7 +81,8 @@ def test_every_route_needs_a_signed_in_person(env) -> None:
                         ("post", "/api/kube/check"),
                         ("post", f"/api/kube/issues/{quote(KEY, safe='')}/override"),
                         ("delete", "/api/kube/overrides/x"),
-                        ("post", "/api/kube/enable-proposals")]:
+                        ("post", "/api/kube/enable-proposals"),
+                        ("get", "/api/kube/groups"), ("post", "/api/kube/known-down")]:
         assert getattr(c, method)(url).status_code == 403, url
 
 
@@ -168,3 +169,21 @@ def test_switch_changes_are_logged_with_who_and_shown_in_status(env) -> None:
 def test_switches_cannot_be_changed_by_a_device(env) -> None:
     c, _ = _client(env, DEVICE)
     assert c.put("/api/kube/settings", json={"check_enabled": False}).status_code == 403
+
+async def test_groups_carry_diagnosis_and_known_down_button_is_logged(env) -> None:
+    from backend.kube.groups import DiagnosisStore
+    await DiagnosisStore(env.reports).put(
+        "apps:crashloopbackoff-web", {"status": "done", "summary": "bad config",
+                                      "evidence": ["exit 1"], "confidence": "high",
+                                      "run_id": "r1"}, datetime.now(UTC))
+    c, _ = _client(env)
+    groups = {g["id"]: g for g in c.get("/api/kube/groups").json()["groups"]}
+    web = groups["apps:crashloopbackoff-web"]
+    assert web["diagnosis"]["summary"] == "bad config" and web["can_add_known_down"] is True
+    assert groups["stonks-beta:error-x"]["can_add_known_down"] is False  # already known down
+    assert groups["longhorn-system:crashloopbackoff-mgr-1"]["diagnosis"] is None
+    done = c.post("/api/kube/known-down", json={"namespace": "stonks-oracle"})
+    assert done.status_code == 200 and "stonks-oracle" in done.json()["known_down"]
+    log = c.get("/api/kube/status").json()["settings_log"]
+    assert log[0]["actor"] == "celes" and "known_down" in log[0]["changes"]
+    assert c.post("/api/kube/known-down", json={"namespace": "Bad Name"}).status_code == 422

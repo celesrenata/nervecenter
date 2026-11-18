@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom'
 import { ApiError } from '../api/client'
 import {
   kubeApi,
+  type KubeGroup,
   type KubeIssue,
   type KubeMode,
   type KubeOverride,
@@ -123,6 +124,7 @@ export function KubeView() {
   const [status, setStatus] = useState<KubeStatus | null>(null)
   const [issues, setIssues] = useState<KubeIssue[]>([])
   const [overrides, setOverrides] = useState<KubeOverride[]>([])
+  const [groups, setGroups] = useState<KubeGroup[]>([])
   const [waste, setWaste] = useState<{ created_at: string; data: WasteReport } | null>(null)
   const [draft, setDraft] = useState<KubeSettings | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -130,7 +132,11 @@ export function KubeView() {
 
   const load = useCallback(async () => {
     try {
-      const [st, is, w] = await Promise.all([kubeApi.status(), kubeApi.issues(), kubeApi.waste()])
+      const [st, is, w, gr] = await Promise.all([
+        kubeApi.status(), kubeApi.issues(), kubeApi.waste(),
+        kubeApi.groups().catch(() => ({ groups: [] as KubeGroup[], count: 0 })),
+      ])
+      setGroups(gr.groups)
       setStatus(st)
       setDraft(st.settings)
       setIssues(is.issues)
@@ -161,6 +167,10 @@ export function KubeView() {
   const override = (issue: KubeIssue) => {
     if (!window.confirm(`${OVERRIDE_TEXT}\n\n${issue.key}`)) return
     return act(() => kubeApi.override(issue.key))
+  }
+  const addKnownDown = (g: KubeGroup) => {
+    if (!window.confirm(`Add ${g.namespace} to the known-down list? The agent will stop diagnosing it.`)) return
+    return act(() => kubeApi.addKnownDown(g.namespace))
   }
   const saveSettings = () => {
     if (!draft) return
@@ -219,6 +229,44 @@ export function KubeView() {
         </section>
       )}
 
+      <section data-testid="kube-groups" className="space-y-2">
+        <h2 className="text-lg font-semibold text-primary">Issue groups ({groups.length})</h2>
+        {groups.length === 0 ? (
+          <p className="text-sm text-secondary">No open groups.</p>
+        ) : (
+          <ul className="space-y-2">
+            {groups.map((g) => (
+              <li key={g.id} data-testid={`kube-group-${g.id}`} className="rounded border border-line p-2 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className={`rounded px-2 py-0.5 text-xs font-semibold ${MODE_CLASS[g.mode]}`}>{MODE_LABEL[g.mode]}</span>
+                  <span className="font-medium">{g.namespace}: {g.reasons.join(', ')}</span>
+                  <span className="text-secondary">{g.pod_count} pods, {g.issue_count} issues</span>
+                  {g.can_add_known_down && (
+                    <button data-testid={`kube-known-down-add-${g.id}`} className={secondary} disabled={busy} onClick={() => addKnownDown(g)}>
+                      Add to known down
+                    </button>
+                  )}
+                </div>
+                <div className="mt-1 text-xs text-secondary">{g.pods.slice(0, 6).join(', ')}{g.pods.length > 6 ? ` +${g.pods.length - 6} more` : ''}</div>
+                <div data-testid={`kube-group-diagnosis-${g.id}`} className="mt-1 text-xs">
+                  {!g.diagnosis && 'Not diagnosed yet.'}
+                  {g.diagnosis?.status === 'running' && 'Diagnosis running...'}
+                  {g.diagnosis?.status === 'failed' && `Diagnosis failed: ${g.diagnosis.error ?? 'unknown'}`}
+                  {g.diagnosis?.status === 'done' && (
+                    <>
+                      {g.diagnosis.summary} ({g.diagnosis.confidence ?? 'unknown'} confidence)
+                      {(g.diagnosis.evidence ?? []).map((e) => <div key={e} className="font-mono text-secondary">{e}</div>)}
+                    </>
+                  )}
+                  {g.diagnosis?.run_id && (
+                    <> <Link className="underline" to="/agents">run {g.diagnosis.run_id.slice(0, 8)} ({when(g.diagnosis.run_at)})</Link></>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
       <section data-testid="kube-issues" className="space-y-2">
         <h2 className="text-lg font-semibold text-primary">Current issues</h2>
         {current.length === 0 ? (
@@ -369,6 +417,9 @@ export function KubeView() {
             <WasteBlock title="Over-sized pods" section={waste.data.oversized_pods} />
             <WasteBlock title="Unused PVCs" section={waste.data.unused_pvcs} />
             <WasteBlock title="Orphaned PVs" section={waste.data.orphaned_pvs} />
+            {waste.data.clean_exit_churn && (
+              <WasteBlock title="Clean-exit churn (restarts by design, not failures)" section={waste.data.clean_exit_churn} />
+            )}
             <WasteBlock title="Crash-loop burn" section={waste.data.crash_loop_burn} note="estimate" />
           </div>
         )}

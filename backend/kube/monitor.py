@@ -2,13 +2,15 @@
 
 ``KubeMonitor.tick`` is an AgentRunner tick hook and calls no model. It runs the deterministic
 check at most once an hour and the waste report at most once a day (``kube_settings`` stores both
-times). A check stores a snapshot, syncs the issue ledger and may start ONE ``kube_doctor`` run
-per tick for issues that have not been looked at yet, within the cooldown, the daily cap and the
-in-flight limits. Known-down namespaces never trigger anything.
+times). A check stores a snapshot, syncs the issue ledger and folds open issues into groups
+(``backend.kube.groups``). A background focus pass then starts one ``kube_doctor`` run per GROUP
+(the prompt carries only that group), one after another, waiting for other agent runs, within the
+per-group cooldown and the daily cap. Known-down namespaces never trigger anything.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -16,6 +18,13 @@ from typing import Any
 import structlog
 from sqlalchemy import func, select
 
+from backend.kube.groups import (
+    DiagnosisStore,
+    group_context,
+    group_issues,
+    parse_diagnosis,
+    used_evidence_tool,
+)
 from backend.kube.issues import IssueStore, ReportStore
 from backend.kube.settings import KubeOverrideStore, KubeSettingsStore
 from backend.persistence.models.agent_runner import AgentRun
@@ -27,7 +36,11 @@ TRIGGER = "kube_issue"
 CHECK_INTERVAL = timedelta(hours=1)
 WASTE_INTERVAL = timedelta(hours=24)
 MAX_DRAFT_TASKS = 5
-MAX_CONTEXT_ISSUES = 5
+STAGGER_SECONDS = 90.0
+IDLE_POLL_SECONDS = 30.0
+IDLE_WAIT_MAX_SECONDS = 1800.0
+PLAN_EVERY = timedelta(minutes=5)
+FAILED_RETRY = timedelta(hours=1)
 DRAFT_MARK = "agent:kube_doctor"
 
 
@@ -40,13 +53,6 @@ def _evidence_line(issue: dict[str, Any]) -> str:
     bits = [f"{k}={str(v)[:80]}" for k, v in list(ev.items())[:4]
             if isinstance(v, (str, int, float, bool))]
     return ", ".join(bits)
-
-
-def issue_context(issues: list[dict[str, Any]]) -> str:
-    """Short data block for the agent run (data, not instructions)."""
-    lines = [f"- key={i['key']} reason={i['reason']} mode={i['mode']} "
-             f"evidence: {_evidence_line(i) or 'none'}" for i in issues[:MAX_CONTEXT_ISSUES]]
-    return "New kube issues found by the hourly check:\n" + "\n".join(lines)
 
 
 def _due(last: datetime | None, now: datetime, every: timedelta) -> bool:
@@ -62,6 +68,10 @@ class KubeMonitor:
                  report_store: ReportStore, override_store: KubeOverrideStore | None = None,
                  create_task: Callable[[dict[str, Any]], Awaitable[Any]] | None = None,
                  inflight: Callable[[], bool] | None = None,
+                 other_busy: Callable[[], bool] | None = None,
+                 tool_events: Callable[[], list[dict[str, Any]]] | None = None,
+                 stagger_seconds: float = STAGGER_SECONDS,
+                 sleep: Callable[[float], Awaitable[Any]] | None = None,
                  now: Callable[[], datetime] | None = None) -> None:
         self._sessions = session_factory
         self._collector = collector
@@ -73,9 +83,27 @@ class KubeMonitor:
         self._overrides = override_store or KubeOverrideStore(session_factory, settings_store)
         self._create_task = create_task
         self._inflight = inflight or (lambda: False)
+        self._other_busy = other_busy or (lambda: False)
+        self._tool_events = tool_events
+        self._stagger = stagger_seconds
+        self._sleep = sleep or asyncio.sleep
+        self._diagnoses = DiagnosisStore(report_store)
+        self._focus_task: asyncio.Task[None] | None = None
+        self._last_plan: datetime | None = None
         self._now = now or (lambda: datetime.now(UTC))
         self._lock = asyncio.Lock()
         self.last: dict[str, Any] | None = None
+
+    @property
+    def focusing(self) -> bool:
+        return self._focus_task is not None and not self._focus_task.done()
+
+    async def wait_focus(self) -> None:
+        """Wait for the running focus pass (tests and shutdown)."""
+        task = self._focus_task
+        if task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
     @property
     def running(self) -> bool:
@@ -94,6 +122,9 @@ class KubeMonitor:
             if settings.get("waste_enabled", True) and _due(
                     settings["last_waste_at"], now, WASTE_INTERVAL):
                 await self.waste()
+            if (not self.focusing and settings.get("auto_agent_enabled", True)
+                    and (self._last_plan is None or now - self._last_plan >= PLAN_EVERY)):
+                await self._start_focus(settings, now, {"warnings": []})
         except CheckBusy:
             return
         except Exception as exc:  # noqa: BLE001 - a tick hook must not stop the runner
@@ -128,7 +159,7 @@ class KubeMonitor:
             summary.update(new=len(synced["new"]), open=len(synced["open"]),
                            known_down=len(synced["known_down"]), resolved=len(synced["resolved"]))
             summary["draft_tasks"] = await self._draft_tasks(synced["new"])
-            summary["triggered"] = await self._trigger(synced, settings, started, summary)
+            summary["triggered"] = await self._start_focus(settings, started, summary)
             self.last = summary
             log.info("kube.check_done", **{k: v for k, v in summary.items()
                                            if k not in ("warnings", "started_at")})
@@ -176,46 +207,124 @@ class KubeMonitor:
                     AgentRun.started_at >= now - timedelta(hours=24),
                     AgentRun.status != "skipped"))).scalar() or 0)
 
-    async def _trigger(self, synced: dict[str, Any], settings: dict[str, Any],
-                       now: datetime, summary: dict[str, Any]) -> list[str] | None:
-        """At most one run per tick. Candidates: new issues plus open ones never looked at
-        (an earlier tick deferred them)."""
+    async def _plan(self, settings: dict[str, Any], now: datetime, warnings: list[str]
+                    ) -> list[dict[str, Any]]:
+        """Groups that get a focus run now: not known-down, out of cooldown, within the cap."""
         if not settings.get("auto_agent_enabled", True):
-            summary["warnings"].append("automatic kube_doctor runs are switched off")
-            return None
+            warnings.append("automatic kube_doctor runs are switched off")
+            return []
         cooldown = timedelta(hours=settings["issue_cooldown_hours"])
-        new_keys = {i["key"] for i in synced["new"]}
-        candidates = []
-        for issue in synced["open"]:  # known-down issues are not in "open"
-            if issue["mode"] == "known_down" or issue["kind"] == "coverage":
-                continue  # a blind check is for the owner; there is nothing to diagnose
-            ran = issue.get("last_agent_run_at")
-            if ran is not None and now - ran < cooldown:
+        known = await self._diagnoses.all()
+        eligible = []
+        for group in group_issues(await self._issues.list("open")):
+            if group["mode"] == "known_down" or group["cause"].startswith("coverage-"):
+                continue  # known down, or a blind check: for the owner, nothing to diagnose
+            prev = known.get(group["id"]) or {}
+            ran = _parse_time(prev.get("run_at"))
+            wait = min(cooldown, FAILED_RETRY) if prev.get("status") == "failed" else cooldown
+            if ran is not None and now - ran < wait:
                 continue
-            if issue["key"] in new_keys or ran is None:
-                candidates.append(issue)
-        if not candidates:
+            eligible.append(group)
+        room = max(settings["daily_run_cap"] - await self._runs_today(now), 0)
+        if len(eligible) > room:
+            warnings.append(f"daily kube_doctor run cap reached; {len(eligible) - room} "
+                            "group(s) wait")
+        return eligible[:room]
+
+    async def _start_focus(self, settings: dict[str, Any], now: datetime,
+                           summary: dict[str, Any]) -> list[str] | None:
+        """Plan the groups and start the background pass; returns the group ids planned."""
+        self._last_plan = now
+        if self.focusing:
+            summary["warnings"].append("a focus pass is still running; new groups wait")
             return None
-        if self._inflight():
-            summary["warnings"].append("kube_doctor is running; new issues wait")
+        groups = await self._plan(settings, now, summary["warnings"])
+        if not groups:
             return None
-        if await self._runs_today(now) >= settings["daily_run_cap"]:
-            summary["warnings"].append("daily kube_issue run cap reached; new issues wait")
-            return None
-        batch = candidates[:MAX_CONTEXT_ISSUES]
-        from backend.agents.runner.runner import AgentBusyError, AgentRunCapError
+        self._focus_task = asyncio.create_task(self._focus([g["id"] for g in groups]),
+                                               name="kube-focus")
+        return [g["id"] for g in groups]
+
+    async def _wait_idle(self) -> bool:
+        waited = 0.0
+        while self._inflight() or self._other_busy():
+            if waited >= IDLE_WAIT_MAX_SECONDS:
+                return False
+            await self._sleep(IDLE_POLL_SECONDS)
+            waited += IDLE_POLL_SECONDS
+        return True
+
+    async def _focus(self, ids: list[str]) -> None:
+        """One run per group, one after another, after any other agent run has finished."""
         try:
-            await self._run_agent(AGENT_ID, trigger=TRIGGER, context=issue_context(batch))
+            for n, gid in enumerate(ids):
+                if n:
+                    await self._sleep(self._stagger)
+                if not await self._wait_idle():
+                    log.warning("kube.focus_gave_up", reason="agents stayed busy")
+                    return
+                await self._focus_one(gid)
+        except Exception as exc:  # noqa: BLE001 - a background pass must not leak
+            log.warning("kube.focus_failed", error=type(exc).__name__)
+
+    async def _focus_one(self, gid: str) -> None:
+        settings = await self._settings.get()
+        now = self._now()
+        if not settings.get("auto_agent_enabled", True):
+            return
+        if await self._runs_today(now) >= settings["daily_run_cap"]:
+            return
+        groups = group_issues(await self._issues.list("open"))
+        group = next((g for g in groups if g["id"] == gid), None)
+        if group is None or group["mode"] == "known_down":
+            return  # resolved or switched to known-down since the plan
+        known = await self._diagnoses.all()
+        keep = {g["id"] for g in groups}
+        prev = known.get(gid) or {}
+        await self._diagnoses.put(gid, {**prev, "status": "running", "run_at": now.isoformat(),
+                                        "mode": group["mode"]}, now, keep)
+        from backend.agents.runner.runner import AgentBusyError, AgentRunCapError
+        run: Any = None
+        error = ""
+        try:
+            run = await self._run_agent(AGENT_ID, trigger=TRIGGER,
+                                        context=group_context(group, self._coverage_line()))
         except (AgentBusyError, AgentRunCapError) as exc:
-            summary["warnings"].append(f"kube_doctor not started ({type(exc).__name__})")
-            return None
+            error = f"not started ({type(exc).__name__})"
         except Exception as exc:  # noqa: BLE001
-            summary["warnings"].append(f"kube_doctor run failed ({type(exc).__name__})")
+            error = f"run failed ({type(exc).__name__})"
             log.warning("kube.agent_trigger_failed", error=type(exc).__name__)
-            return None
-        for issue in batch:
-            await self._issues.mark_agent_run(issue["key"], now)
-        return [i["key"] for i in batch]
+        done = self._now()
+        run_id = str(run.get("id")) if isinstance(run, dict) and run.get("id") else None
+        output = str(run.get("output") or "") if isinstance(run, dict) else ""
+        status = run.get("status") if isinstance(run, dict) else None
+        if not error and status not in (None, "completed"):
+            error = f"run {status}: {str((run or {}).get('error') or '')[:160]}"
+        if not error and self._tool_events is not None and not used_evidence_tool(
+                self._tool_events()):
+            error = "no evidence: the run never called a describe, logs or events tool"
+        if error:
+            diag = {"status": "failed", "error": error, "summary": "", "evidence": [],
+                    "confidence": "none"}
+        else:
+            diag = {"status": "done", **parse_diagnosis(output)}
+        diag.update(run_id=run_id, run_at=now.isoformat(), mode=group["mode"],
+                    issue_count=group["issue_count"], pod_count=group["pod_count"])
+        await self._diagnoses.put(gid, diag, done, keep)
+        for key in group["issue_keys"]:
+            await self._issues.mark_agent_run(key, now)
+
+    def _coverage_line(self) -> str | None:
+        return (self.last or {}).get("coverage")
+
+
+def _parse_time(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
 
 
 def get_monitor(app: Any) -> KubeMonitor | None:
@@ -260,6 +369,8 @@ def get_monitor(app: Any) -> KubeMonitor | None:
         registry.session_factory, collector, waste, runner.run_agent,
         settings_store=services.settings, issue_store=services.issues,
         report_store=services.reports, override_store=services.overrides,
-        create_task=create_task, inflight=lambda: AGENT_ID in runner._inflight)
+        create_task=create_task, inflight=lambda: AGENT_ID in runner._inflight,
+        other_busy=lambda: bool(runner._inflight - {AGENT_ID}),
+        tool_events=lambda: runner.live.view(AGENT_ID).get("events") or [])
     app.state.kube_monitor = monitor
     return monitor

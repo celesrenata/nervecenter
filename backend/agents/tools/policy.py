@@ -99,7 +99,8 @@ NERVE_AGENT_TOOLS: MappingProxyType[str, frozenset[str]] = MappingProxyType(
              "task_update"}
         ),
         "kube_doctor": frozenset(
-            {"kube_health", "kube_describe", "kube_logs", "kube_waste", "kube_known_down",
+            {"kube_health", "kube_describe", "kube_logs", "kube_events", "kube_waste",
+             "kube_known_down",
              "kube_runbook", "task_create", "task_update"}
         ),
     }

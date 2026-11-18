@@ -93,14 +93,45 @@ async def test_health_flags_known_down_and_protected_issues(world) -> None:
     await world.kube.overrides.create("pod/omniroute/gw/CrashLoopBackOff", "omniroute", "owner")
     await world.kube.reports.add("snapshot", snap, NOW)
     out = await _call(world, "kube_health")
-    modes = {i["namespace"]: i["mode"] for i in out["issues"]}
-    assert out["source"] == "stored" and out["issue_count"] == 4
+    modes = {g["namespace"]: g["mode"] for g in out["groups"]}
+    assert out["source"] == "stored" and out["issue_count"] == 4 and out["group_count"] == 4
     assert modes == {"apps": "normal", "nervecenter": "diagnose_only",
                      "stonks-beta": "known_down", "omniroute": "override_active"}
-    protected = next(i for i in out["issues"] if i["namespace"] == "nervecenter")
+    protected = next(g for g in out["groups"] if g["namespace"] == "nervecenter")
     assert "report only, do not propose changes" in protected["note"]
-    assert "note" not in next(i for i in out["issues"] if i["namespace"] == "apps")
+    assert "note" not in next(g for g in out["groups"] if g["namespace"] == "apps")
+    assert "4 groups, showing top 4" in out["note"]
     assert len(json.dumps(out)) <= 6_000
+def _pods_problem(ns: str, workload: str, reason: str, pods: list[str],
+                  severity: str = "critical") -> dict[str, Any]:
+    return {"key": f"pod/{ns}/{workload}/{reason}", "kind": "pod", "namespace": ns,
+            "name": workload, "reason": reason, "severity": severity, "pods": pods,
+            "pod": pods[0], "message": "Back-off pulling image"}
+async def test_health_groups_related_issues_never_truncates_silently_and_expands(world) -> None:
+    problems = [_pods_problem("stonks-oracle", f"w{n}", "ImagePullBackOff", [f"w{n}-a", f"w{n}-b"])
+                for n in range(3)]
+    problems += [_pods_problem("kube-system", "svclb-t", "Pending",
+                               [f"svclb-{n}" for n in range(3)], "warning")]
+    problems += [_pods_problem(f"ns{n}", "app", "CrashLoopBackOff", ["app-1"]) for n in range(14)]
+    await world.kube.reports.add("snapshot", {"collected_at": NOW.isoformat(), "namespaces": 20,
+                                              "events": [], "pods_unhealthy": problems}, NOW)
+    out = await _call(world, "kube_health")
+    ids = [g["id"] for g in out["groups"]]
+    assert out["issue_count"] == 18 and out["group_count"] == 16
+    assert ids[0].startswith(("stonks-oracle:imagepull", "ns")) and len(ids) <= 10
+    assert f"16 groups, showing top {len(ids)}" in out["note"] and "{group: <id>}" in out["note"]
+    assert "kube-system:pending" not in ids  # warning severity ranks below the critical groups
+    assert len(json.dumps(out)) <= 6_000
+    oracle = await _call(world, "kube_health", {"group": "stonks-oracle:imagepull"})
+    assert oracle["group"]["issue_count"] == 3 and oracle["group"]["pod_count"] == 6
+    assert {p for i in oracle["issues"] for p in i["pods"]} == {f"w{n}-{x}" for n in range(3)
+                                                               for x in "ab"}
+    svclb = await _call(world, "kube_health", {"group": "kube-system:pending"})
+    assert svclb["issues"][0]["pods"] == ["svclb-0", "svclb-1", "svclb-2"]
+    assert svclb["group"]["mode"] == "diagnose_only" and "report only" in svclb["note"]
+    with pytest.raises(NerveToolError) as exc:
+        await _call(world, "kube_health", {"group": "nope:nothing"})
+    assert exc.value.reason == "unknown_group"
 
 
 async def test_health_collects_fresh_when_the_snapshot_is_old(world, monkeypatch) -> None:
@@ -171,6 +202,42 @@ async def test_logs_clamp_the_tail_redact_and_pass_flags(world) -> None:
         await _call(world, "kube_logs", {"namespace": "apps", "pod": "../etc"})
 
 
+async def test_describe_and_logs_take_several_pods_and_say_what_was_cut(world) -> None:
+    long = "\n".join(f"line {n}" for n in range(1_500)) + "\nEvents:\n  Warning free ports"
+    cluster = _use_cluster(world, Cluster({
+        "describe pod a-1 -n apps": long, "describe pod a-2 -n apps": "Name: a-2",
+        "logs a-1 -n apps --tail=100": long, "logs a-2 -n apps --tail=100": "ok"}))
+    out = await _call(world, "kube_describe",
+                      {"kind": "pod", "names": ["a-1", "a-2", "a-3"], "namespace": "apps"})
+    by = {i["name"]: i for i in out["items"]}
+    assert by["a-1"]["truncated"] and "truncated, " in by["a-1"]["text"]
+    assert "more lines, narrow with kube_events" in by["a-1"]["text"]
+    assert by["a-1"]["text"].endswith("Warning free ports") and by["a-2"]["text"] == "Name: a-2"
+    assert by["a-3"]["error"] == "not_found" and len(json.dumps(out)) <= 6_000
+    logs = await _call(world, "kube_logs", {"namespace": "apps", "pods": ["a-1", "a-2"]})
+    lby = {i["pod"]: i for i in logs["items"]}
+    assert "more lines, narrow with a smaller tail" in lby["a-1"]["text"]
+    assert lby["a-1"]["text"].endswith("Warning free ports") and lby["a-2"]["text"] == "ok"
+    assert len(json.dumps(logs)) <= 6_000
+    for bad in (["a"] * 0, [f"p{n}" for n in range(5)], "a-1"):
+        with pytest.raises(NerveToolError):
+            await _call(world, "kube_describe", {"kind": "pod", "names": bad,
+                                                 "namespace": "apps"})
+    assert len(cluster.calls) == 5
+async def test_events_tool_reads_one_object_or_the_namespace_warnings(world) -> None:
+    cluster = _use_cluster(world, Cluster({
+        "get events -n kube-system --sort-by=.lastTimestamp "
+        "--field-selector=involvedObject.name=svclb-x": "Warning FailedScheduling "
+                                                         "0/4 nodes: didn't have free ports",
+        "get events -n kube-system --sort-by=.lastTimestamp --field-selector=type=Warning":
+            "w"}))
+    one = await _call(world, "kube_events", {"namespace": "kube-system", "name": "svclb-x"})
+    assert "free ports" in one["text"] and one["mode"] == "diagnose_only"
+    assert not one["truncated"]
+    ns = await _call(world, "kube_events", {"namespace": "kube-system"})
+    assert ns["text"] == "w" and len(cluster.calls) == 2
+    with pytest.raises(NerveToolError):
+        await _call(world, "kube_events", {"namespace": "kube-system", "name": "../x"})
 # -- kube_waste --------------------------------------------------------------------------------
 
 POD = {"metadata": {"name": "idle-1", "namespace": "apps",
@@ -289,13 +356,13 @@ def test_kube_doctor_is_a_builtin_with_exactly_the_kube_tools() -> None:
     manifest = next(m for m in AgentRegistry().list_all() if m.agent_type == "kube_doctor")
     assert manifest.name == "Kubernetes Doctor" and "infra" in manifest.tools
     nerve = {t.partition(".")[2] for t in manifest.tools if t.startswith("nerve.")}
-    assert nerve == {"kube_health", "kube_describe", "kube_logs", "kube_waste",
+    assert nerve == {"kube_health", "kube_describe", "kube_logs", "kube_events", "kube_waste",
                      "kube_known_down", "kube_runbook", "task_create", "task_update"}
     assert nerve == set(policy.nerve_tools_for(_agent("kube_doctor")))
     assert policy.infra_allowed(SimpleNamespace(type="kube_doctor", tools=manifest.tools))
     assert not policy.nerve_tools_for(_agent("planner")) & {"kube_health", "kube_runbook"}
     from backend.agents.runner.runner import RUN_CAPS
-    assert RUN_CAPS["kube_doctor"] == 12 and RUN_CAPS["pentest"] == 8
+    assert RUN_CAPS["kube_doctor"] == 50 and RUN_CAPS["pentest"] == 8
 
 
 def test_prompt_carries_the_tuned_rules() -> None:

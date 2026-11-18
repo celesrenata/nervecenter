@@ -16,7 +16,7 @@ from typing import Any
 import httpx
 import structlog
 
-from backend.kube.collector import _ts
+from backend.kube.collector import HIGH_RESTARTS, _last_termination, _ts, is_clean_exit
 from backend.pentest.inventory import MAX_NAMESPACES, _items, _json, _kubectl
 
 log = structlog.get_logger(__name__)
@@ -96,6 +96,36 @@ def _claims(pod: dict[str, Any]) -> set[str]:
             if v.get("persistentVolumeClaim")}
 
 
+def clean_exit_churn(pod: dict[str, Any], now: datetime) -> list[dict[str, Any]]:
+    """Containers that restart often but always by a clean exit (Completed, code 0).
+
+    The interval is pod age / restart count; the pod is not unhealthy, it is wasteful.
+    """
+    status = pod.get("status") or {}
+    meta = pod.get("metadata") or {}
+    started = _ts(status.get("startTime")) or _ts(meta.get("creationTimestamp"))
+    if started is None or status.get("phase") != "Running":
+        return []
+    age_s = max((now - started).total_seconds(), 1.0)
+    out: list[dict[str, Any]] = []
+    for cs in status.get("containerStatuses") or []:
+        restarts = int(cs.get("restartCount") or 0)
+        if restarts < HIGH_RESTARTS or not is_clean_exit(_last_termination(cs)):
+            continue
+        if ((cs.get("state") or {}).get("waiting") or {}).get("reason") == "CrashLoopBackOff":
+            continue  # a real crash loop stays a problem
+        every = age_s / restarts
+        per_day = restarts / age_s * 86400
+        out.append({
+            "namespace": meta.get("namespace", ""), "pod": meta.get("name", ""),
+            "container": cs.get("name", ""), "restarts": restarts,
+            "restart_every_seconds": round(every), "restarts_per_day": round(per_day),
+            "suggestion": (f"restarts every ~{round(every)} s via clean exit; "
+                           f"~{round(per_day)} restarts/day; suggest running as a loop/CronJob "
+                           "or raising the timeout")})
+    return out
+
+
 def _restart_stats(pod: dict[str, Any], now: datetime) -> dict[str, Any] | None:
     statuses = (pod.get("status") or {}).get("containerStatuses") or []
     restarts = sum(int(s.get("restartCount") or 0) for s in statuses)
@@ -161,6 +191,7 @@ async def collect_waste(infra: Any, connector: str, prometheus_url: str | None =
     oversized: list[dict[str, Any]] = []
     restarts: list[dict[str, Any]] = []
     unused_pvcs: list[dict[str, Any]] = []
+    churn: list[dict[str, Any]] = []
     for ns in namespaces:
         pod_warnings: list[str] = []
         pods = await _items(infra, connector, "pods", ns, pod_warnings)
@@ -178,8 +209,10 @@ async def collect_waste(infra: Any, connector: str, prometheus_url: str | None =
         for pod in pods:
             meta = pod.get("metadata") or {}
             name = str(meta.get("name", ""))
+            clean = clean_exit_churn(pod, now)
+            churn.extend(clean)
             stats = _restart_stats(pod, now)
-            if stats:
+            if stats and not clean:
                 restarts.append(stats)
             if (pod.get("status") or {}).get("phase") != "Running" or (ns, name) not in usage:
                 continue
@@ -205,6 +238,7 @@ async def collect_waste(infra: Any, connector: str, prometheus_url: str | None =
     restarts.sort(key=lambda r: r["restarts_per_hour"], reverse=True)
     burn = sorted((r for r in restarts if r["crash_looping"]),
                   key=lambda r: r["estimated_cpu_core_seconds"], reverse=True)
+    churn.sort(key=lambda r: r["restarts_per_day"], reverse=True)
     idle.sort(key=lambda r: r["cpu_request_m"], reverse=True)
     oversized.sort(key=lambda r: r["cpu_request_m"], reverse=True)
     return {
@@ -216,6 +250,7 @@ async def collect_waste(infra: Any, connector: str, prometheus_url: str | None =
         "unused_pvcs": {"count": len(unused_pvcs), "items": unused_pvcs[:TOP_N]},
         "orphaned_pvs": {"count": len(pvs), "items": pvs[:TOP_N]},
         "restarting_pods": {"count": len(restarts), "items": restarts[:TOP_N]},
+        "clean_exit_churn": {"count": len(churn), "items": churn[:TOP_N]},
         "crash_loop_burn": {"estimate": True, "count": len(burn), "items": burn[:TOP_N],
                             "formula": "restarts x last container uptime x CPU request"},
         "prometheus": await _prometheus(prometheus_url, transport),

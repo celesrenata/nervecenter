@@ -10,7 +10,7 @@ from backend.kube.collector import scope_unread, snapshot_coverage, snapshot_pro
 from backend.kube.settings import _utc, classify_namespace
 from backend.persistence.models.kube import KubeIssue, KubeReport
 
-KEEP_REPORTS = {"snapshot": 24, "waste": 14, "settings": 100}
+KEEP_REPORTS = {"snapshot": 24, "waste": 14, "settings": 100, "diagnoses": 10}
 _MODES = {"known_down": "known_down", "protected": "diagnose_only",
           "override_active": "normal", "normal": "normal"}
 _EVIDENCE_SKIP = {"key", "kind", "namespace", "name", "reason", "severity"}
@@ -98,7 +98,7 @@ class ReportStore:
     async def add(self, kind: str, data: dict[str, Any], now: datetime | None = None
                   ) -> dict[str, Any]:
         if kind not in KEEP_REPORTS:
-            raise ValueError("kind must be snapshot, waste or settings")
+            raise ValueError("kind must be snapshot, waste, settings or diagnoses")
         async with self._sessions() as s:
             row = KubeReport(kind=kind, data=data, created_at=now or datetime.now(UTC))
             s.add(row)

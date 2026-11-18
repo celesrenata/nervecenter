@@ -72,6 +72,12 @@ def _last_termination(status: dict[str, Any]) -> dict[str, Any] | None:
             "finished_at": term.get("finishedAt")}
 
 
+def is_clean_exit(term: dict[str, Any] | None) -> bool:
+    """True when the last termination was a normal self-exit (Completed, exit code 0)."""
+    return bool(term) and term.get("exit_code") == 0 and term.get("reason") in (
+        "Completed", None, "")
+
+
 def classify_pod(pod: dict[str, Any], now: datetime) -> dict[str, Any] | None:
     """One problem for an unhealthy pod, or None."""
     meta, status = pod.get("metadata") or {}, pod.get("status") or {}
@@ -96,6 +102,8 @@ def classify_pod(pod: dict[str, Any], now: datetime) -> dict[str, Any] | None:
                             message=str(waiting.get("message", ""))[:_MAX_EVIDENCE])
     for cs in statuses:
         term = _last_termination(cs)
+        if is_clean_exit(term):
+            continue  # exits 0 by design and Kubernetes restarts it: churn, not a crash loop
         finished = _ts((term or {}).get("finished_at"))
         if (cs.get("restartCount", 0) >= HIGH_RESTARTS and finished
                 and now - finished <= RESTART_WINDOW):

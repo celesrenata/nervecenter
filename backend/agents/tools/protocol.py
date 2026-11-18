@@ -172,13 +172,17 @@ NERVE_ARGS = {
     "first planned slice; never write a target list yourself; refused outside the "
     "owner-approved allowlist)",
     "pentest_scan_status": '{"scan_id": "<optional>"} (the scan ledger, or one scan)',
-    "kube_health": "{} (open cluster problems with mode: known_down, diagnose_only, "
-    "override_active or normal; read-only)",
-    "kube_describe": '{"kind": "pod", "name": "...", "namespace": "..."} (kinds: pod, pvc, pv, '
+    "kube_health": '{} (a summary of problem GROUPS, ranked, "N groups, showing top K") or '
+    '{"group": "<id>"} (that group\'s issues with exact pod names; read-only)',
+    "kube_describe": '{"kind": "pod", "name": "...", "namespace": "..."} or {"kind": "pod", '
+    '"names": ["a", "b"], "namespace": "..."} (up to 4 names in one call; kinds: pod, pvc, pv, '
     "node, deploy, statefulset, daemonset, job, cronjob, svc, ingress, event, "
     "volumes.longhorn.io, certificate; never Secrets; read-only)",
     "kube_logs": '{"namespace": "...", "pod": "...", "container": "", "previous": false, '
-    '"tail": 100} (1 to 300 lines; read-only)',
+    '"tail": 100} or {"namespace": "...", "pods": ["a", "b"], ...} (up to 4 pods in one call; '
+    "1 to 300 lines; read-only)",
+    "kube_events": '{"namespace": "...", "name": "<pod or object>"} (events of that object, '
+    "newest last; without name: the namespace's warnings; read-only)",
     "kube_waste": "{} (idle and over-sized pods, unused PVCs, orphaned PVs, restart churn; "
     "read-only)",
     "kube_known_down": "{} (known-down and protected namespaces, active overrides, first_run)",

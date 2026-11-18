@@ -222,3 +222,58 @@ async def test_namespaces_beyond_the_read_cap_count_as_unread(monkeypatch) -> No
     snap = await collect_snapshot(FakeInfra(_table()), "home", NOW)
     assert snap["coverage"]["total"] == 2 and snap["coverage"]["read"] == 1
     assert snap["coverage"]["over_cap"] == 1
+
+
+def _restarting(restarts: int, exit_code: int, reason: str, state: dict[str, Any] | None = None
+                ) -> dict[str, Any]:
+    return {"phase": "Running", "startTime": OLD, "containerStatuses": [{
+        "name": "worker", "restartCount": restarts, "state": state or {"running": {}},
+        "lastState": {"terminated": {"reason": reason, "exitCode": exit_code,
+                                     "startedAt": OLD, "finishedAt": NOW.isoformat()}}}]}
+
+
+def _classify(status: dict[str, Any]) -> dict[str, Any] | None:
+    from backend.kube.collector import classify_pod
+    return classify_pod(_pod("w-1", "nc", None, status), NOW)
+
+
+def test_clean_exit_worker_is_not_an_issue_but_real_loops_are() -> None:
+    assert _classify(_restarting(2_295, 0, "Completed")) is None
+    exit_one = _classify(_restarting(40, 1, "Error"))
+    assert exit_one and exit_one["reason"] == "HighRestarts" and exit_one["severity"] == "warning"
+    oom = _classify(_restarting(12, 137, "OOMKilled"))
+    assert oom and oom["reason"] == "HighRestarts"
+    assert oom["last_termination"]["reason"] == "OOMKilled"
+    loop = _classify(_restarting(9, 0, "Completed", {"waiting": {"reason": "CrashLoopBackOff"}}))
+    assert loop and loop["reason"] == "CrashLoopBackOff"  # still a real crash loop
+
+
+async def test_clean_exit_worker_shows_as_churn_in_the_waste_report() -> None:
+    from backend.kube.waste import collect_waste
+    worker = _pod("worker-1", "nc", None, _restarting(2_295, 0, "Completed"))
+    worker["status"]["startTime"] = (NOW - timedelta(days=7)).isoformat()
+    bad = _pod("bad-1", "nc", None, _restarting(40, 1, "Error"))
+    table = {("top", "pods", "-A", "--no-headers"): "", ("top", "nodes", "--no-headers"): "",
+             ("get", "namespaces", "-o", "name"): "namespace/nc\n",
+             ("get", "pods", "-n", "nc", "-o", "json"): _list(worker, bad),
+             ("get", "persistentvolumeclaims", "-n", "nc", "-o", "json"): _list(),
+             ("get", "persistentvolumes", "-o", "json"): _list()}
+    report = await collect_waste(FakeInfra(table), "home", None, now=NOW)
+    items = report["clean_exit_churn"]["items"]
+    assert report["clean_exit_churn"]["count"] == 1 and items[0]["pod"] == "worker-1"
+    assert items[0]["restart_every_seconds"] == round(7 * 86400 / 2_295)
+    assert items[0]["restarts_per_day"] == round(2_295 / 7)
+    assert "clean exit" in items[0]["suggestion"] and "CronJob" in items[0]["suggestion"]
+    assert [r["pod"] for r in report["restarting_pods"]["items"]] == ["bad-1"]
+
+
+async def test_old_clean_exit_issue_closes_on_the_next_check() -> None:
+    snap = await collect_snapshot(FakeInfra(_table_with_worker()), "home", NOW)
+    assert not [p for p in snapshot_problems(snap) if "worker" in p["key"]]
+
+
+def _table_with_worker() -> dict[tuple[str, ...], str]:
+    table = _table()
+    worker = _pod("worker-1", "app", None, _restarting(2_295, 0, "Completed"))
+    table[("get", "pods", "-n", "app", "-o", "json")] = _list(worker)
+    return table

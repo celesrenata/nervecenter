@@ -25,6 +25,16 @@ test('lists issues, overrides a protected one, saves settings and checks now', a
     settings, last_check_at: settings.last_check_at, last_waste_at: null,
     monitor: { running: false, last: null }, counts: { open: 1, known_down: 1, diagnose_only: 1, overrides: 0 } } }))
   await page.route('**/api/kube/issues', (r) => r.fulfill({ json: { issues: issues(), overrides } }))
+  await page.route('**/api/kube/groups', (r) => r.fulfill({ json: { count: 1, groups: [{
+    id: 'stonks-oracle:imagepull', namespace: 'stonks-oracle', cause: 'imagepull', severity: 'critical',
+    mode: 'normal', reasons: ['ImagePullBackOff'], workloads: ['api'], pods: ['api-1', 'api-2'],
+    issue_count: 1, pod_count: 2, first_seen: '2030-01-01T03:00:00Z', can_add_known_down: true,
+    diagnosis: { status: 'done', summary: 'Image tag missing', confidence: 'high',
+      evidence: ['manifest unknown'], run_id: 'abcdef123456', run_at: '2030-01-01T04:00:00Z' } }] } }))
+  await page.route('**/api/kube/known-down', (r) => {
+    sent.push(`known-down ${r.request().postData()}`)
+    return r.fulfill({ json: settings })
+  })
   await page.route('**/api/kube/waste', (r) => r.fulfill({ json: { report: { created_at: '2030-01-01T04:00:00Z', data: {
     collected_at: '2030-01-01T04:00:00Z', metrics_available: true,
     idle_pods: { count: 1, items: [{ namespace: 'apps', pod: 'idle-1' }] },
@@ -59,6 +69,10 @@ test('lists issues, overrides a protected one, saves settings and checks now', a
   await expect(page.getByTestId('kube-protected-list')).toContainText('longhorn-system')
   await expect(page.getByTestId('kube-waste')).toContainText('idle-1')
   await expect(page.getByTestId('kube-first-run')).toBeVisible()
+  await expect(page.getByTestId('kube-group-diagnosis-stonks-oracle:imagepull')).toContainText('manifest unknown')
+  await page.getByTestId('kube-known-down-add-stonks-oracle:imagepull').click()
+  await expect.poll(() => sent.some((x) => x.startsWith('known-down')) && sent.some((x) => x.startsWith('confirm: Add stonks-oracle'))).toBe(true)
+  sent.splice(0, sent.length)
 
   await page.getByTestId(`kube-override-${KEY}`).click()
   await expect(page.getByTestId(`kube-issue-${KEY}`)).toContainText('Override by celes')
@@ -66,7 +80,7 @@ test('lists issues, overrides a protected one, saves settings and checks now', a
   await expect(page.getByTestId(`kube-override-${KEY}`)).toHaveCount(0)
 
   await page.getByLabel('Add to Known down namespaces').fill('comfyui-service')
-  await page.getByRole('button', { name: 'Add' }).first().click()
+  await page.getByRole('button', { name: 'Add', exact: true }).first().click()
   await page.getByTestId('kube-save-settings').click()
   await page.getByTestId('kube-check-now').click()
   await expect.poll(() => sent.includes('check')).toBe(true)

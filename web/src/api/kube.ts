@@ -30,6 +30,32 @@ export interface KubeIssue {
   override: KubeOverride | null
 }
 
+export interface KubeDiagnosis {
+  status: 'running' | 'done' | 'failed'
+  summary?: string
+  cause?: string
+  evidence?: string[]
+  confidence?: string
+  error?: string
+  run_id?: string | null
+  run_at?: string
+  at?: string
+}
+export interface KubeGroup {
+  id: string
+  namespace: string
+  cause: string
+  severity: string
+  mode: KubeMode
+  reasons: string[]
+  workloads: string[]
+  pods: string[]
+  issue_count: number
+  pod_count: number
+  first_seen: string | null
+  diagnosis: KubeDiagnosis | null
+  can_add_known_down: boolean
+}
 export interface KubeSettings {
   protected_namespaces: string[]
   known_down: string[]
@@ -92,6 +118,7 @@ export interface WasteReport {
   unused_pvcs: WasteSection
   orphaned_pvs: WasteSection
   restarting_pods: WasteSection
+  clean_exit_churn?: WasteSection
   crash_loop_burn: WasteSection & { estimate: boolean; formula: string }
   not_measured: string[]
   warnings: string[]
@@ -113,6 +140,10 @@ export const kubeApi = {
   status: async () => json<KubeStatus>(await apiFetch('/api/kube/status')),
   issues: async () =>
     json<{ issues: KubeIssue[]; overrides: KubeOverride[] }>(await apiFetch('/api/kube/issues')),
+  groups: async () =>
+    json<{ groups: KubeGroup[]; count: number }>(await apiFetch('/api/kube/groups')),
+  addKnownDown: async (namespace: string) =>
+    json<KubeSettings>(await send('/api/kube/known-down', 'POST', { namespace })),
   waste: async () =>
     (await json<{ report: { created_at: string; data: WasteReport } | null }>(await apiFetch('/api/kube/waste')))
       .report,

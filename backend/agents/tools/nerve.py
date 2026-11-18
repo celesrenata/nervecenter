@@ -420,34 +420,42 @@ class NerveTools:
         return isinstance(stamp, datetime) and (
             datetime.now(UTC) - stamp < timedelta(minutes=minutes))
 
-    async def _t_kube_health(self, args: dict[str, Any]) -> Any:
-        from backend.kube.collector import collect_snapshot, snapshot_problems
-        kube, infra, connector = await self._kube()
+    KUBE_MAX_GROUPS = 10
+    KUBE_MAX_NAMES = 4
+
+    async def _kube_snapshot(self, kube: Any, infra: Any, connector: str
+                             ) -> tuple[dict[str, Any], str]:
+        from backend.kube.collector import collect_snapshot
         stored = await kube.reports.latest("snapshot")
-        source = "stored"
         if self._kube_age(stored, 15):
-            snap = dict(stored["data"])
-        else:
-            snap = await collect_snapshot(infra, connector)
-            await kube.reports.add("snapshot", snap)
-            source = "fresh"
-        settings, overrides = await kube.settings.get(), await kube.overrides.active()
+            return dict(stored["data"]), "stored"
+        snap = await collect_snapshot(infra, connector)
+        await kube.reports.add("snapshot", snap)
+        return snap, "fresh"
+
+    async def _kube_issues(self, kube: Any, snap: dict[str, Any]) -> list[dict[str, Any]]:
+        """Snapshot problems as ledger-style dicts with the namespace mode filled in."""
+        from backend.kube.collector import snapshot_problems
         from backend.kube.settings import classify_namespace
+        settings, overrides = await kube.settings.get(), await kube.overrides.active()
+        skip = ("key", "kind", "namespace", "name", "reason", "severity")
         issues = []
         for p in snapshot_problems(snap):
             verdict = classify_namespace(p["namespace"], settings, overrides, p["key"])
-            mode = "diagnose_only" if verdict == "protected" else verdict
-            extra = {k: v for k, v in p.items() if k not in
-                     ("key", "kind", "namespace", "name", "reason", "severity")}
-            row = {"key": p["key"], "kind": p["kind"], "namespace": p["namespace"],
-                   "name": p["name"], "reason": p["reason"], "severity": p["severity"],
-                   "mode": mode, "detail": _clip(json.dumps(extra, default=str), 160)}
-            if self.KUBE_MODE_NOTES.get(mode):
-                row["note"] = self.KUBE_MODE_NOTES[mode]
-            issues.append(row)
-        issues.sort(key=lambda r: (r["severity"] != "critical", r["mode"] != "normal"))
-        events = [{k: _clip(e.get(k), 120) for k in ("namespace", "object", "reason", "message")}
-                  | {"count": e.get("count")} for e in (snap.get("events") or [])[:8]]
+            issues.append({
+                "key": p["key"], "kind": p["kind"], "namespace": p["namespace"],
+                "name": p["name"], "reason": p["reason"], "severity": p["severity"],
+                "mode": "diagnose_only" if verdict == "protected" else verdict,
+                "evidence": {k: v for k, v in p.items() if k not in skip}})
+        return issues
+
+    async def _t_kube_health(self, args: dict[str, Any]) -> Any:
+        from backend.kube.groups import group_issues
+        kube, infra, connector = await self._kube()
+        snap, source = await self._kube_snapshot(kube, infra, connector)
+        issues = await self._kube_issues(kube, snap)
+        groups = group_issues(issues)
+        diagnoses = await self._kube_diagnoses(kube)
         cov = snap.get("coverage") or {}
         coverage = {
             "line": cov.get("line") or "coverage unknown: snapshot has no coverage record",
@@ -456,12 +464,76 @@ class NerveTools:
             "not_read": cov.get("cluster_unreadable") or [],
             "note": "Anything listed as unreadable was NOT checked. No issue there does not mean "
                     "healthy; say so under Not checked."}
-        return self._shrink({
-            "source": source, "collected_at": snap.get("collected_at"), "coverage": coverage,
-            "namespaces": snap.get("namespaces"), "issue_count": len(issues),
-            "issues": issues, "warning_events": events,
-            "warnings": [_clip(w, 120) for w in (snap.get("warnings") or [])[:5]],
-        }, ("issues", "warning_events"))
+        head = {"source": source, "collected_at": snap.get("collected_at"), "coverage": coverage,
+                "namespaces": snap.get("namespaces"), "issue_count": len(issues),
+                "group_count": len(groups)}
+        wanted = _text(args, "group", limit=140)
+        if wanted:
+            return self._kube_group_detail(head, wanted, groups, issues, snap, diagnoses)
+        rows = []
+        for g in groups:
+            row = {"id": g["id"], "namespace": g["namespace"] or "_cluster",
+                   "cause": g["cause"], "severity": g["severity"], "mode": g["mode"],
+                   "issues": g["issue_count"], "pod_count": g["pod_count"],
+                   "reasons": g["reasons"][:4], "workloads": g["workloads"][:4],
+                   "pods": g["pods"][:3]}
+            if g["pod_count"] > 3:
+                row["pods_more"] = g["pod_count"] - 3
+            if self.KUBE_MODE_NOTES.get(g["mode"]):
+                row["note"] = self.KUBE_MODE_NOTES[g["mode"]]
+            if diagnoses.get(g["id"], {}).get("summary"):
+                row["last_diagnosis"] = _clip(diagnoses[g["id"]]["summary"], 120)
+            rows.append(row)
+        rows = rows[:self.KUBE_MAX_GROUPS]
+        out = {**head, "groups": rows}
+        while len(json.dumps(out, default=str)) > RESULT_BUDGET and len(rows) > 1:
+            rows.pop()
+        out["note"] = (f"{len(groups)} groups, showing top {len(rows)} by severity and blast "
+                       "radius" + ("; expand one with kube_health {group: <id>} (exact pod "
+                                   "names)" if groups else ""))
+        events = [{k: _clip(e.get(k), 100) for k in ("namespace", "object", "reason", "message")}
+                  | {"count": e.get("count")} for e in (snap.get("events") or [])[:4]]
+        out["warning_events"] = events if len(json.dumps(out, default=str)) < 3_800 else []
+        out["warnings"] = [_clip(w, 100) for w in (snap.get("warnings") or [])[:3]]
+        return out
+
+    def _kube_group_detail(self, head: dict[str, Any], wanted: str, groups: list[dict[str, Any]],
+                           issues: list[dict[str, Any]], snap: dict[str, Any],
+                           diagnoses: dict[str, Any]) -> Any:
+        from backend.kube.groups import group_id
+        group = next((g for g in groups if g["id"] == wanted), None)
+        if group is None:
+            raise NerveToolError("unknown_group")
+        members = [i for i in issues if group_id(i) == wanted]
+        rows = []
+        for i in members:
+            ev = i["evidence"]
+            rows.append({
+                "key": i["key"], "kind": i["kind"], "reason": i["reason"],
+                "workload": i["name"], "pods": (ev.get("pods") or [])[:20],
+                "container": ev.get("container"), "restarts": ev.get("restarts"),
+                "last_termination": ev.get("last_termination"),
+                "message": _clip(ev.get("message") or ev.get("scheduler_message"), 220)})
+        events = [{k: _clip(e.get(k), 160) for k in ("object", "reason", "message")}
+                  | {"count": e.get("count")} for e in (snap.get("events") or [])
+                  if e.get("namespace") == group["namespace"]][:6]
+        out = {**head, "group": {k: group[k] for k in (
+            "id", "namespace", "cause", "severity", "mode", "issue_count", "pod_count")},
+               "issues": rows, "warning_events": events}
+        if self.KUBE_MODE_NOTES.get(group["mode"]):
+            out["note"] = self.KUBE_MODE_NOTES[group["mode"]]
+        total = len(rows)
+        while len(json.dumps(out, default=str)) > RESULT_BUDGET and out["warning_events"]:
+            out["warning_events"].pop()
+        while len(json.dumps(out, default=str)) > RESULT_BUDGET and len(rows) > 1:
+            rows.pop()
+            out["truncated"] = f"{total - len(rows)} more issues not shown; use kube_describe"
+        return out
+
+    @staticmethod
+    async def _kube_diagnoses(kube: Any) -> dict[str, Any]:
+        from backend.kube.groups import DiagnosisStore
+        return await DiagnosisStore(kube.reports).all()
 
     async def _kube_read(self, args: list[str]) -> str:
         from backend.infra.policy import redact
@@ -470,7 +542,7 @@ class NerveTools:
         if not res.get("ok"):
             raise NerveToolError(str(res.get("denied_reason") or "read_failed")[:60])
         text = str(res.get("output") or "")
-        return redact(text, limit=len(text) + 1)  # no cut: it would drop the Events tail
+        return redact(text, limit=len(text) + 1)  # no cut here: callers cut and say so
 
     @staticmethod
     def _kube_name(args: dict[str, Any], key: str) -> str:
@@ -479,49 +551,133 @@ class NerveTools:
             raise NerveToolError(f"bad_{key}")
         return value
 
+    def _kube_names(self, args: dict[str, Any], one: str, many: str) -> list[str]:
+        """``one`` (a name) or ``many`` (up to 4 names); at least one is required."""
+        raw = args.get(many)
+        if raw is None:
+            return [self._kube_name(args, one)]
+        if not isinstance(raw, list) or not 1 <= len(raw) <= self.KUBE_MAX_NAMES:
+            raise NerveToolError(f"{many}_1_to_{self.KUBE_MAX_NAMES}")
+        names = [self._kube_name({one: n}, one) for n in raw]
+        return list(dict.fromkeys(names))
+
+    @staticmethod
+    def _cut(text: str, budget: int, hint: str, keep: str = "tail") -> tuple[str, bool]:
+        """Fit ``text`` in ``budget`` characters and say what was cut and how to narrow.
+
+        Describe keeps the head and the Events tail; logs and events keep the newest lines.
+        """
+        if len(text) <= budget:
+            return text, False
+        lines = text.splitlines()
+        head_n = 0
+        if keep == "both":
+            used = 0
+            while head_n < len(lines) and used + len(lines[head_n]) + 1 <= budget // 3:
+                used += len(lines[head_n]) + 1
+                head_n += 1
+        tail_budget = budget - sum(len(x) + 1 for x in lines[:head_n]) - 160
+        tail_n = 0
+        used = 0
+        while tail_n < len(lines) - head_n and used + len(lines[-1 - tail_n]) + 1 <= tail_budget:
+            used += len(lines[-1 - tail_n]) + 1
+            tail_n += 1
+        cut = len(lines) - head_n - tail_n
+        marker = f"[truncated, {cut} more lines, narrow with {hint}]"
+        tail = lines[len(lines) - tail_n:] if tail_n else []
+        return "\n".join([*lines[:head_n], marker, *tail]), True
+
     async def _t_kube_describe(self, args: dict[str, Any]) -> Any:
         kind = _text(args, "kind", required=True, limit=40).lower()
         if kind not in self.KUBE_KINDS:
             raise NerveToolError("kind_not_allowed")
-        name = self._kube_name(args, "name")
+        names = self._kube_names(args, "name", "names")
         kube, _, _ = await self._kube()
-        cmd = ["describe", kind, name]
         namespace = ""
         if kind not in self.KUBE_CLUSTER_KINDS:
             namespace = _text(args, "namespace", limit=63) or (
                 "longhorn-system" if kind == "volumes.longhorn.io" else "")
             if not namespace:
                 raise NerveToolError("namespace_required")
-            cmd += ["-n", self._kube_name({"namespace": namespace}, "namespace")]
-        text = await self._kube_read(cmd)
-        truncated = len(text) > RESULT_BUDGET
-        if truncated:  # keep the head and the Events section at the end
-            text = text[:1_800] + "\n[... middle cut ...]\n" + text[-(RESULT_BUDGET - 1_900):]
+            self._kube_name({"namespace": namespace}, "namespace")
         mode = await self._kube_mode(kube, namespace) if namespace else "normal"
-        out = {"kind": kind, "name": name, "namespace": namespace, "mode": mode,
-               "truncated": truncated, "text": text}
+        budget = (RESULT_BUDGET - 400) // len(names)
+        items = []
+        for name in names:
+            cmd = ["describe", kind, name] + (["-n", namespace] if namespace else [])
+            try:
+                text = await self._kube_read(cmd)
+            except NerveToolError as exc:
+                items.append({"name": name, "error": exc.reason})
+                continue
+            text, truncated = self._cut(
+                text, budget, f"kube_events {{namespace, name: \"{name}\"}} or kube_logs",
+                keep="both")  # the head and the Events section at the end
+            items.append({"name": name, "truncated": truncated, "text": text})
+        if len(names) == 1 and "text" in items[0]:
+            out = {"kind": kind, "name": names[0], "namespace": namespace, "mode": mode,
+                   "truncated": items[0]["truncated"], "text": items[0]["text"]}
+        else:
+            if len(names) == 1:
+                raise NerveToolError(items[0]["error"])
+            out = {"kind": kind, "namespace": namespace, "mode": mode, "items": items}
         if self.KUBE_MODE_NOTES.get(mode):
             out["note"] = self.KUBE_MODE_NOTES[mode]
         return out
 
     async def _t_kube_logs(self, args: dict[str, Any]) -> Any:
         namespace = self._kube_name(args, "namespace")
-        pod = self._kube_name(args, "pod")
+        pods = self._kube_names(args, "pod", "pods")
         tail = _int(args, "tail", 100, 1, 300)
-        cmd = ["logs", pod, "-n", namespace, f"--tail={tail}"]
         container = _text(args, "container", limit=63)
-        if container:
-            cmd += ["-c", self._kube_name({"container": container}, "container")]
         previous = args.get("previous") is True
-        if previous:
-            cmd.append("--previous")
         kube, _, _ = await self._kube()
-        text = await self._kube_read(cmd)
-        truncated = len(text) > RESULT_BUDGET
         mode = await self._kube_mode(kube, namespace)
-        out = {"pod": pod, "namespace": namespace, "container": container, "previous": previous,
-               "tail": tail, "mode": mode, "truncated": truncated,
-               "text": text[-RESULT_BUDGET:]}  # the newest lines matter most
+        budget = (RESULT_BUDGET - 400) // len(pods)
+        items = []
+        for pod in pods:
+            cmd = ["logs", pod, "-n", namespace, f"--tail={tail}"]
+            if container:
+                cmd += ["-c", self._kube_name({"container": container}, "container")]
+            if previous:
+                cmd.append("--previous")
+            try:
+                text = await self._kube_read(cmd)
+            except NerveToolError as exc:
+                items.append({"pod": pod, "error": exc.reason})
+                continue
+            text, truncated = self._cut(
+                text, budget, "a smaller tail, a container, or previous=true")  # newest last
+            items.append({"pod": pod, "truncated": truncated, "text": text})
+        if len(pods) == 1:
+            if "error" in items[0]:
+                raise NerveToolError(items[0]["error"])
+            out = {"pod": pods[0], "namespace": namespace, "container": container,
+                   "previous": previous, "tail": tail, "mode": mode,
+                   "truncated": items[0]["truncated"], "text": items[0]["text"]}
+        else:
+            out = {"namespace": namespace, "container": container, "previous": previous,
+                   "tail": tail, "mode": mode, "items": items}
+        if self.KUBE_MODE_NOTES.get(mode):
+            out["note"] = self.KUBE_MODE_NOTES[mode]
+        return out
+
+    async def _t_kube_events(self, args: dict[str, Any]) -> Any:
+        """Events of one object (``name``) or the warnings of a namespace; newest last."""
+        namespace = self._kube_name(args, "namespace")
+        name = _text(args, "name", limit=253)
+        cmd = ["get", "events", "-n", namespace, "--sort-by=.lastTimestamp"]
+        if name:
+            cmd.append(f"--field-selector=involvedObject.name={self._kube_name(args, 'name')}")
+        else:
+            cmd.append("--field-selector=type=Warning")
+        kube, _, _ = await self._kube()
+        text, truncated = self._cut(
+            await self._kube_read(cmd), RESULT_BUDGET - 400,
+            "a name: kube_events {namespace, name}")
+        mode = await self._kube_mode(kube, namespace)
+        out = {"namespace": namespace, "name": name, "mode": mode, "truncated": truncated,
+               "text": text}
         if self.KUBE_MODE_NOTES.get(mode):
             out["note"] = self.KUBE_MODE_NOTES[mode]
         return out
@@ -537,7 +693,7 @@ class NerveTools:
             report, source = await collect_waste(infra, connector, url), "fresh"
             await kube.reports.add("waste", report)
         sections = ("idle_pods", "oversized_pods", "unused_pvcs", "orphaned_pvs",
-                    "restarting_pods", "crash_loop_burn")
+                    "restarting_pods", "crash_loop_burn", "clean_exit_churn")
         while len(json.dumps(report, default=str)) > RESULT_BUDGET:
             key = max(sections, key=lambda k: len((report.get(k) or {}).get("items") or []))
             items = (report.get(key) or {}).get("items") or []

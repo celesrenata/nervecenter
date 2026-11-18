@@ -15,6 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from backend.api.auth import current_access
 from backend.api.endpoints.mail_security import _eligible_for_server_scopes
+from backend.kube.groups import DiagnosisStore, group_issues
 from backend.kube.monitor import CheckBusy, KubeMonitor, get_monitor
 from backend.kube.settings import KubeSettingsError, classify_namespace, settings_view
 from backend.kube.store import KubeServices, get_services
@@ -120,6 +121,45 @@ async def list_issues(request: Request, claims: Claims) -> dict[str, Any]:
             "overrides": [_override_view(o) for o in await svc.overrides.active(now)]}
 
 
+@router.get("/groups")
+async def list_groups(request: Request, claims: Claims) -> dict[str, Any]:
+    """Open issues folded into groups, each with its latest diagnosis (one line per group)."""
+    _actor(claims)
+    svc = _svc(request)
+    issues = await _issue_views(svc, datetime.now(UTC))
+    diagnoses = await DiagnosisStore(svc.reports).all()
+    settings = await svc.settings.get()
+    known = set(settings.get("known_down") or [])
+    groups = []
+    for g in group_issues(issues):
+        groups.append({**{k: _iso(v) for k, v in g.items()},
+                       "diagnosis": diagnoses.get(g["id"]),
+                       "can_add_known_down": bool(g["namespace"]) and g["mode"] != "known_down"
+                       and g["namespace"] not in known})
+    return {"groups": groups, "count": len(groups)}
+@router.post("/known-down")
+async def add_known_down(request: Request, claims: Claims) -> dict[str, Any]:
+    """One-click "Add to known down" for a namespace; logged like any settings change."""
+    actor = _actor(claims)
+    body = await _body(request)
+    ns = body.get("namespace")
+    svc = _svc(request)
+    before = await svc.settings.get()
+    try:
+        if not isinstance(ns, str):
+            raise KubeSettingsError("namespace: a namespace name")
+        patch = {"known_down": [*before["known_down"], ns] if ns not in before["known_down"]
+                 else before["known_down"],
+                 "known_down_off": [n for n in before["known_down_off"] if n != ns]}
+        after = await svc.settings.update(patch, actor)
+    except KubeSettingsError as exc:
+        raise _bad(exc) from None
+    changes = {k: {"from": before.get(k), "to": after.get(k)} for k in patch
+               if before.get(k) != after.get(k)}
+    if changes:
+        log.info("kube.known_down_added", actor=actor, namespace=ns)
+        await svc.reports.add("settings", {"actor": actor, "changes": changes})
+    return settings_view(after)
 @router.get("/waste")
 async def latest_waste(request: Request, claims: Claims) -> dict[str, Any]:
     _actor(claims)

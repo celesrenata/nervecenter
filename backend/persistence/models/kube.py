@@ -46,7 +46,7 @@ class KubeSettings(Base):
                                                    default="192.168.42.8")
     backup_nfs_base: Mapped[str] = mapped_column(String(300), nullable=False,
                                                  default="/volume1/Kubernetes")
-    daily_run_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    daily_run_cap: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     issue_cooldown_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=6)
     #: Optional Prometheus base URL (prometheus-service); null = not used
     prometheus_url: Mapped[str | None] = mapped_column(String(300), nullable=True)
