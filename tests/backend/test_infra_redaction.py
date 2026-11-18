@@ -60,3 +60,12 @@ def test_output_cap_applies_by_default_and_can_be_raised() -> None:
     text = "x" * (MAX_OUTPUT_CHARS + 10)
     assert redact(text).endswith("[truncated]")
     assert redact(text, limit=MAX_OUTPUT_CHARS + 20) == text
+
+
+def test_json_string_elements_with_credential_flags_stay_valid() -> None:
+    doc = {"args": ["--secret-name=abc123", "--token=xyz789", "--namespace=argocd"], "ok": 1}
+    out = redact(json.dumps(doc, indent=2))
+    parsed = json.loads(out)
+    assert parsed["args"][0] == "--secret-name=[redacted]"
+    assert parsed["args"][1] == "--token=[redacted]" and parsed["args"][2] == "--namespace=argocd"
+    assert "abc123" not in out and "xyz789" not in out

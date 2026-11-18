@@ -284,7 +284,12 @@ def _redact_assignment(m: re.Match[str]) -> str:
     head, rest = m.group(1), m.group(2)
     if _KEEP.fullmatch(rest):
         return m.group(0)
-    if head.lstrip().startswith('"'):
+    if head.lstrip().startswith('"') and head.count('"') == 1:
+        # a JSON string element such as ``"--secret-name=abc",``: hide up to its closing quote
+        tail = re.search(r'"\s*,?\s*$', rest)
+        if tail:
+            return f"{head}[redacted]{tail.group(0)}"
+    elif head.lstrip().startswith('"'):
         scalar = _JSON_SCALAR.fullmatch(rest)
         if scalar:
             return f'{head}"[redacted]"{scalar.group(2)}'
