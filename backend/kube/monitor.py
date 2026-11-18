@@ -88,9 +88,11 @@ class KubeMonitor:
         try:
             settings = await self._settings.get()
             now = self._now()
-            if _due(settings["last_check_at"], now, CHECK_INTERVAL):
+            if settings.get("check_enabled", True) and _due(
+                    settings["last_check_at"], now, CHECK_INTERVAL):
                 await self.check()
-            if _due(settings["last_waste_at"], now, WASTE_INTERVAL):
+            if settings.get("waste_enabled", True) and _due(
+                    settings["last_waste_at"], now, WASTE_INTERVAL):
                 await self.waste()
         except CheckBusy:
             return
@@ -178,6 +180,9 @@ class KubeMonitor:
                        now: datetime, summary: dict[str, Any]) -> list[str] | None:
         """At most one run per tick. Candidates: new issues plus open ones never looked at
         (an earlier tick deferred them)."""
+        if not settings.get("auto_agent_enabled", True):
+            summary["warnings"].append("automatic kube_doctor runs are switched off")
+            return None
         cooldown = timedelta(hours=settings["issue_cooldown_hours"])
         new_keys = {i["key"] for i in synced["new"]}
         candidates = []

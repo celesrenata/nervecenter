@@ -548,6 +548,7 @@ class NerveTools:
         return {"source": source, **report}
 
     async def _t_kube_known_down(self, args: dict[str, Any]) -> Any:
+        from backend.kube.settings import effective
         kube, _, _ = await self._kube()
         settings = await kube.settings.get()
         overrides = [{"issue_key": o["issue_key"], "namespace": o["namespace"],
@@ -556,8 +557,10 @@ class NerveTools:
                      for o in await kube.overrides.active()]
         first_run = bool(settings.get("diagnose_only_until_first_report", True))
         return {
-            "known_down": settings["known_down"],
-            "protected_namespaces": settings["protected_namespaces"],
+            "known_down": effective(settings, "known_down"),
+            "protected_namespaces": effective(settings, "protected_namespaces"),
+            "switched_off": {"known_down": settings.get("known_down_off") or [],
+                             "protected": settings.get("protected_off") or []},
             "active_overrides": overrides[:20], "override_hours": settings["override_hours"],
             "first_run": first_run,
             "note": ("first_run is true: diagnose only, do not call propose_plan" if first_run

@@ -23,7 +23,9 @@ _INT_RANGES = {
     "override_hours": (1, 168), "retention_daily": (1, 60), "retention_weekly": (0, 52),
     "daily_run_cap": (1, 50), "issue_cooldown_hours": (0, 168),
 }
-_LISTS = ("protected_namespaces", "known_down")
+_LISTS = ("protected_namespaces", "known_down", "known_down_off", "protected_off")
+_SWITCHES = ("check_enabled", "waste_enabled", "auto_agent_enabled",
+             "diagnose_only_until_first_report")
 _TOUCH = ("last_check_at", "last_waste_at")
 
 
@@ -41,6 +43,10 @@ def _row_dict(row: KubeSettings) -> dict[str, Any]:
     return {
         "protected_namespaces": list(row.protected_namespaces or []),
         "known_down": list(row.known_down or []),
+        "known_down_off": list(row.known_down_off or []),
+        "protected_off": list(row.protected_off or []),
+        "check_enabled": bool(row.check_enabled), "waste_enabled": bool(row.waste_enabled),
+        "auto_agent_enabled": bool(row.auto_agent_enabled),
         "override_hours": row.override_hours, "retention_daily": row.retention_daily,
         "retention_weekly": row.retention_weekly, "backup_nfs_server": row.backup_nfs_server,
         "backup_nfs_base": row.backup_nfs_base, "daily_run_cap": row.daily_run_cap,
@@ -90,7 +96,7 @@ def validate_patch(patch: Any) -> dict[str, Any]:
                                       or not _URL.match(value)):
                 raise KubeSettingsError("prometheus_url: an http(s) address or null")
             out[key] = value.rstrip("/") if value else None
-        elif key == "diagnose_only_until_first_report":
+        elif key in _SWITCHES:
             if not isinstance(value, bool):
                 raise KubeSettingsError(f"{key}: true or false")
             out[key] = value
@@ -128,6 +134,10 @@ class KubeSettingsStore:
             row = await self._row(s)
             for key, value in clean.items():
                 setattr(row, key, value)
+            # an off flag only means something while the namespace is on its list
+            row.known_down_off = [n for n in row.known_down_off or [] if n in row.known_down]
+            row.protected_off = [n for n in row.protected_off or []
+                                 if n in row.protected_namespaces]
             row.updated_by, row.updated_at = (actor or "")[:200], datetime.now(UTC)
             await s.commit()
             await s.refresh(row)
@@ -198,15 +208,21 @@ class KubeOverrideStore:
                    for o in await self.active(now))
 
 
+def effective(settings: dict[str, Any], field: str) -> list[str]:
+    """The namespaces on a list whose switch is ON (known-down or protected)."""
+    off = set(settings.get("known_down_off" if field == "known_down" else "protected_off") or [])
+    return [n for n in settings.get(field) or [] if n not in off]
+
+
 def classify_namespace(ns: str, settings: dict[str, Any], overrides: Any = (),
                        issue_key: str | None = None) -> str:
     """``known_down``, ``protected`` (diagnose only), ``override_active`` or ``normal``.
 
     ``overrides`` are active override dicts; when ``issue_key`` is given only that issue's count.
     """
-    if ns in (settings.get("known_down") or []):
+    if ns in effective(settings, "known_down"):
         return "known_down"
-    if ns in (settings.get("protected_namespaces") or []):
+    if ns in effective(settings, "protected_namespaces"):
         for ov in overrides or ():
             if ov.get("namespace") == ns and issue_key in (None, ov.get("issue_key")):
                 return "override_active"

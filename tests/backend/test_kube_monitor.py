@@ -210,3 +210,40 @@ async def test_draft_tasks_for_new_normal_issues_capped_at_five(rig: Rig) -> Non
     task = rig.tasks[0]
     assert task["status"] == "draft" and task["inputs"]["tag"] == "agent:kube_doctor"
     assert all("nervecenter" not in t["title"] for t in rig.tasks)  # protected: diagnose only
+
+
+async def test_master_switch_stops_the_hourly_check_but_not_check_now(rig: Rig) -> None:
+    await rig.settings.update({"check_enabled": False}, "celes")
+    await rig.monitor.tick()
+    assert rig.calls["collect"] == 0 and rig.calls["waste"] == 1
+    await rig.monitor.check()  # the owner's "Check now" still works
+    assert rig.calls["collect"] == 1
+
+
+async def test_waste_switch_stops_the_daily_report(rig: Rig) -> None:
+    await rig.settings.update({"waste_enabled": False}, "celes")
+    await rig.monitor.tick()
+    assert rig.calls == {"collect": 1, "waste": 0}
+
+
+async def test_auto_agent_switch_stops_runs_but_not_the_check(rig: Rig) -> None:
+    rig.pods = [_pod("apps", "web")]
+    await rig.settings.update({"auto_agent_enabled": False}, "celes")
+    result = await rig.monitor.check()
+    assert rig.runs == [] and result["new"] == 1 and result["triggered"] is None
+    assert any("switched off" in w for w in result["warnings"])
+    await rig.settings.update({"auto_agent_enabled": True}, "celes")
+    rig.now = START + timedelta(hours=1)
+    await rig.monitor.check()
+    assert len(rig.runs) == 1  # the issue was never looked at, so it gets its turn
+
+
+async def test_switching_known_down_off_makes_the_namespace_checked(rig: Rig) -> None:
+    rig.pods = [_pod("stonks-beta", "x")]
+    first = await rig.monitor.check()
+    assert first["known_down"] == 1 and rig.runs == []
+    await rig.settings.update({"known_down_off": ["stonks-beta"]}, "celes")
+    rig.now = START + timedelta(hours=1)
+    second = await rig.monitor.check()
+    assert second["known_down"] == 0 and second["open"] == 1
+    assert len(rig.runs) == 1 and "stonks-beta" in rig.runs[0]["context"]

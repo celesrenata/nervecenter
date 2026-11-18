@@ -38,13 +38,21 @@ const MODE_CLASS: Record<KubeMode, string> = {
   diagnose_only: 'bg-amber-500 text-black',
 }
 
+const FEATURES: ['check_enabled' | 'waste_enabled' | 'auto_agent_enabled', string][] = [
+  ['check_enabled', 'Hourly check'],
+  ['waste_enabled', 'Daily waste report'],
+  ['auto_agent_enabled', 'Run kube_doctor automatically on new issues'],
+]
 const when = (iso: string | null | undefined) => (iso ? new Date(iso).toLocaleString() : 'never')
 
-function Chips({ label, value, onChange, testId }: {
+function Chips({ label, value, onChange, testId, off, onToggle }: {
   label: string
   value: string[]
   onChange: (next: string[]) => void
   testId: string
+  /** namespaces whose switch is OFF; when onToggle is given each chip gets an on/off switch */
+  off?: string[]
+  onToggle?: (ns: string, on: boolean) => void
 }) {
   const [draft, setDraft] = useState('')
   const add = () => {
@@ -58,6 +66,16 @@ function Chips({ label, value, onChange, testId }: {
       <div className="flex flex-wrap gap-1">
         {value.map((ns) => (
           <span key={ns} className="flex items-center gap-1 rounded bg-hover px-2 py-0.5 text-xs">
+            {onToggle && (
+              <input
+                type="checkbox"
+                role="switch"
+                aria-label={`${label}: ${ns} on`}
+                data-testid={`${testId}-switch-${ns}`}
+                checked={!(off ?? []).includes(ns)}
+                onChange={(e) => onToggle(ns, e.target.checked)}
+              />
+            )}
             {ns}
             <button aria-label={`Remove ${ns}`} onClick={() => onChange(value.filter((v) => v !== ns))}>×</button>
           </span>
@@ -146,13 +164,23 @@ export function KubeView() {
   }
   const saveSettings = () => {
     if (!draft) return
-    const { protected_namespaces, known_down, retention_daily, retention_weekly, daily_run_cap,
+    const { protected_namespaces, known_down, known_down_off, protected_off, retention_daily, retention_weekly, daily_run_cap,
       issue_cooldown_hours, override_hours, prometheus_url } = draft
     return act(() => kubeApi.saveSettings({
-      protected_namespaces, known_down, retention_daily, retention_weekly, daily_run_cap,
-      issue_cooldown_hours, override_hours, prometheus_url: prometheus_url || null,
+      protected_namespaces, known_down, known_down_off, protected_off, retention_daily,
+      retention_weekly, daily_run_cap, issue_cooldown_hours, override_hours,
+      prometheus_url: prometheus_url || null,
     }))
   }
+  // Switches take effect at once (no Save): a flipped switch is one logged change.
+  const toggleList = (field: 'known_down_off' | 'protected_off', ns: string, on: boolean) => {
+    if (!draft) return
+    const now = draft[field] ?? []
+    const next = on ? now.filter((n) => n !== ns) : [...new Set([...now, ns])]
+    return act(() => kubeApi.saveSettings({ [field]: next }))
+  }
+  const toggleFeature = (field: 'check_enabled' | 'waste_enabled' | 'auto_agent_enabled', on: boolean) =>
+    act(() => kubeApi.saveSettings({ [field]: on }))
 
   const down = issues.filter((i) => i.mode === 'known_down')
   const current = issues.filter((i) => i.mode !== 'known_down')
@@ -256,10 +284,37 @@ export function KubeView() {
       {draft && (
         <section data-testid="kube-settings" className="space-y-3">
           <h2 className="text-lg font-semibold text-primary">Settings</h2>
+          <div data-testid="kube-switches" className="space-y-1">
+            <h3 className="text-sm font-semibold text-primary">Agent features</h3>
+            {FEATURES.map(([field, label]) => (
+              <label key={field} className="flex items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  role="switch"
+                  data-testid={`kube-switch-${field}`}
+                  checked={draft[field] ?? true}
+                  disabled={busy}
+                  onChange={(e) => toggleFeature(field, e.target.checked)}
+                />
+                {label}
+              </label>
+            ))}
+            <p className="text-xs text-secondary">
+              Check now still works with the hourly check switched off. Every change is logged below.
+            </p>
+          </div>
           <Chips label="Known down namespaces" testId="kube-known-down-list" value={draft.known_down}
+            off={draft.known_down_off} onToggle={(ns, on) => toggleList('known_down_off', ns, on)}
             onChange={(v) => setDraft({ ...draft, known_down: v })} />
+          <p className="text-xs text-secondary">
+            Switch ON: skipped and reported as known down. OFF: checked like any other namespace.
+          </p>
           <Chips label="Protected namespaces" testId="kube-protected-list" value={draft.protected_namespaces}
+            off={draft.protected_off} onToggle={(ns, on) => toggleList('protected_off', ns, on)}
             onChange={(v) => setDraft({ ...draft, protected_namespaces: v })} />
+          <p className="text-xs text-secondary">
+            Switch ON: diagnose only (per-issue Override still applies). OFF: treated as a normal namespace.
+          </p>
           <div className="grid gap-2 sm:grid-cols-2">
             {NUMBER_FIELDS.map(([field, label]) => (
               <label key={field} className="flex items-center justify-between gap-2 text-sm">
@@ -285,6 +340,18 @@ export function KubeView() {
           <button data-testid="kube-save-settings" className={primary} disabled={busy} onClick={saveSettings}>
             Save settings
           </button>
+          {(status?.settings_log ?? []).length > 0 && (
+            <div data-testid="kube-settings-log" className="space-y-1">
+              <h3 className="text-sm font-semibold text-primary">Recent settings changes</h3>
+              <ul className="text-xs text-secondary">
+                {(status?.settings_log ?? []).map((e, i) => (
+                  <li key={`${e.at}-${i}`}>
+                    {when(e.at)} by {e.actor}: {Object.keys(e.changes).join(', ')}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </section>
       )}
 

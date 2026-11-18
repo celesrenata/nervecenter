@@ -140,3 +140,23 @@ async def test_issue_in_an_unreadable_namespace_is_not_resolved(factory) -> None
     seen = {"pods_unhealthy": [], "coverage": {"unreadable_by_kind": {}, "cluster_unreadable": []}}
     done = await store.sync(seen, settings, T0 + timedelta(hours=2))
     assert [i["key"] for i in done["resolved"]] == [a["key"]]  # readable and gone: resolved
+
+
+async def test_switches_default_on_and_off_flags_follow_their_lists(factory) -> None:
+    store = KubeSettingsStore(factory)
+    s = await store.get()
+    assert s["check_enabled"] and s["waste_enabled"] and s["auto_agent_enabled"]
+    assert s["known_down_off"] == [] and s["protected_off"] == []
+    s = await store.update({"known_down_off": ["stonks-beta", "ghost"],
+                            "protected_off": ["argocd"]}, "celes")
+    assert s["known_down_off"] == ["stonks-beta", "ghost"][:1]  # only names on the list count
+    assert classify_namespace("stonks-beta", s) == "normal"
+    assert classify_namespace("comfyui-service", s) == "known_down"
+    assert classify_namespace("argocd", s) == "normal"
+    assert classify_namespace("kube-system", s) == "protected"
+    s = await store.update({"known_down": ["comfyui-service"]}, "celes")
+    assert s["known_down_off"] == []  # removed from the list: its off flag goes too
+    with pytest.raises(KubeSettingsError):
+        await store.update({"check_enabled": "no"}, "celes")
+    with pytest.raises(KubeSettingsError):
+        await store.update({"known_down_off": ["Bad Name"]}, "celes")

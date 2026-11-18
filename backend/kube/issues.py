@@ -10,7 +10,7 @@ from backend.kube.collector import scope_unread, snapshot_coverage, snapshot_pro
 from backend.kube.settings import _utc, classify_namespace
 from backend.persistence.models.kube import KubeIssue, KubeReport
 
-KEEP_REPORTS = {"snapshot": 24, "waste": 14}
+KEEP_REPORTS = {"snapshot": 24, "waste": 14, "settings": 100}
 _MODES = {"known_down": "known_down", "protected": "diagnose_only",
           "override_active": "normal", "normal": "normal"}
 _EVIDENCE_SKIP = {"key", "kind", "namespace", "name", "reason", "severity"}
@@ -98,7 +98,7 @@ class ReportStore:
     async def add(self, kind: str, data: dict[str, Any], now: datetime | None = None
                   ) -> dict[str, Any]:
         if kind not in KEEP_REPORTS:
-            raise ValueError("kind must be snapshot or waste")
+            raise ValueError("kind must be snapshot, waste or settings")
         async with self._sessions() as s:
             row = KubeReport(kind=kind, data=data, created_at=now or datetime.now(UTC))
             s.add(row)
@@ -111,6 +111,13 @@ class ReportStore:
                 await s.execute(delete(KubeReport).where(KubeReport.id.in_(old)))
             await s.commit()
             return {"id": row.id, "kind": kind, "created_at": _utc(row.created_at), "data": data}
+
+    async def recent(self, kind: str, limit: int = 10) -> list[dict[str, Any]]:
+        async with self._sessions() as s:
+            rows = (await s.execute(
+                select(KubeReport).where(KubeReport.kind == kind)
+                .order_by(KubeReport.created_at.desc()).limit(limit))).scalars().all()
+        return [{"created_at": _utc(r.created_at), "data": r.data} for r in rows]
 
     async def latest(self, kind: str) -> dict[str, Any] | None:
         async with self._sessions() as s:

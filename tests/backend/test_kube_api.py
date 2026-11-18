@@ -148,3 +148,23 @@ def test_check_now_returns_409_while_running(env) -> None:
     assert c.post("/api/kube/check").json() == {"new": 0, "open": 1}
     mon.busy = True
     assert c.post("/api/kube/check").status_code == 409
+
+
+def test_switch_changes_are_logged_with_who_and_shown_in_status(env) -> None:
+    c, _ = _client(env)
+    ok = c.put("/api/kube/settings", json={"known_down_off": ["stonks-beta"],
+                                           "auto_agent_enabled": False})
+    assert ok.status_code == 200 and ok.json()["auto_agent_enabled"] is False
+    assert c.put("/api/kube/settings", json={"auto_agent_enabled": False}).status_code == 200
+    log = c.get("/api/kube/status").json()["settings_log"]
+    assert len(log) == 1  # the unchanged second save is not a change
+    assert log[0]["actor"] == "celes" and log[0]["at"]
+    assert log[0]["changes"]["auto_agent_enabled"] == {"from": True, "to": False}
+    assert log[0]["changes"]["known_down_off"]["to"] == ["stonks-beta"]
+    modes = {i["key"]: i["mode"] for i in c.get("/api/kube/issues").json()["issues"]}
+    assert modes["pod/stonks-beta/x/Error"] == "normal"  # switched off: checked like any other
+
+
+def test_switches_cannot_be_changed_by_a_device(env) -> None:
+    c, _ = _client(env, DEVICE)
+    assert c.put("/api/kube/settings", json={"check_enabled": False}).status_code == 403

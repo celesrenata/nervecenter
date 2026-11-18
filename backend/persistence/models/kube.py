@@ -27,6 +27,18 @@ class KubeSettings(Base):
         Jsonb, nullable=False, default=lambda: list(DEFAULT_PROTECTED))
     known_down: Mapped[list[Any]] = mapped_column(
         Jsonb, nullable=False, default=lambda: list(DEFAULT_KNOWN_DOWN))
+    #: namespaces on the lists above that the owner switched OFF (checked like any other)
+    known_down_off: Mapped[list[Any]] = mapped_column(
+        Jsonb, nullable=False, default=list, server_default="[]")
+    protected_off: Mapped[list[Any]] = mapped_column(
+        Jsonb, nullable=False, default=list, server_default="[]")
+    #: master switches, all on by default: hourly check, daily waste report, auto kube_doctor
+    check_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true")
+    waste_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true")
+    auto_agent_enabled: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="true")
     override_hours: Mapped[int] = mapped_column(Integer, nullable=False, default=24)
     retention_daily: Mapped[int] = mapped_column(Integer, nullable=False, default=7)
     retention_weekly: Mapped[int] = mapped_column(Integer, nullable=False, default=4)

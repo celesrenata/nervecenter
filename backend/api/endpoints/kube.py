@@ -10,6 +10,7 @@ import json
 from datetime import UTC, datetime
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from backend.api.auth import current_access
@@ -18,6 +19,7 @@ from backend.kube.monitor import CheckBusy, KubeMonitor, get_monitor
 from backend.kube.settings import KubeSettingsError, classify_namespace, settings_view
 from backend.kube.store import KubeServices, get_services
 
+log = structlog.get_logger(__name__)
 router = APIRouter(prefix="/api/kube", tags=["kube"])
 Claims = Annotated[dict[str, Any], Depends(current_access)]
 MAX_BODY = 64 * 1024
@@ -91,6 +93,8 @@ async def status(request: Request, claims: Claims) -> dict[str, Any]:
     latest = await svc.reports.latest("snapshot")
     snap = (latest or {}).get("data") or {}
     return {
+        "settings_log": [{"at": _iso(r["created_at"]), **r["data"]}
+                         for r in await svc.reports.recent("settings", 10)],
         "coverage": snap.get("coverage"),
         "coverage_at": _iso((latest or {}).get("created_at")),
         "settings": settings_view(settings),
@@ -126,10 +130,18 @@ async def latest_waste(request: Request, claims: Claims) -> dict[str, Any]:
 async def put_settings(request: Request, claims: Claims) -> dict[str, Any]:
     actor = _actor(claims)
     body = await _body(request)
+    svc = _svc(request)
     try:
-        return settings_view(await _svc(request).settings.update(body, actor))
+        before = await svc.settings.get()
+        after = await svc.settings.update(body, actor)
     except KubeSettingsError as exc:
         raise _bad(exc) from None
+    changes = {k: {"from": before.get(k), "to": after.get(k)} for k in body
+               if before.get(k) != after.get(k)}
+    if changes:  # who changed what, kept with the reports and shown on /kube
+        log.info("kube.settings_changed", actor=actor, fields=sorted(changes))
+        await svc.reports.add("settings", {"actor": actor, "changes": changes})
+    return settings_view(after)
 
 
 @router.post("/check")

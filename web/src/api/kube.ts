@@ -33,6 +33,12 @@ export interface KubeIssue {
 export interface KubeSettings {
   protected_namespaces: string[]
   known_down: string[]
+  /** namespaces on the lists whose switch is OFF: checked like any other namespace */
+  known_down_off?: string[]
+  protected_off?: string[]
+  check_enabled?: boolean
+  waste_enabled?: boolean
+  auto_agent_enabled?: boolean
   override_hours: number
   retention_daily: number
   retention_weekly: number
@@ -54,7 +60,14 @@ export interface KubeCoverage {
   cluster_unreadable: string[]
 }
 
+export interface KubeSettingsLogEntry {
+  at: string | null
+  actor: string
+  changes: Record<string, { from: unknown; to: unknown }>
+}
+
 export interface KubeStatus {
+  settings_log?: KubeSettingsLogEntry[]
   coverage?: KubeCoverage | null
   coverage_at?: string | null
   settings: KubeSettings
