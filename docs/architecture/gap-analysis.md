@@ -1,5 +1,13 @@
 # NerveCenter — Gap Analysis (NC-SPEC-2026-010, C0 deliverable)
 
+> **Historical baseline.** This document records the C0 snapshot from 2026-10-10
+> (with the explicit reconciliation dated 2026-10-11). It is not a live status
+> report. For current capability status, use
+> [`current-state.md`](current-state.md) and
+> [`docs/implementation-status.yaml`](../implementation-status.yaml). In
+> particular, the historical rows describing attention, personal operations,
+> web surfaces, and PDP wiring are superseded by those current records.
+
 **Owner:** worker C0-D1b · **Scope:** single-file deliverable; sibling `docs/architecture/current-state.md` referenced by filename only (not read).
 **Evidence basis:** in-repo verification at snapshot commit `5f7f791` (2026-10-10). Every `path:line` below was re-verified against this worktree. Where the task's evidence pack could not be confirmed, the item is marked **Unverified** (§4).
 

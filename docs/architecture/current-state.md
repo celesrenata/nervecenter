@@ -1,8 +1,26 @@
 # NerveCenter — Current State
 
+> **FROZEN SNAPSHOT.** This inventory was captured at the C0 baseline
+> (2026-10-10) and refreshed through 2026-11-09. It was **not** updated for the
+> ~150 commits that landed afterwards (NerveShield Phases 0-8, agent runner,
+> local-first inference policy, health/mental-health/finance planes, coding
+> handoffs, projects MCP + OpenAI tunnel, iMessage relay, ~40 additional backend
+> modules and web views). Its IMPLEMENTED / PARTIAL / ABSENT verdicts — and the
+> "Hard Defects" list — are historical and several are now stale (e.g. the
+> Apple/HealthKit gap was closed; the connector-registry dead imports are fixed;
+> the PDP is wired). For live status use
+> [`docs/implementation-status.yaml`](../implementation-status.yaml)
+> (recent_activity, 2026-11-16 block) and
+> [`.kiro/specs/nerve-shield/decisions.md`](../.kiro/specs/nerve-shield/decisions.md).
+
 **Spec:** NC-SPEC-2026-010 (AWS-like local cloud, C0 deliverable)
-**Date:** 2026-10-10
-**Baseline:** [docs/nervcenter-spec.md](docs/nervcenter-spec.md) (3,566 lines per `wc -l`)
+**Date:** 2026-11-09
+**Baseline:** [docs/nervcenter-spec.md](../nervcenter-spec.md) (line count varies as the specification evolves)
+
+> This inventory was originally captured at the 2026-10-10 C0 baseline and has
+> been refreshed with the 2026-10-26 and 2026-11-09 changes noted below. Entries
+> explicitly labeled historical are retained for auditability and are not current
+> capability claims.
 
 This document inventories what exists and works in this checkout, against the
 capability list in NC-SPEC-2026-010. Every claim cites `path:line` verified in
@@ -508,16 +526,15 @@ here for continuity; the machine-readable form of the same items lives in
   `com.celesrenata.NervePhone.watch.widgets` extension), declared in
   [`apple/Distribution/xcodegen/NerveWatch.xcodegen.yml`](../../apple/Distribution/xcodegen/NerveWatch.xcodegen.yml)
   and regenerated under `apple/Distribution/Generated/`.
-4. **Personal surface plane: data lift landed, surfaces still open (E2).**
+4. **Personal surface plane: data lift and phone reorg landed (updated 2026-10-26).**
   The 2026-10-18 lift makes `NervePhone` render real server data on load
   (`PhoneDataStore.fetchNow`; `--nerve-server` test override; App Group
-  `cached-state.json` verified with live values). See
-  [`docs/apple-data-lift-2026-10-18.md`](../../docs/apple-data-lift-2026-10-18.md).
-  **Still open:** the Personal Operations Plane surfaces
-  (Today/Inbox/People/Waiting/Briefing) and the `Today | Engineering | Ask`
-  reorg — `apple/iOS/App/Views` currently ships only
-  Overview/Agents/Goals/Incidents/Systems/Ask, so capability 11 remains
-  unimplemented as of this baseline.
+  `cached-state.json` verified with live values). The later 2026-10-26 update
+  added Today/Inbox/People/Waiting/Briefing and the `Today | Engineering | Ask`
+  tab reorg, plus the theme picker. See
+  [`docs/apple-data-lift-2026-10-18.md`](../apple-data-lift-2026-10-18.md).
+  The Watch attention surface and paired phone/watch display verification remain
+  open; HealthKit/PhotoKit integration remains absent.
 5. **Commit-hygiene norm seconded (E5).** The two-clause commit-hygiene norm
   from gaps2 §7 Q6 (a generated project and its patcher ship together; a
   backend import-chain commit is verified by a fresh-worktree import) is now

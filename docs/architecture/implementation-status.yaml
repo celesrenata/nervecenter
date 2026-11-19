@@ -1,6 +1,11 @@
 # Machine-readable implementation status for NerveCenter.
 # Required by NC-SPEC-2026-010 C0.
 #
+# HISTORICAL SNAPSHOT: generated 2026-10-11 from a pre-personal-operations
+# checkout. It is retained for audit provenance, not as the live status source.
+# Consult docs/architecture/current-state.md and docs/implementation-status.yaml
+# for current implementation claims.
+#
 # NOTE ON PROVENANCE: this worker's snapshot (commit 9270242) does NOT contain
 # docs/architecture/ (gap-analysis.md, current-state.md, dependency-dag.md,
 # file-ownership-map.md), specs/nervecenter-aws-platform/{spec,plan,tasks}.md,

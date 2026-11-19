@@ -31,9 +31,9 @@ data:
             }
           },
           "models": {
-            "secure/coder": {"name": "Secure coder (local vllm qwen3.8-27b, no memory)"},
-            "secure/planner": {"name": "Secure planner (local llama-cpp deepseek-v41, no memory)"},
-            "secure/reader": {"name": "Secure reader (local vllm granite-4.2-8b, no memory)"}
+            "secure/coder": {"name": "Secure coder (local vllm qwen3.8-27b, no memory)", "limit": {"context": 262144, "output": 32768}},
+            "secure/planner": {"name": "Secure planner (local llama-cpp deepseek-v41, no memory)", "limit": {"context": 131072, "output": 32768}},
+            "secure/reader": {"name": "Secure reader (local vllm granite-4.2-8b, no memory)", "limit": {"context": 147456, "output": 16384}}
           }
         }
       },

@@ -10,7 +10,7 @@
 #   deferred   - consciously postponed
 
 version: 1
-updated: "2026-10-26"
+updated: "2026-11-16"
 spec_section: 95
 
 workstreams:
@@ -314,6 +314,153 @@ summary:
     - ruff line-length violations in existing code
 
 recent_activity:
+  - date: "2026-11-16"
+    summary: >
+      Post-baseline refresh. The tree moved ~150 commits since the 2026-11-09
+      doc update. This block records the material deltas: NerveShield (mail
+      security) shipped through Phase 8, an agent runner with cadence/SkillHub,
+      the local-first inference policy, the health/mental-health/finance planes,
+      coding handoffs, the restricted OpenAI projects MCP + tunnel, and the
+      durable iMessage relay. Test baselines were re-verified live on 2026-11-16.
+      The 2026-11-09 entry below is retained as a frozen snapshot.
+    items:
+      - id: nerve-shield-phases
+        title: "NerveShield mail security: Phases 0-8 (Gates G0-G8) implemented"
+        detail: >
+          backend/mail_security (49 modules) implements the zero-trust mail
+          plane specified in .kiro/specs/nerve-shield/ (requirements, design,
+          threat-model, schemas, tasks, 110 NS-ADRs in decisions.md). Live:
+          shadow-mode assessments on both Gmail accounts, authentication-evidence
+          (SPF/DKIM/DMARC/ARC) with topmost Authentication-Results trust boundary
+          (NS-ADR-070), bounded MIME parser, static deep inspection sidecar
+          (pikepdf/defusedxml, Dockerfile.inspector, NS-ADR-086/087), ClamAV
+          attachment scanning (clamd sidecar + freshclam pod, NS-ADR-065), SHADOW
+          Granite semantic observer (compact@2 contract, NS-ADR-073/080), SHADOW
+          thread-ledger and campaign + expectedness analytics (NS-ADR-067/069/075),
+          review queue + safety card + reviewer feedback + ops dashboard,
+          encrypted NFS object store (AES-256-GCM, NS-ADR-062), full Gmail raw
+          capture (NS-ADR-064/071). REVIEW_GATED promotion canary ON for both
+          accounts (NS-ADR-060/061); SHADOW invariants hold (SAFE_TO_PROCESS 0,
+          INDEPENDENT 0). G7 owner decision: keep canary on, no ML model
+          activation, payments/sending/disclosure locked (NS-ADR-061). G8 STOP
+          gates: SMTP ingress and detonation closed/deferred (NS-ADR-081/082/088).
+        evidence:
+          - File: ".kiro/specs/nerve-shield/decisions.md (NS-ADR-013 .. NS-ADR-110)"
+          - File: ".kiro/specs/nerve-shield/evidence/ (per-phase gate evidence)"
+          - Command: "ls backend/mail_security/ | wc -l"
+            Result: "49 module files"
+      - id: agent-runner
+        title: "Agent runner: cadence, back-off, Skill Hub, delete (commit 804b4bff)"
+        detail: >
+          backend/agents/runner/ (runner, store, backoff, skillhub) adds a durable
+          scheduled-agent runtime on top of the 14 native agent types already in
+          backend/agents/registry.py. Skill Hub reuses the OmniRoute key when no
+          dedicated key is set (NS-ADR-110, e092f840/8b9f2ff1).
+        evidence:
+          - File: "backend/agents/runner/ (runner.py, store.py, backoff.py, skillhub.py)"
+      - id: local-first-inference
+        title: "Local-first inference policy + OpenAI limiter (NS-ADR-107, 0dd50c18/8d82ff72/93e2f091)"
+        detail: >
+          LocalFirstTransport swaps non-local routes for NERVE_LOCAL_MODEL (default
+          local/any) on the agent runner, researcher, and ask pipelines. OpenAI is
+          reached only for owner_requested / high_stakes / local_failed (N=2) /
+          capability_required, behind OpenAILimiter (concurrency 1, 20 s spacing,
+          hourly/daily caps, Retry-After backoff; durable openai_calls ledger,
+          migration 033; owner grants via escalation_grants). GET /api/model-policy
+          + Projects "Model use" panel. Secure no-memory OmniRoute calls for all
+          personal data (8d82ff72); per-route capacity and tenacity retries
+          (93e2f091).
+        evidence:
+          - File: "backend/inference/ (local_first.py, openai_limiter.py, escalation.py, secure_client.py)"
+          - File: "GET /api/model-policy (backend/api/endpoints/model_policy.py)"
+      - id: health-wellness-mental-health-finance
+        title: "Health/mental-health/finance/wellness/routines planes (NS-ADR-100/101/102 + P2)"
+        detail: >
+          Apple Health bridge (804b4bff, backend/health; iPhone HealthKitReader +
+          HealthSyncService, auto-signing 9f3d246a so profiles get HealthKit +
+          App Groups), daily PHQ-9/GAD-7 with trends + correlations (c491abbf,
+          backend/mental_health), read-only financial helper — debt payoff,
+          statement imports, reminders (480ce99f, backend/finance), bills incl.
+          mail-to-bill candidate gate (47e5ec75/NS-ADR-095), unified obligations
+          plane, wellness journal (mood/sleep), and durable routines.
+        evidence:
+          - File: "backend/{health,mental_health,finance,bills,obligations,wellness,routines}/"
+          - File: "apple/iOS/App/Health/ (HealthKitReader.swift, HealthSyncService.swift)"
+      - id: coding-handoffs
+        title: "Coding handoffs: central opencode + Mac agent (NS-ADR-104/106/109)"
+        detail: >
+          backend/handoffs + MCP tool enqueue_coding_handoff route approved coding
+          work to the central opencode server (docs/central-opencode/) and the Mac
+          agent (apple/HandoffAgent, SSO-free device claim/result endpoints,
+          NS-ADR-109). Approved Mac handoff route + per-route capacity/retries
+          (93e2f091).
+        evidence:
+          - File: "backend/handoffs/, docs/central-opencode/, apple/HandoffAgent/"
+      - id: projects-openai-mcp-tunnel
+        title: "Projects context store, OpenAI engine, restricted MCP, secure tunnel (1e1031e8, NS-ADR-104/105)"
+        detail: >
+          backend/projects: durable project contexts + append-only notes (source
+          of truth; ChatGPT Projects not readable via API). POST /api/projects/{slug}/ask
+          sends project context to OpenAI. Restricted MCP endpoint /api/mcp/projects
+          (bearer tokens + optional OIDC; 64 KiB body; 5 req/s per client; audited
+          without content). OpenAI Secure MCP Tunnel: tunnel-client pod
+          (outbound-only, digest-pinned) forwards to the in-cluster api and
+          re-injects the mcp_token (b30c1e00). No public route.
+        evidence:
+          - File: "backend/projects/mcp_server.py, deployments/kubernetes/base/tunnel-client.yaml"
+          - File: "docs/project-context.md"
+      - id: relay
+        title: "Durable iMessage relay (NS-ADR-091/092/093/094, 842be5be/f141546e/a5cc54f4)"
+        detail: >
+          apple/Relay: macOS daemon tails ~/Library/Messages/chat.db read-only and
+          forwards normalized messages to NerveCenter. Durable bodies in the
+          encrypted object store (content://relay/...), fail-closed on store
+          errors. One SSO-free path: POST /api/relay/messages (relay-ingress.yaml,
+          NS-ADR-092). FaceTime voicemail read-only probe (a5cc54f4).
+        evidence:
+          - File: "apple/Relay/ (INSTALL.md, Core/), backend/api/endpoints/relay.py"
+      - id: test-baselines-2026-11-16
+        title: "Test baselines re-verified live on 2026-11-16"
+        detail: >
+          Python non-integration collection is 9,060 tests (was 7,527 on
+          2026-11-09; the suite grew ~20% with NerveShield, agent runner,
+          health/wellness/mental-health/finance, and inference-policy tests).
+          Full run on 2026-11-16: **9,056 passed, 1 failed, 3 skipped, 12
+          deselected** (166 s). The single failure is the pre-existing
+          tests/backend/test_routines.py::TestWellnessSleepSeam::
+          test_returns_iso_records_with_source, red since the 2026-11-09
+          baseline; it keeps the CI "no failures" gate red.
+          Apple suite is now 147 (NerveSharedTests 13 / NerveRelayTests 100 /
+          NerveAppsTests 34, 0 failures) — up from 110 on 2026-10-26; the script
+          asserts the per-bundle counts. Web e2e is 122 passed across 29 spec
+          files (was a 60-test baseline). CI floors updated to match (python
+          >= 9000, web >= 100, apple exactly 147).
+        evidence:
+          - Command: ".venv/bin/pytest tests/ -m 'not integration' -q"
+            Result: "9056 passed, 1 failed, 3 skipped, 12 deselected (166.84s)"
+          - Command: "bash apple/scripts/test-apple.sh"
+            Result: "PASS 147 tests (13/100/34), 0 failures"
+          - Command: "cd web && npm ci && npm run build && npx playwright test"
+            Result: "122 passed (1.1m), 0 failed"
+          - File: "web/tests/e2e/ (29 spec files)"
+      - id: docs-refresh-2026-11-16
+        title: "README + CI refreshed to current tree"
+        detail: >
+          README layout/backend-module tables now reflect the 41-module backend
+          (was 15), 63 API routers, ~40 web views, the apple/Relay +
+          apple/HandoffAgent packages, inspector/, .kiro/specs/, and tools/.
+          CI count floors raised to match the 2026-11-16 live verification
+          (python >= 9000, web >= 100, apple exactly 147).
+          docs/architecture/current-state.md is explicitly frozen at the C0
+          (2026-10-10) baseline; treat its IMPLEMENTED/PARTIAL/ABSENT verdicts
+          as historical, not current.
+    open_boundaries:
+      - "GET /api/commitments still not shipped (MCP get_commitments catalogs it as a contract blocker)."
+      - "Nerve-Trace-Id is sent by mcp/api.py and cli/client.py but still has 0 readers in backend/api/ (correlation dropped at the API boundary)."
+      - "NERVE_OMNIROUTE_URL remains a dead reference in compose + K8s secrets (no OmniRoute service manifest); inference now reaches OmniRoute via the registry/HttpRegistryTransport path instead."
+      - "Legacy no-op PermissionEnforcer scaffold (backend/policy/permissions.py) still re-exported; the live decision point is PolicyDecisionPoint."
+      - "agents/ top-level dir is a placeholder (.gitkeep); live manifests are in backend/agents/."
+
   - date: "2026-10-19"
     summary: >
       Phase 5 hygiene closeout (gaps4 §6 E1-E5) + Apple test-truth
@@ -387,6 +534,25 @@ recent_activity:
           pytest tests/ -m "not integration" -q -> 601 passed, 0 failed
           (2026-10-19). The wave-1 "9 tests" figure in summary.pytest_count
           is the wave-1 baseline only.
+  - date: "2026-11-09"
+    summary: >
+      Documentation refresh: reconciled current personal-plane status, marked
+      historical C0 architecture snapshots explicitly, and recorded the latest
+      local Python verification as non-green (one failing test).
+    items:
+      - id: docs-refresh-2026-11-09
+        title: Documentation status and test evidence refreshed
+        detail: >
+          README, current-state, gap-analysis, and the target specifications now
+          distinguish live status from historical snapshots. The latest local
+          non-integration collection/run reported 7,524 passed, 1 failed, 2
+          skipped, and 7 deselected; the failure is
+          tests/backend/test_routines.py::TestWellnessSleepSeam::test_returns_iso_records_with_source.
+        evidence:
+          - Command: ".venv/bin/pytest -m 'not integration'"
+            Result: "7524 passed, 1 failed, 2 skipped, 7 deselected"
+          - File: "README.md"
+
   - date: "2026-10-26"
     summary: >
       T007 (G-4.3) documentation refresh + gaps4 closeout items. The

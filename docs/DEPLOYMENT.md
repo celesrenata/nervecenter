@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document provides a comprehensive guide for deploying NerveCenter to a Kubernetes cluster. The deployment consists of several components: PostgreSQL with pgvector, NATS server, API service, MCP server, and web UI.
+This document provides a comprehensive guide for deploying NerveCenter to a Kubernetes cluster. The deployment consists of several components: PostgreSQL with pgvector, NATS server, API service (with the NerveShield clamd sidecar and static-inspection socket), MCP server, web UI, the object store (encrypted NFS `file://` backend, see §7a), and the OpenAI Secure MCP Tunnel client (optional; needs the owner's `nervecenter-openai-tunnel` Secret). The api pod also carries the NerveShield mail-security plane behind `NERVE_MAIL_SECURITY_ENABLED` (default OFF).
 
 ## Prerequisites
 
@@ -91,11 +91,37 @@ Apply the migration job:
 kubectl apply -f deployments/kubernetes/base/migrate-job.yaml
 ```
 
-### 7. Bootstrap Object Store (MinIO, §14)
+### 7. Object Store (§14)
 
-The api plane writes artifacts to the MinIO object store. Before the API
-rolls, confirm the bucket exists **and is usable**. The
-`nervecenter-object-store-bootstrap` Job does two things, in order:
+> **Superseded / verify before use.** The live object store moved from in-cluster
+> MinIO (S3) to an **encrypted NFS `file://` backend** — AES-256-GCM per object,
+> key in the out-of-band `nervecenter-object-key` Secret, PV/PVC at
+> `deployments/kubernetes/base/object-store-nfs.yaml` (NFS server
+> `192.168.42.8`, `/volume1/Kubernetes/NerveCenter/objects`, 0700/0600), mounted
+> in the api pod at `/data/objects` (NS-ADR-062). Both the NFS PV/PVC and the
+> legacy MinIO `object-store-bootstrap.yaml` Job are currently in the
+> kustomization. **Confirm with the owner which backend is active in the target
+> cluster before following either set of steps below.** The encrypted key must
+> be backed up out-of-band; losing it makes stored mail unreadable.
+
+#### 7a. Encrypted NFS backend (current, NS-ADR-062)
+
+Apply the NFS PersistentVolume + PVC, and ensure the out-of-band
+`nervecenter-object-key` Secret (the AES-256-GCM key, kid e.g. `k20261112`) and
+the `NERVECENTER_OBJECT_STORE_*` `file://` URL are in `nervecenter-env`:
+
+```bash
+kubectl apply -f deployments/kubernetes/base/object-store-nfs.yaml
+```
+
+On first deploy, copy any pre-existing objects from the old MinIO bucket
+(read-back verified) before deleting the old bucket — the owner approved
+deleting the old MinIO copies only after verification.
+
+#### 7b. Legacy MinIO bootstrap (historical)
+
+The api plane previously wrote artifacts to the in-cluster MinIO object store.
+The `nervecenter-object-store-bootstrap` Job does two things, in order:
 
 1. **Creates the bucket** with `mc mb --ignore-existing` (idempotent —
    re-run on every upgrade, like the migrate Job). It reads the same
@@ -190,6 +216,39 @@ Apply the web deployment and service:
 kubectl apply -f deployments/kubernetes/base/web-deployment.yaml
 kubectl apply -f deployments/kubernetes/base/web-service.yaml
 ```
+
+### 10b. Apply Namespace Hardening + Relay Ingress (NerveShield / relay)
+
+Apply the default-deny namespace NetworkPolicy with exact flows (NS-ADR-083)
+and the SSO-free Messages relay route (NS-ADR-092):
+
+```bash
+kubectl apply -f deployments/kubernetes/base/networkpolicy.yaml
+kubectl apply -f deployments/kubernetes/base/relay-ingress.yaml
+```
+
+The NetworkPolicy is default-deny ingress for the whole `nervecenter`
+namespace with exact per-service flows; apply it before the workload so
+traffic is never briefly wide open. The relay ingress exposes
+`POST /api/relay/messages` for the Mac iMessage relay daemon without SSO.
+
+### 10c. OpenAI Secure MCP Tunnel client (optional)
+
+Apply the tunnel-client pod **only** once the owner has created the
+`nervecenter-openai-tunnel` Secret (keys `runtime_api_key` + `mcp_token`).
+Until then the pod stays `CreateContainerConfigError` and nothing else is
+affected (NS-ADR-105):
+
+```bash
+kubectl apply -f deployments/kubernetes/base/tunnel-client.yaml
+kubectl -n nervecenter logs deploy/tunnel-client
+# /readyz on port 8080 must report ready
+```
+
+It makes only outbound HTTPS calls to OpenAI and forwards MCP requests to
+`http://api.nervecenter.svc.cluster.local:8000/api/mcp/projects`, re-injecting
+the bearer `mcp_token`. Its egress NetworkPolicy allows DNS + the api pod on
+8000 + TCP 443 to non-private addresses only.
 
 ### 11. Set Up SSO
 
