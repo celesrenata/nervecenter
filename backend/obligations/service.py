@@ -353,7 +353,7 @@ class ObligationsService:
             registry is not None
             and row.status not in ("done", "dismissed")
             and row.due_at is not None
-            and (row.due_at - datetime.now(UTC)) <= timedelta(days=COMING_UP_WINDOW_DAYS)
+            and (_ensure_utc(row.due_at) - datetime.now(UTC)) <= timedelta(days=COMING_UP_WINDOW_DAYS)
         ):
             await self._mirror_attention(row, registry)
         return out
