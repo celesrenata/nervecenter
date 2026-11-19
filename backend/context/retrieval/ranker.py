@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from backend.context.retrieval.intent import Intent, _stem
+from backend.context.retrieval.intent import AGGREGATE, DOMAIN_LIST, OVERVIEW, Intent, _stem
 from backend.context.retrieval.types import Record
 
 MAX_RECORDS = 12
@@ -47,12 +47,23 @@ def score_record(record: Record, intent: Intent, now: datetime) -> float:
         in_window = start <= ts < end  # type: ignore[operator]
         if in_window:
             score += 2.0
-    if intent.has_terms:
+    # Aggregate, domain-list and overview records are selected by domain (or by
+    # aggregate.py), not by keyword hit, so they bypass the keyword gate.
+    selected_by_domain = intent.kind in (AGGREGATE, DOMAIN_LIST, OVERVIEW)
+    if intent.has_terms and not selected_by_domain:
         if hits == 0:
-            return 0.0
+            # An in-window calendar event in a calendar-domain windowed question stays a weak
+            # candidate: the window and domain select it, not a filler word or an attendee-only name.
+            if not (in_window and record.domain == "calendar" and "calendar" in intent.domain_hints):
+                return 0.0
+            score += 0.25
+    elif selected_by_domain and hits > 0:
+        pass  # matched terms still count
     elif intent.window is not None:
-        if not in_window:
+        if not in_window and not (selected_by_domain and record.domain in intent.domain_hints):
             return 0.0
+        if not in_window:
+            score = 0.5
     elif record.domain in intent.domain_hints:
         score = 0.5  # "my voicemails": list the recent ones
     else:

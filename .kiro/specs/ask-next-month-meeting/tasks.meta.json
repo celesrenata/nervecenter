@@ -1,0 +1,303 @@
+{
+  "pbtResults": {
+    "1. Write bug condition exploration test": {
+      "status": "passed",
+      "failingExample": "score_record(Standup, \"do I have anything planned next month?\") == 0.0; score_record(\"Quarterly review\", \"when is my meeting with Bob next month?\") == 0.0; score_record(\"Dr. Lee 3pm\", \"what's my dentist appointment next month?\") == 0.0; parse_intent(\"when do i next see pam?\").domain_hints == frozenset(); adapter snippet lacks bob@example.com",
+      "lastRunTimestamp": 1795027178516
+    },
+    "3.2 Verify bug condition exploration test now passes": {
+      "status": "passed",
+      "lastRunTimestamp": 1795027384754
+    },
+    "5. Write bug condition exploration test for the unrelated-event fallback (defect A)": {
+      "status": "passed",
+      "lastRunTimestamp": 1795030648403
+    },
+    "8. Write preservation property tests for the follow-up round (BEFORE implementing fix)": {
+      "status": "passed",
+      "lastRunTimestamp": 1795030989917
+    },
+    "9.4 Verify bug condition exploration tests now pass": {
+      "status": "passed",
+      "lastRunTimestamp": 1795031342249
+    }
+  },
+  "executionHistory": {
+    "1. Write bug condition exploration test": [
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027101582
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027103922
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027190298
+      }
+    ],
+    "2. Write preservation property tests (BEFORE implementing fix)": [
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027101640
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027192779
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027288877
+      }
+    ],
+    "3.1 Implement the fix": [
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027101700
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027291447
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027372460
+      }
+    ],
+    "3.2 Verify bug condition exploration test now passes": [
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027101740
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027374939
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027389978
+      }
+    ],
+    "3.3 Verify preservation tests still pass": [
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027101787
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027392383
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027544094
+      }
+    ],
+    "4. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027101819
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027546591
+      },
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027587140
+      }
+    ],
+    "3. Fix for next-month meeting not found in Ask": [
+      {
+        "executionId": "dde9a104-8593-4478-9909-c2f6dfa2a230",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795027544171
+      }
+    ],
+    "5. Write bug condition exploration test for the unrelated-event fallback (defect A)": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595536
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030599125
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030785965
+      }
+    ],
+    "6. Write bug condition exploration test for the computed date mismatch (defect B)": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595561
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030790281
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030848714
+      }
+    ],
+    "7. Write bug condition exploration test for the briefing failure notice (defect C)": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595591
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030852480
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030921352
+      }
+    ],
+    "8. Write preservation property tests for the follow-up round (BEFORE implementing fix)": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595612
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030925558
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030999783
+      }
+    ],
+    "9.1 Fix defect A: no unrelated event as the answer": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595632
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031003634
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031092014
+      }
+    ],
+    "9.2 Fix defect B: user-timezone dates in computed answers": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595652
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031095134
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031179070
+      }
+    ],
+    "9.3 Fix defect C: briefing adapter and notice": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595686
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031183766
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031323196
+      }
+    ],
+    "9.4 Verify bug condition exploration tests now pass": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595706
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031326969
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031348957
+      }
+    ],
+    "9.5 Verify preservation tests still pass": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595725
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031352894
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031379569
+      }
+    ],
+    "9.6 Verify end to end after deploy": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595746
+      }
+    ],
+    "10. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795030595765
+      }
+    ]
+  }
+}

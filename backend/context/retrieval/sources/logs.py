@@ -16,6 +16,8 @@ async def logs(state: Any, intent: Intent, limit: int, *, es_transport: Any = No
     if not intent.wants_logs or not os.environ.get(ES_URL_ENV, "").strip():
         return None
     terms = [t for t in intent.search_terms if t.isalnum()]
+    if not terms:  # "any recent errors?": only log words, so search for them
+        terms = [w for w in ("error", "crash", "fail") if w in intent.question.lower()]
     if not terms:
         return None
     app = type("App", (), {"state": state})()

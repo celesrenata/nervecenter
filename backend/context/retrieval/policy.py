@@ -32,6 +32,13 @@ DOMAINS: dict[str, tuple[str, str, str]] = {
     "bills": ("bill", "bills", "/bills"),
     "wellness": ("well", "personal", "/wellness"),
     "logs": ("log", "personal", "/logs"),
+    "finance": ("fin", "bills", "/finance"),
+    "obligations": ("obl", "personal", "/waiting-on"),
+    "knowledge": ("know", "notes", "/projects"),
+    "health": ("hlth", "personal", "/health"),
+    "routines": ("rtn", "personal", "/routines"),
+    "briefing": ("brf", "personal", "/briefing"),
+    "status": ("stat", "evidence", "/systems"),
 }
 
 #: Stores Ask never reads (owner decision). No adapter may be registered for these.
@@ -50,7 +57,7 @@ EXCLUDED_STORES: tuple[str, ...] = (
     "infra_connectors", "agent_runtime", "app_logs", "object_store", "raw_mime",
     # mental-health forms: answers stay out (owner answer A)
     "mh_forms", "mental_health",
-    # finance ledger lines stay out; summaries only (none yet)
+    # finance ledger lines stay out; summaries only (the finance adapter reads accounts and monthly spend, never ledger lines)
     "finance_ledger",
 )
 

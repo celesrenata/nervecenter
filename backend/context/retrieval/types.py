@@ -33,3 +33,20 @@ class Record:
             "snippet": self.snippet,
             "link": self.link,
         }
+
+
+@dataclass(frozen=True)
+class SearchDetail:
+    """What one domain contributed to a retrieval (``RetrievalResult.searched_detail``)."""
+
+    domain: str
+    #: ``searched``, ``unavailable`` (service absent) or ``skipped`` (raised or timed out)
+    state: str = "searched"
+    #: rows the adapter returned
+    rows_read: int = 0
+    #: records from this domain left in the model-visible evidence
+    rows_shown: int = 0
+    #: the adapter hit the hard safety cap, so ``rows_read`` is a lower bound
+    capped: bool = False
+    #: the adapter was run through its structured entry point
+    structured: bool = False

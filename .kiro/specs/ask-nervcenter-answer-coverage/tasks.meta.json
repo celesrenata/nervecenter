@@ -1,0 +1,437 @@
+{
+  "pbtResults": {},
+  "executionHistory": {
+    "1. Write bug condition exploration test": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013142886
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013147580
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013321396
+      }
+    ],
+    "2. Write preservation property tests (BEFORE implementing fix)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143018
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013323482
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014355714
+      }
+    ],
+    "3.1 Add operator, kind, and filters to intent parsing": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143067
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014358005
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014509615
+      }
+    ],
+    "3.2 Skip the keyword gate for non-lookup kinds in the ranker": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143095
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014511948
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014548735
+      }
+    ],
+    "3.3 Add the aggregation module": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143147
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014551001
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014673980
+      }
+    ],
+    "3.4 Extend retrieval types and service": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143179
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014676556
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014802471
+      }
+    ],
+    "3.5 Widen the bills adapter (C1)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143206
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014805015
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014889223
+      }
+    ],
+    "3.6 Add finance adapter (C1)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143236
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014892345
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014978896
+      }
+    ],
+    "3.7 Add obligations adapter (C6)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143264
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795014981229
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015052290
+      }
+    ],
+    "3.8 Add knowledge adapter (C7)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143293
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015054633
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015150992
+      }
+    ],
+    "3.9 Add health adapter (C8)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143319
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015153042
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015256264
+      }
+    ],
+    "3.10 Add routines adapter (C8)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143346
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015258563
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015311606
+      }
+    ],
+    "3.11 Add briefing adapter (C10)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143373
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015318260
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015363102
+      }
+    ],
+    "3.12 Add status adapter (C9)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143407
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015365660
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015464469
+      }
+    ],
+    "3.13 Register new domains and adapters": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143449
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015469674
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015607964
+      }
+    ],
+    "3.14 Widen the mail adapter (C2)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143490
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015610016
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015734699
+      }
+    ],
+    "3.15 Check calendar, messages, people, tasks adapters for operator support (C3, C4, C5, C6)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143523
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015737483
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015904178
+      }
+    ],
+    "3.16 Change answer wording and empty results": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143553
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795015906775
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795016255806
+      }
+    ],
+    "3.17 Add follow-up resolution": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143580
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795016258219
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795016441958
+      }
+    ],
+    "3.18 Write unit tests for the new components": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143613
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795016444539
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795016732963
+      }
+    ],
+    "3.19 Write per-category tests C1 to C12": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143645
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795016735790
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017380820
+      }
+    ],
+    "3.20 Write property-based and integration tests": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143671
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017384160
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017867875
+      }
+    ],
+    "3.21 Verify bug condition exploration test now passes": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143705
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017874489
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017944872
+      }
+    ],
+    "3.22 Verify preservation tests still pass": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143737
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017947832
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017982636
+      }
+    ],
+    "4. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795013143763
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017985196
+      },
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795018631373
+      }
+    ],
+    "3. Fix for Ask answer coverage (operators, aggregation, adapters, limits, wording, follow-ups)": [
+      {
+        "executionId": "227d8313-88e2-4c8b-b532-c85536fcab57",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795017982680
+      }
+    ]
+  }
+}

@@ -159,12 +159,43 @@ async def _retrieval(
     if body.context is not None and body.context.fixture_refs:
         return None
     try:
+        history = await _history(request, body.session_id)
         return await asyncio.wait_for(
-            retrieve(request.app.state, question), RETRIEVAL_TIMEOUT_S
+            retrieve(request.app.state, question, history=history), RETRIEVAL_TIMEOUT_S
         )
     except Exception as exc:  # noqa: BLE001 - Ask still answers, without records
         log.warning("ask.retrieval_failed", error=type(exc).__name__)
         return None
+
+
+HISTORY_TURNS = 4
+
+
+async def _history(request: Request, session_id: str | None) -> list[dict[str, Any]]:
+    """The last few turns of the caller's saved Ask session (existing store, no new storage).
+    Only role, text and cited record ids are kept. Missing account, session or store: standalone."""
+    if not session_id:
+        return []
+    try:
+        from backend.api.endpoints.ask_sessions import _key, _repo
+
+        raw = await _repo(request).get_preference(_key(request))
+    except Exception:  # noqa: BLE001 - no history is the same as a standalone question
+        return []
+    sessions = raw.get("sessions") if isinstance(raw, dict) else None
+    for saved in sessions or []:
+        if isinstance(saved, dict) and saved.get("id") == session_id:
+            messages = [m for m in saved.get("messages") or [] if isinstance(m, dict)]
+            return [
+                {
+                    "role": m.get("role"),
+                    "content": str(m.get("content") or "")[:2000],
+                    "citations": m.get("citations") or [],
+                    "records": m.get("records") or [],
+                }
+                for m in messages[-HISTORY_TURNS:]
+            ]
+    return []
 
 
 def _sse(event: str, data: dict[str, Any]) -> str:

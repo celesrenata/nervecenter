@@ -25,7 +25,7 @@ _LOOKUP_RE = re.compile(
 
 _DOMAIN_WORDS: dict[str, tuple[str, ...]] = {
     "calendar": ("calendar", "appointment", "appointments", "meeting", "meetings", "event",
-                 "events", "schedule", "scheduled", "agenda"),
+                 "events", "schedule", "scheduled", "agenda", "free", "busy"),
     "mail": ("email", "emails", "mail", "inbox", "thread"),
     "messages": ("text", "texts", "message", "messages", "imessage", "sms", "relay", "chat"),
     "voicemail": ("voicemail", "voicemails", "voice", "callback"),
@@ -36,11 +36,93 @@ _DOMAIN_WORDS: dict[str, tuple[str, ...]] = {
     "goals": ("goal", "goals"),
     "incidents": ("incident", "incidents", "outage"),
     "evidence": ("evidence", "record", "records"),
-    "bills": ("bill", "bills", "invoice", "invoices", "payment", "payments", "due", "owed"),
+    "bills": ("bill", "bills", "invoice", "invoices", "payment", "payments", "due", "owed", "pay", "paid"),
     "wellness": ("wellness", "mood", "sleep", "stress", "energy", "journal", "checkin", "check-in"),
+    "finance": ("spent", "spend", "spending", "expense", "expenses", "finance", "finances"),
+    "obligations": ("obligation", "obligations", "commitment", "commitments", "promised", "promise",
+                    "promises"),
+    "knowledge": ("note", "notes", "decision", "decisions", "document", "documents", "knowledge",
+                  "claim", "claims"),
+    "health": ("health", "sleep", "slept", "steps", "heartrate", "workout", "workouts", "mood", "energy"),
+    "routines": ("routine", "routines", "habit", "habits", "checkin", "check-in"),
+    "briefing": ("briefing", "digest", "summary", "summarize", "summarise", "overview"),
+    "security": ("security", "nervshield", "nerveshield", "quarantine", "quarantined", "held",
+                 "phishing", "malware", "threat", "threats"),
+    "systems": ("system", "systems", "server", "servers", "kubernetes", "k8s", "cluster", "infra",
+                "infrastructure"),
     "logs": ("log", "logs", "error", "errors", "crash", "crashed", "pod", "pods", "deploy",
              "deployment", "happened"),
 }
+
+#: multi-word phrases that name one or more domains
+_DOMAIN_PHRASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("what do i owe", ("finance", "obligations", "bills")),
+    ("what i owe", ("finance", "obligations", "bills")),
+    ("i owe", ("finance", "obligations", "bills")),
+    ("is anything wrong", ("incidents", "security", "systems")),
+    ("anything wrong", ("incidents", "security", "systems")),
+    ("what needs my attention", ("briefing",)),
+    ("need my attention", ("briefing",)),
+    ("need to know", ("briefing",)),
+    ("morning routine", ("routines",)),
+    ("evening routine", ("routines",)),
+    ("how did i sleep", ("health",)),
+    ("waiting on me", ("obligations",)),
+)
+#: hints served by the ``status`` adapter (security and system health have no domain of their own)
+_STATUS_HINTS = frozenset({"security", "systems"})
+
+#: question kinds
+LOOKUP, AGGREGATE, DOMAIN_LIST, OVERVIEW, CONVERSATIONAL, FOLLOWUP = (
+    "lookup", "aggregate", "domain_list", "overview", "conversational", "followup",
+)
+
+_NEXT_NOT_WINDOW = r"\bnext\b(?!\s+(?:week|month|year|\d|monday|tuesday|wednesday|thursday|friday|saturday|sunday))"
+_NUMBER_WORDS = {"three": 3, "five": 5, "ten": 10}
+#: ordered: the first matching row wins. (pattern, kind, field)
+_OPERATOR_TABLE: tuple[tuple[str, str, str | None], ...] = (
+    (r"\btop\s+(\d{1,3}|three|five|ten)\b", "top_n", "amount"),
+    (r"\bhighest[\s-]+priority\b|\bmost\s+important\b", "max", "priority"),
+    (r"\bmost\s+expensive\b|\bbiggest\b|\blargest\b|\bhighest\b|\bgreatest\b|\bpriciest\b", "max", "amount"),
+    (r"\bleast\s+expensive\b|\bcheapest\b|\bsmallest\b|\blowest\b", "min", "amount"),
+    (r"\boverdue\b|\bpast\s+due\b|\bbehind\b", "overdue", "due"),
+    (r"\bdue\s+(?:this\s+week|soon)\b|\bcoming\s+due\b", "due_soon", "due"),
+    (r"\baverage\b|\bavg\b|\bon\s+average\b", "avg", "amount"),
+    (r"\bhow\s+many\b|\bnumber\s+of\b|\bcount\b", "count", None),
+    (r"\bhow\s+much\b|\btotal\b", "sum", "amount"),
+    (r"\bearliest\b|\boldest\b", "earliest", "ts"),
+    (r"\blatest\b|\bmost\s+recent\b|\bnewest\b", "latest", "ts"),
+    (_NEXT_NOT_WINDOW, "next", "ts"),
+)
+_OPERATOR_RES = tuple((re.compile(p, re.IGNORECASE), k, f) for p, k, f in _OPERATOR_TABLE)
+#: stemmed operator words never count as match terms
+_OPERATOR_WORDS = frozenset("""
+biggest largest expensive highest cheapest smallest lowest priciest greatest average avg overdue
+earliest oldest latest newest soon top cheap pricey behind
+""".split())
+
+_CONVERSATIONAL_RE = re.compile(
+    r"^(?:hello|hi|hey|howdy|good (?:morning|afternoon|evening)|thanks|thank you|thanks a lot|"
+    r"thank you very much|help|help me|what can you do|what do you do|who are you|what are you|"
+    r"how can you help(?: me)?|what can i ask(?: you)?|how do you work)(?: there| nervcenter)?$"
+)
+_FOLLOWUP_STRONG_RE = re.compile(
+    r"\b(?:the one after(?: that)?|that one|this one|what about|and then|how about|"
+    r"when is it|when(?:'s| is) that|how much is it|who is it)\b"
+)
+_FOLLOWUP_WEAK_RE = re.compile(r"\b(?:it|them|that|those|they|its)\b")
+_FOLLOWUP_FILLER = frozenset({"one", "ones"})
+#: leftover words that carry no match meaning once a domain is known ("this" stems to "thi")
+_DOMAIN_FILLER = frozenset({"thi", "right", "wrong", "need", "people", "down"})
+_CALENDAR_VERBS = frozenset({"see", "meet", "visit"})
+_CALENDAR_VERB_RE = re.compile(r"\b(?:see|meet|visit)\b")
+#: "planned" stays a match keyword (ranks term hits first); it only adds the calendar hint
+_PLANNED_RE = re.compile(r"\bplanned\b|\bon my schedule\b")
+_STATUS_RE = (
+    (re.compile(r"\bunpaid\b|\bowe\b|\bowed\b|\boutstanding\b|\boverdue\b|\bpast due\b|\bdue\b"), "unpaid"),
+    (re.compile(r"\bpaid\b"), "paid"),
+)
+_PAYEE_RE = re.compile(r"\b(?:to|for|at)\s+(?:the\s+)?([A-Z][A-Za-z0-9&'\-]{2,}(?:\s+[A-Z][A-Za-z0-9&'\-]+)*)")
 
 _MONTHS = ("january", "february", "march", "april", "may", "june", "july", "august",
            "september", "october", "november", "december")
@@ -48,6 +130,17 @@ _WEEKDAYS = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday",
 _TOKEN = re.compile(r"[a-z0-9][a-z0-9_\-']*")
 _QUOTED = re.compile(r"[\"“‘]([^\"”’]{2,80})[\"”’]")
 _CAPITALISED = re.compile(r"(?<![.!?]\s)(?<!^)\b([A-Z][a-z]{2,})\b")
+
+
+@dataclass(frozen=True)
+class Operator:
+    """A selection or computation the question asks for ("biggest", "total", "overdue")."""
+
+    kind: str  # max, min, top_n, sum, count, avg, earliest, latest, next, overdue, due_soon, list
+    n: int | None = None
+    field: str | None = None  # amount, due, ts, priority
+    #: 0 = the best match; 1 = "the one after that" (single-selection operators only)
+    offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -63,6 +156,10 @@ class Intent:
     #: tokens the user typed that look like a record id ("evidence-0000")
     id_like: tuple[str, ...] = field(default=())
     now: datetime | None = None
+    operator: Operator | None = None
+    #: status, payee, name
+    filters: dict[str, str] = field(default_factory=dict, hash=False)
+    kind: str = LOOKUP
 
     @property
     def has_terms(self) -> bool:
@@ -79,6 +176,8 @@ def _stem(token: str) -> str:
         t = t[:-2]
     if len(t) > 4 and t.endswith("ies"):
         return t[:-3] + "y"
+    if len(t) > 4 and t.endswith("xes"):  # taxes -> tax, boxes -> box
+        return t[:-2]
     if len(t) > 3 and t.endswith("s") and not t.endswith("ss"):
         return t[:-1]
     return t
@@ -132,6 +231,58 @@ def parse_window(text: str, now: datetime) -> tuple[datetime, datetime] | None:
     return None
 
 
+def parse_operator(text: str) -> Operator | None:
+    for pattern, kind, fld in _OPERATOR_RES:
+        m = pattern.search(text)
+        if not m:
+            continue
+        n: int | None = None
+        if kind == "top_n":
+            raw = m.group(1).lower()
+            n = _NUMBER_WORDS.get(raw) or int(raw)
+        return Operator(kind=kind, n=n, field=fld)
+    return None
+
+
+def _filters(text: str, low: str, names: tuple[str, ...], operator: Operator | None) -> dict[str, str]:
+    out: dict[str, str] = {}
+    if operator is not None and operator.kind in ("overdue", "due_soon"):
+        out["status"] = "unpaid"
+    else:
+        for pattern, status in _STATUS_RE:
+            if pattern.search(low):
+                out["status"] = status
+                break
+    payee = _PAYEE_RE.search(text)
+    if payee:
+        out["payee"] = payee.group(1).strip().lower()
+    if names:
+        out["name"] = names[0]
+    return out
+
+
+def _classify(
+    low: str, tokens: list[str], keywords: list[str], names: tuple[str, ...], quoted: tuple[str, ...],
+    hints: frozenset[str], operator: Operator | None, has_window: bool,
+) -> str:
+    plain = re.sub(r"[^a-z0-9' ]+", " ", low)
+    plain = " ".join(plain.split())
+    if not hints and not names and _CONVERSATIONAL_RE.match(plain):
+        return CONVERSATIONAL
+    if operator is not None:
+        return AGGREGATE
+    leftover = [k for k in keywords if k not in _FOLLOWUP_FILLER]
+    if len(tokens) <= 8 and not names and not quoted and not leftover:
+        if _FOLLOWUP_STRONG_RE.search(low) or (not hints and _FOLLOWUP_WEAK_RE.search(low)):
+            return FOLLOWUP
+    if not keywords and not names and not quoted and hints:
+        if "briefing" in hints:
+            return OVERVIEW
+        if not has_window:
+            return DOMAIN_LIST
+    return LOOKUP
+
+
 def parse_intent(question: str, now: datetime) -> Intent:
     text = (question or "").strip()
     low = text.lower()
@@ -149,8 +300,10 @@ def parse_intent(question: str, now: datetime) -> Intent:
             continue
         if tok in names or tok in _MONTHS or tok in _WEEKDAYS:
             continue
+        if tok in _OPERATOR_WORDS:
+            continue
         if tok in ("today", "tomorrow", "yesterday", "tonight", "week", "month", "day", "hour", "year", "next", "last",
-                   "this", "future", "past", "upcoming", "recent", "recently", "latest"):
+                   "this", "future", "past", "upcoming", "recent", "recently", "latest", "afternoon"):
             continue
         keywords.append(tok)
     hints = frozenset(
@@ -158,15 +311,39 @@ def parse_intent(question: str, now: datetime) -> Intent:
         for domain, words in _DOMAIN_WORDS.items()
         if any(re.search(rf"\b{re.escape(w)}\b", low) for w in words)
     )
+    hints = hints | frozenset(d for phrase, doms in _DOMAIN_PHRASES if phrase in low for d in doms)
+    if hints & _STATUS_HINTS:
+        hints = hints | {"status"}
+    operator = parse_operator(text)
+    window = parse_window(text, now)
+    # "when do I next see/meet Pam?" and "anything planned next month?" name a calendar lookup
+    # without a calendar word; only treat them so with a next/earliest/latest operator or a window.
+    if "calendar" not in hints:
+        verb = _CALENDAR_VERB_RE.search(low) if (window is not None or (
+            operator is not None and operator.kind in ("next", "earliest", "latest"))) else None
+        if verb is None and window is not None and _PLANNED_RE.search(low):
+            verb = True
+        if verb:
+            hints = hints | {"calendar"}
+            keywords = [k for k in keywords if k not in _CALENDAR_VERBS]
+    if hints and keywords and all(k in _DOMAIN_FILLER for k in keywords):
+        keywords = []
+    kind = _classify(low, tokens, keywords, names, tuple(p for p in quoted if p), hints, operator,
+                     window is not None)
+    if kind == CONVERSATIONAL:
+        keywords = []
     return Intent(
         question=text,
         keywords=tuple(dict.fromkeys(keywords)),
         phrases=tuple(p for p in quoted if p),
         names=names,
-        window=parse_window(text, now),
+        window=window,
         domain_hints=hints,
         lookup_shaped=bool(_LOOKUP_RE.search(text)),
         wants_logs="logs" in hints,
         id_like=id_like,
         now=now,
+        operator=operator,
+        filters=_filters(text, low, names, operator),
+        kind=kind,
     )

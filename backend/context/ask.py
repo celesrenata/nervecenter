@@ -343,7 +343,51 @@ def _skipped_notice(retrieval: RetrievalResult | None) -> str:
     """Words for the user when a source truly failed; empty when none did."""
     if retrieval is None or not retrieval.skipped:
         return ""
-    return " I could not search " + ", ".join(d.replace("_", " ") for d in retrieval.skipped) + " just now."
+    # Briefing is an auxiliary domain: its failure is named only when the question asked for it.
+    # Every skipped domain stays in retrieval metadata and logs.
+    hinted = [d for d in retrieval.skipped
+              if d != "briefing" or d in retrieval.intent.domain_hints]
+    if not hinted:
+        return ""
+    return " I could not search " + ", ".join(d.replace("_", " ") for d in hinted) + " just now."
+
+
+def _names(domains: list[str]) -> str:
+    return ", ".join(d.replace("_", " ") for d in domains)
+
+
+def _provenance_extras(retrieval: RetrievalResult | None) -> dict[str, Any]:
+    """Additive provenance keys: the computation, truncation and not-connected domains."""
+    if retrieval is None:
+        return {}
+    comp = retrieval.computation
+    computation = None
+    if comp is not None:
+        computation = json.loads(json.dumps({
+            "kind": comp.kind,
+            "value": comp.value,
+            "text": comp.text,
+            "scope": comp.scope,
+            "record_ids": list(comp.record_ids),
+            "truncated": comp.truncated,
+        }, default=str))
+    return {
+        "computation": computation,
+        "truncated": dict(retrieval.truncated),
+        "unavailable": list(retrieval.unavailable),
+    }
+
+
+#: pseudo id of the COMPUTED evidence line; never counted as a citation or an ungrounded claim
+COMPUTED_REF = "computed"
+
+CAPABILITY_ANSWER = (
+    "I answer questions about your own NerveCenter data, with sources. I can search "
+    "your calendar, email, messages, voicemail, contacts, tasks, bills, notes and knowledge, "
+    "health, routines, your daily briefing, and system and security status. I can also "
+    "total, rank and count them. Try: \"What is my biggest bill?\", \"Which bills are overdue?\", "
+    "\"What is on my calendar tomorrow?\" or \"Is anything wrong right now?\"."
+)
 
 
 def _package_refs(package: ContextPackage) -> list[str]:
@@ -371,6 +415,8 @@ def _grounded_citations(
     seen: list[str] = []
     ungrounded: list[str] = []
     for marker in _citation_markers(content):
+        if marker == COMPUTED_REF and marker not in refs:
+            continue
         if marker in refs:
             if marker not in seen:
                 seen.append(marker)
@@ -619,18 +665,31 @@ class AskService:
             "partition": (ctx.partition if ctx and ctx.partition else "engineering"),
             "sensitivity": (ctx.sensitivity if ctx and ctx.sensitivity else "internal"),
             "evidence": items,
+            "computed": retrieval.computation.text if retrieval and retrieval.computation else None,
+            "searched": [d.replace("_", " ") for d in retrieval.searched] if retrieval else [],
+            "previous_subject": retrieval.previous_subject if retrieval else None,
         }
 
     @staticmethod
     def _prompt(question: str, payload: dict[str, Any]) -> str:
         ev = payload["evidence"]
+        computed = payload.get("computed")
         lines = [
-            "Answer strictly from the records below.",
+            "Answer strictly from the evidence below.",
             "Cite each claim by writing the record id after REF in square brackets, exactly like [REF mail-1234abcd] (several: [REF id1] [REF id2]).",
             "Use only ids that appear as \"REF <id>:\" in the list below; never invent an id.",
-            "If the records do not contain the answer, say so plainly instead of guessing.",
+            "If a COMPUTED line is given, state it first, in your own words, with its scope. It was calculated in code over every matching record: do not recompute, re-rank or recount, and do not contradict it.",
+            "Never write that the records do not contain the answer when evidence is listed. If the evidence does not answer the question, say which sources were searched and what the evidence does show.",
             f"Question: {question}",
         ]
+        if payload.get("previous_subject"):
+            lines.append(str(payload["previous_subject"]))
+        searched = payload.get("searched")
+        if searched:
+            lines.append("Sources searched: " + ", ".join(searched) + ".")
+        if computed:
+            # First evidence item. "computed" is not a record: it is never a citation.
+            lines.append(f"REF {COMPUTED_REF}: " + " ".join(str(computed).split()))
         if not ev:
             lines.append("No records were found for this question.")
         for item in ev:
@@ -720,6 +779,8 @@ class AskService:
         audit = self._resolve_inference(request.agent, request.inference)
         provider = audit["provider"]
         model = audit["model"]
+        if (chat := self._conversational_outcome(request_id, question, audit, ctx, retrieval)):
+            return chat
         retrieval = self._usable_retrieval(retrieval)
         personal = bool(retrieval and retrieval.records)
         package = self._compile(question, ctx, request_id, retrieval)
@@ -807,6 +868,56 @@ class AskService:
         )
         return outcome
 
+    def _conversational_outcome(
+        self,
+        request_id: str,
+        question: str,
+        audit: dict[str, str],
+        ctx: AskContext | None,
+        retrieval: RetrievalResult | None,
+    ) -> AskOutcome | None:
+        """Greetings and "what can you do?": a fixed capability answer, no
+        retrieval and no model call."""
+        from backend.context.retrieval.intent import CONVERSATIONAL, parse_intent
+
+        intent = retrieval.intent if retrieval is not None else parse_intent(question, datetime.now(UTC))
+        if intent.kind != CONVERSATIONAL:
+            return None
+        package = self._compile(question, ctx, request_id, None)
+        decision = self._preflight(ctx, False)
+        body: dict[str, Any] = {
+            "accepted": True,
+            "executed": True,
+            "service": "context",
+            "request_id": request_id,
+            "timestamp": datetime.now(UTC).isoformat(),
+            "status": "answered",
+            "request_status": "answered",
+            "answer": CAPABILITY_ANSWER,
+            "grounded": False,
+            "citations": [],
+            "records": [],
+            "ungrounded_claims": [],
+            "inference": audit,
+            "policy": {
+                "denied": False,
+                "model_tier": decision.model_tier,
+                "remote_allowed": True,
+                "policy_id": decision.policy_id,
+                "sensitivity_class": decision.sensitivity_class,
+            },
+            "provenance": {
+                "context_package_id": package.id,
+                "context_records": [],
+                "searched": [],
+                "computation": None,
+                "truncated": {},
+                "unavailable": [],
+            },
+            "result": None,
+        }
+        return AskOutcome(200, body)
+
     def _usable_retrieval(self, retrieval: RetrievalResult | None) -> RetrievalResult | None:
         """Personal records never reach a transport that is not the secure route."""
         if retrieval is not None and retrieval.records and not self.personal_allowed:
@@ -824,14 +935,28 @@ class AskService:
     ) -> AskOutcome | None:
         """A lookup that matched nothing is answered in code: no model call,
         no citations, and a plain statement of what was searched."""
-        if retrieval is None or retrieval.records:
+        if retrieval is None or retrieval.records or retrieval.computation is not None:
             return None
         intent = retrieval.intent
-        if not (intent.lookup_shaped and intent.has_terms):
+        old_shape = intent.lookup_shaped and intent.has_terms
+        # Widened: aggregate, domain-list, overview and follow-up questions with
+        # nothing found. Plain lookups (including date-window ones) keep the
+        # old rule, so a free-form question still reaches the model.
+        if not old_shape and intent.kind not in ("aggregate", "domain_list", "overview", "followup"):
             return None
-        subject = ", ".join(intent.search_terms[:4])
-        where = ", ".join(d.replace("_", " ") for d in retrieval.searched) or "any connected source"
-        answer = f"I found nothing about {subject} in {where}."
+        if old_shape:
+            subject = ", ".join(intent.search_terms[:4])
+            where = _names(retrieval.searched) or "any connected source"
+            answer = f"I found nothing about {subject} in {where}."
+        else:
+            # Aggregate, domain-list and other empty lookups: say which sources
+            # were searched (no match), not connected, or skipped.
+            if retrieval.searched:
+                answer = f"I searched {_names(retrieval.searched)} and found no matching data."
+            else:
+                answer = "I did not find any matching data."
+            if retrieval.unavailable:
+                answer += f" Not connected: {_names(retrieval.unavailable)}."
         answer += _skipped_notice(retrieval)
         body: dict[str, Any] = {
             "accepted": True,
@@ -858,6 +983,7 @@ class AskService:
                 "context_package_id": package.id,
                 "context_records": [],
                 "searched": list(retrieval.searched),
+                **_provenance_extras(retrieval),
             },
             "result": None,
         }
@@ -892,6 +1018,11 @@ class AskService:
         ctx = request.context
         audit = self._resolve_inference(request.agent, request.inference)
         provider, model = audit["provider"], audit["model"]
+        chat = self._conversational_outcome(request_id, question, audit, ctx, retrieval)
+        if chat is not None:
+            yield "delta", {"text": chat.body["answer"]}
+            yield "done", chat.body
+            return
         retrieval = self._usable_retrieval(retrieval)
         personal = bool(retrieval and retrieval.records)
         package = self._compile(question, ctx, request_id, retrieval)
@@ -1100,6 +1231,7 @@ class AskService:
                     "reason": decision.reason,
                     "sensitivity_class": decision.sensitivity_class,
                 },
+                **_provenance_extras(retrieval),
             },
             "result": None,
         }
