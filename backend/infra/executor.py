@@ -211,9 +211,10 @@ def _ssh_target(config: dict[str, Any]) -> tuple[str, int, str]:
     return host, port, user
 
 
-async def run_ssh(config: dict[str, Any], secret: str | None, command: str, *,
-                  act: bool = False, on_output: Callable[[str], None] | None = None
-                  ) -> RunResult:
+async def run_ssh(config: dict[str, Any], secret: str | None, command: str | None, *,
+                  act: bool = False, on_output: Callable[[str], None] | None = None,
+                  stdin: str | None = None, timeout: float | None = None) -> RunResult:
+    """``command=None`` opens the login program (a menu, for pfSense) and feeds ``stdin`` to it."""
     host, port, user = _ssh_target(config)
     known = str(config.get("known_hosts") or "").strip()
     if not known:
@@ -235,10 +236,11 @@ async def run_ssh(config: dict[str, Any], secret: str | None, command: str, *,
             "-o", "GlobalKnownHostsFile=/dev/null", "-o", "ConnectTimeout=10",
             "-o", "ForwardAgent=no", "-o", "ForwardX11=no", "-o", "ClearAllForwardings=yes",
             "-o", "PermitLocalCommand=no", "-o", "ServerAliveInterval=10",
-            "-T", "--", host, command,
+            "-T", "--", host, *([command] if command is not None else []),
         ]
-        return await _run(argv, env=_env(workdir),
-                          timeout=ACT_TIMEOUT_S if act else READ_TIMEOUT_S, on_output=on_output)
+        return await _run(argv, env=_env(workdir), stdin=stdin,
+                          timeout=timeout or (ACT_TIMEOUT_S if act else READ_TIMEOUT_S),
+                          on_output=on_output)
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 

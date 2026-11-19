@@ -295,6 +295,21 @@ class InfraService:
         return await executor.run_ssh(row.config or {}, secret, command, act=act,
                                       on_output=on_output)
 
+    async def run_session(self, connector_id: str, stdin: str, *, timeout: float = 120.0
+                          ) -> executor.RunResult:
+        """Feed ``stdin`` to the login program of a pinned SSH connector (no remote command).
+
+        For a device whose login is an interactive menu (pfSense). Callers own what is sent.
+        """
+        async with self._sessions() as s:
+            row = await self._row(s, connector_id)
+        if row.kind != "ssh":
+            raise executor.ExecutorError("not_an_ssh_connector")
+        if row.host_key_status != "pinned":
+            raise executor.ExecutorError("host_key_not_pinned")
+        return await executor.run_ssh(row.config or {}, await self._secret(row.id), None,
+                                      act=True, stdin=stdin, timeout=timeout)
+
     async def run_read(self, connector: str, step: dict[str, Any], *,
                        max_chars: int | None = None) -> dict[str, Any]:
         """Plan mode: one read-only command. ``{"ok", "exit", "output"}`` or a refusal.

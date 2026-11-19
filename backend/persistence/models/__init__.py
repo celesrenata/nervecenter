@@ -59,6 +59,7 @@ from .pentest import (
     PentestAllowlist,
     PentestFinding,
     PentestFirewallSnapshot,
+    PentestFix,
     PentestScan,
     PentestSettings,
 )
@@ -110,6 +111,7 @@ __all__ = [
     "PentestAdvisoryCache",
     "PentestAllowlist",
     "PentestFinding",
+    "PentestFix",
     "PentestFirewallSnapshot",
     "PentestScan",
     "PentestSettings",
