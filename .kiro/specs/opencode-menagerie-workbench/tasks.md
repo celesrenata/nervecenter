@@ -536,7 +536,7 @@ Phase routers are mounted only when `WORKBENCH_PHASE` is at least that phase. Ea
     - Controls hidden when the IDE is disabled, "Open in Browser IDE" link shown and hidden, and the handoff status unchanged after following the link
     - _Requirements: 5.12, 10.3, 10.4, 10.5_
 
-- [~] 20. Final checkpoint - Phase 3 gate
+- [x] 20. Final checkpoint - Phase 3 gate
   - Ensure all tests pass, ask the user if questions arise.
   - Run the live NetworkPolicy probe, generate `docs/workbench/evidence-phase-3.md`, and leave the Browser_IDE disabled until the Owner reviews the evidence.
 
