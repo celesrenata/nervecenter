@@ -33,6 +33,7 @@ configured timezone. Times are never stored naive.
 
 from __future__ import annotations
 
+import logging
 import re
 import urllib.parse
 from dataclasses import dataclass, field
@@ -46,6 +47,14 @@ DEFAULT_BACK_WINDOW = timedelta(days=14)
 DEFAULT_FORE_WINDOW = timedelta(days=60)
 #: Page cap per calendar per pass (250 events a page).
 MAX_EVENT_PAGES = 20
+#: calendarList page cap (default page is 100 entries).
+MAX_CALENDAR_LIST_PAGES = 10
+
+logger = logging.getLogger(__name__)
+
+_READABLE_ROLES = frozenset({"reader", "writer", "owner"})
+_HOLIDAY_SUFFIX = "#holiday@group.v.calendar.google.com"
+_BIRTHDAY_ID = "addressbook#contacts@group.v.calendar.google.com"
 
 
 # ---------------------------------------------------------------------------
@@ -141,6 +150,13 @@ class SyncResult:
     new_sync_tokens: dict[str, str] = field(default_factory=dict)
     etags: dict[str, str] = field(default_factory=dict)
     calendars: list[str] = field(default_factory=list)
+    #: calendar-id → error code for discovered non-primary calendars whose
+    #: fetch failed this pass (Google only; empty for CalDAV/Apple).
+    errors: dict[str, str] = field(default_factory=dict)
+    #: calendar ids whose page loop hit ``MAX_EVENT_PAGES`` with a token left.
+    truncated: list[str] = field(default_factory=list)
+    #: calendar-id → metadata (summary, primary) for the subscribed set.
+    calendar_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -280,52 +296,173 @@ class GoogleCalendarProvider:
         return resp.json()
 
     # -- provider API --------------------------------------------------------
-    async def list_calendars(self) -> list[str]:
-        """Return the calendar ids to subscribe (config wins, else primary)."""
+    async def list_calendar_entries(self) -> list[dict[str, Any]]:
+        """Return the calendars to subscribe, with metadata.
+
+        ``config.calendar_ids`` wins (no network call, order kept). Otherwise
+        page ``calendarList`` and keep every non-deleted, non-hidden entry with
+        a readable role that is ``selected`` or primary; primary first.
+        Holiday / contacts-birthday calendars are skipped unless opted in.
+        """
         configured = self._config.get("calendar_ids")
         if configured:
-            return list(configured)
-        data = await self._get_json(GoogleCalendarProvider.CALENDARS_URL, None)
-        items = data.get("items", [])
-        # Default to the primary calendar when none are configured. Google's
-        # calendarList marks it with ``"primary": true``.
-        primary = next((c["id"] for c in items if c.get("primary") is True), None)
-        if primary is None:
-            return []
-        return [primary]
+            return [
+                {"id": c, "summary": None, "primary": False, "configured": True}
+                for c in configured
+            ]
+        include_holidays = bool(self._config.get("include_holidays"))
+        include_birthdays = bool(self._config.get("include_birthdays"))
+        items: list[dict[str, Any]] = []
+        page_token: str | None = None
+        for _ in range(MAX_CALENDAR_LIST_PAGES):
+            params = {"minAccessRole": "reader"}
+            if page_token:
+                params["pageToken"] = page_token
+            data = await self._get_json(GoogleCalendarProvider.CALENDARS_URL, params)
+            items.extend(i for i in data.get("items", []) if isinstance(i, dict))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                break
+        entries: list[dict[str, Any]] = []
+        for c in items:
+            cid = c.get("id")
+            if not cid:
+                continue
+            is_primary = c.get("primary") is True
+            if c.get("deleted") is True or c.get("hidden") is True:
+                continue
+            # The primary calendar is always subscribed (even when the API
+            # omits ``selected``/``accessRole``), as before the fix.
+            if not is_primary:
+                if c.get("accessRole") not in _READABLE_ROLES:
+                    continue
+                if c.get("selected") is not True:
+                    continue
+                if cid.endswith(_HOLIDAY_SUFFIX) and not include_holidays:
+                    continue
+                if cid == _BIRTHDAY_ID and not include_birthdays:
+                    continue
+            entries.append(
+                {
+                    "id": cid,
+                    "summary": c.get("summaryOverride") or c.get("summary"),
+                    "primary": is_primary,
+                    "configured": False,
+                }
+            )
+        # Stable: primary first, then calendarList order.
+        entries.sort(key=lambda e: not e["primary"])
+        return entries
+
+    async def list_calendars(self) -> list[str]:
+        """Return the calendar ids to subscribe (config wins, else every
+        selected readable calendar, primary first)."""
+        return [e["id"] for e in await self.list_calendar_entries()]
 
     async def sync(self, *, window_start: datetime, window_end: datetime) -> SyncResult:
         """Fetch events in [window_start, window_end) for every subscribed
-        calendar, honoring stored per-calendar sync tokens."""
+        calendar, then collapse duplicates across calendars."""
 
         result = SyncResult()
-        calendars = await self.list_calendars()
+        entries = await self.list_calendar_entries()
+        calendars = [e["id"] for e in entries]
         result.calendars = list(calendars)
+        for e in entries:
+            result.calendar_meta[e["id"]] = {
+                "summary": e["summary"],
+                "primary": e["primary"],
+            }
+        tagged: list[tuple[int, dict[str, Any], ProviderEvent]] = []
+        for order, entry in enumerate(entries):
+            cal = entry["id"]
+            fetched: list[ProviderEvent] = []
+            try:
+                truncated = await self._fetch_calendar(
+                    cal, window_start, window_end, fetched
+                )
+            except TransportError as exc:
+                if entry["primary"] or entry["configured"]:
+                    raise
+                result.errors[cal] = exc.code
+                continue
+            if truncated:
+                result.truncated.append(cal)
+                logger.warning("google calendar %s truncated at %d pages", cal, MAX_EVENT_PAGES)
+            for ev in fetched:
+                ev.extra["calendar_id"] = cal
+                ev.extra["calendar_summary"] = entry["summary"]
+                tagged.append((order, entry, ev))
+        result.events = self._dedupe(tagged)
+        return result
+
+    @staticmethod
+    def _dedupe(
+        tagged: list[tuple[int, dict[str, Any], ProviderEvent]]
+    ) -> list[ProviderEvent]:
+        """Collapse the same event seen on several calendars into one row.
+
+        Key: ``(iCalUID or id, start instant)``. Winner: active over
+        cancelled, then primary, then subscription order. The winner keeps its
+        own Google event id as ``ical_uid``.
+        """
+        if tagged and all(t[1]["configured"] for t in tagged):
+            # ``calendar_ids`` override: legacy behavior, order kept, nothing
+            # collapsed.
+            for _, _, ev in tagged:
+                ev.extra["calendar_ids"] = [ev.extra["calendar_id"]]
+            return [t[2] for t in tagged]
+        groups: dict[Any, list[tuple[int, dict[str, Any], ProviderEvent]]] = {}
+        for item in tagged:
+            ev = item[2]
+            uid = ev.extra.get("ical_uid_raw") or ev.ical_uid
+            start = to_utc(ev.start) if ev.start is not None else None
+            key = (uid, start if start is not None else ("id", ev.ical_uid))
+            groups.setdefault(key, []).append(item)
+        out: list[ProviderEvent] = []
+        for members in groups.values():
+            members.sort(key=lambda m: (m[2].deleted, not m[1]["primary"], m[0]))
+            winner = members[0][2]
+            ids: list[str] = []
+            for _, _, ev in members:
+                cid = ev.extra.get("calendar_id")
+                if cid and cid not in ids:
+                    ids.append(cid)
+            winner.extra["calendar_ids"] = ids
+            out.append(winner)
+        return out
+
+    async def _fetch_calendar(
+        self,
+        cal: str,
+        window_start: datetime,
+        window_end: datetime,
+        sink: list[ProviderEvent],
+    ) -> bool:
+        """Fetch one calendar's window into ``sink``; True when truncated."""
         # Window fetch every pass. Google rejects ``syncToken`` combined with
         # timeMin/timeMax/singleEvents, so no sync token is sent; recurring
         # events are expanded into instances (``singleEvents``) so the
         # upcoming list shows each occurrence, and cancelled instances come
         # back (``showDeleted``) so they are marked deleted.
-        for cal in calendars:
-            url = self.EVENTS_URL_TMPL.format(cal=urllib.parse.quote(cal, safe="@."))
-            page_token: str | None = None
-            for _ in range(MAX_EVENT_PAGES):
-                params = {
-                    "timeMin": window_start.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-                    "timeMax": window_end.astimezone(UTC).isoformat().replace("+00:00", "Z"),
-                    "maxResults": "250",
-                    "singleEvents": "true",
-                    "showDeleted": "true",
-                }
-                if page_token:
-                    params["pageToken"] = page_token
-                data = await self._get_json(url, params)
-                for item in data.get("items", []):
-                    result.events.append(self._normalize(item))
-                page_token = data.get("nextPageToken")
-                if not page_token:
-                    break
-        return result
+        url = self.EVENTS_URL_TMPL.format(cal=urllib.parse.quote(cal, safe="@."))
+        page_token: str | None = None
+        for _ in range(MAX_EVENT_PAGES):
+            params = {
+                "timeMin": window_start.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                "timeMax": window_end.astimezone(UTC).isoformat().replace("+00:00", "Z"),
+                "maxResults": "250",
+                "singleEvents": "true",
+                "showDeleted": "true",
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            data = await self._get_json(url, params)
+            for item in data.get("items", []):
+                sink.append(self._normalize(item))
+            page_token = data.get("nextPageToken")
+            if not page_token:
+                return False
+        return True
 
     # -- write path (Ask calendar actions) ------------------------------------
     async def _write_request(
@@ -511,6 +648,7 @@ class GoogleCalendarProvider:
                 ],
                 "recurrence": item.get("recurrence"),
                 "recurring_event_id": item.get("recurringEventId"),
+                "ical_uid_raw": item.get("iCalUID"),
                 "organizer_self": bool((item.get("organizer") or {}).get("self", True)),
                 "attendee_names": [
                     a.get("displayName")

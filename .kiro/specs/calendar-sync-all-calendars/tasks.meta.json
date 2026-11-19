@@ -1,0 +1,160 @@
+{
+  "pbtResults": {
+    "2. Write preservation property tests (BEFORE implementing fix)": {
+      "status": "passed",
+      "lastRunTimestamp": 1795031536045
+    }
+  },
+  "executionHistory": {
+    "1. Write bug condition exploration test": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031385921
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031389329
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031441911
+      }
+    ],
+    "2. Write preservation property tests (BEFORE implementing fix)": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031385956
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031445784
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031546656
+      }
+    ],
+    "3.1 Implement the fix in `backend/calendar/providers.py`": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031385984
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031550301
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031682451
+      }
+    ],
+    "3.2 Implement sync-state and orphan handling in `backend/calendar/sync.py`": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031386009
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031685700
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031735026
+      }
+    ],
+    "3.3 Verify bug condition exploration test now passes": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031386035
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031738956
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031755349
+      }
+    ],
+    "3.4 Verify preservation tests still pass": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031386062
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031759352
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031786751
+      }
+    ],
+    "3.5 Add remaining unit and integration tests": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031386090
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031790401
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031888652
+      }
+    ],
+    "4. Checkpoint - Ensure all tests pass": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031386131
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031891930
+      },
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031930924
+      }
+    ],
+    "5. Deploy and verify in production (non-code)": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031386159
+      }
+    ],
+    "3. Fix: Google calendar sync subscribes only to the primary calendar": [
+      {
+        "executionId": "3939759e-ca7b-4a3f-91c5-b18f88812092",
+        "chatSessionId": "sess_72cf75c3-5fe0-4531-b379-b40a6aedd80f",
+        "timestamp": 1795031888686
+      }
+    ]
+  }
+}
