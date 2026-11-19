@@ -280,7 +280,17 @@ class CalendarSyncRunner:
                 etags.update(result.etags)
                 state["etags"] = etags
             state["last_sync_at"] = now.isoformat()
+            previous_calendars = list(state.get("last_calendars") or [])
+            previous_meta = dict(state.get("last_calendar_meta") or {})
             state["last_calendars"] = result.calendars
+            state["last_calendar_meta"] = dict(result.calendar_meta)
+            state["last_calendar_errors"] = dict(result.errors)
+            state["last_truncated"] = list(result.truncated)
+
+            orphaned = await self._tombstone_dropped_calendars(
+                account, previous_calendars, previous_meta, result
+            )
+            deleted += orphaned
             await repo.save_sync_state(account_id, state)
 
             await repo.mark_attempt(
@@ -318,6 +328,59 @@ class CalendarSyncRunner:
                 "error_code": code,
                 "error": message,
             }
+
+    async def _tombstone_dropped_calendars(
+        self,
+        account: Any,
+        previous: list[str],
+        previous_meta: dict[str, Any],
+        result: Any,
+    ) -> int:
+        """Mark events of calendars no longer subscribed as deleted (existing
+        marker path). Skips when the new set is empty or the primary was not
+        fetched, never touches the primary or legacy rows without
+        ``calendar_id``, and ignores calendars whose fetch failed this pass."""
+        current = list(result.calendars or [])
+        if account.provider != "google" or not current or not previous:
+            return 0
+        meta = result.calendar_meta or {}
+        if not any((m or {}).get("primary") for m in meta.values()):
+            return 0
+        dropped = {
+            cid
+            for cid in previous
+            if cid not in current
+            and cid not in (result.errors or {})
+            and not (previous_meta.get(cid) or {}).get("primary")
+        }
+        if not dropped:
+            return 0
+        rows = await self.registry.calendar.list_events(
+            account_id=account.id, include_deleted=False, limit=10000
+        )
+        count = 0
+        for row in rows:
+            cal_id = (row.extra or {}).get("calendar_id")
+            if not cal_id or cal_id not in dropped:
+                continue
+            await self._ingest_both_planes(
+                account,
+                ProviderEvent(
+                    ical_uid=row.ical_uid,
+                    title=row.title,
+                    start=row.start,
+                    end=row.end,
+                    all_day=row.all_day,
+                    timezone=row.timezone,
+                    location=row.location,
+                    description=row.description,
+                    deleted=True,
+                    status="cancelled",
+                    extra=dict(row.extra or {}),
+                ),
+            )
+            count += 1
+        return count
 
     # -- write path (Ask calendar actions) -------------------------------------
     async def _writable_provider(self, account_id: str) -> tuple[Any, Any, str]:
@@ -482,6 +545,23 @@ class CalendarSyncRunner:
             durable_written = True
         except Exception as exc:  # noqa: BLE001 — keep the in-memory plane live
             log.error("calendar.sync.durable_write_failed", error=redact_message(exc))
+        if durable_written:
+            try:
+                from backend.obligations.producers import bridge_calendar_event
+
+                await bridge_calendar_event(
+                    self.registry,
+                    account_id=account.id,
+                    ical_uid=ev.ical_uid,
+                    title=ev.title,
+                    start=self._event_start(ev),
+                    deleted=ev.deleted,
+                    status=ev.status or "confirmed",
+                    appt=ev.appt,
+                    location=ev.location,
+                )
+            except Exception as exc:  # noqa: BLE001 — never break calendar sync
+                log.error("calendar.sync.obligation_bridge_failed", error=redact_message(exc))
 
         if ev.deleted:
             # Explicit deletion marker: remove the in-memory copy so
