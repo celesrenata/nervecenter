@@ -64,6 +64,7 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.sql import Select, Insert
 
+import backend.persistence.models.nc_platform  # noqa: F401  (registers the nc_* tables)
 from backend.api.app import app as module_app
 from backend.persistence.models import (
     Agent,
@@ -107,8 +108,17 @@ NOW = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
 
 #: Tables known to carry an ``id`` primary key. The live schema uses
 #: ``character varying`` for every one of them; the ORM must agree.
+# Workbench tables (migration 049_workbench, NS-ADR-127) predate this rule's
+# coverage and use native ids: UUID (projects), Text (opencode session ids)
+# and BigInteger (usage, audit). Changing them needs a data migration.
+WORKBENCH_NON_STRING_ID = frozenset(
+    {"workbench_projects", "workbench_sessions", "workbench_model_usage", "workbench_audit"}
+)
+
 TABLES_WITH_ID = frozenset(
     {
+        # Pentest fixes (050_pentest_fixes).
+        "pentest_fixes",
         "agent_overrides",
         "agent_results",
         "agent_runs",
@@ -306,9 +316,12 @@ class TestOrmColumnTypes:
         # tables from nc_platform.py are part of this set since 005.)
         assert TABLES_WITH_ID.issubset(set(Base.metadata.tables.keys()))
         # Composite/natural-key tables with no ``id`` column are not in the id set.
-        no_id = {"agent_resource_links", "pentest_advisory_cache"}
+        no_id = {"agent_resource_links", "pentest_advisory_cache", "voicemail_threads",
+                 "voicemails", "workbench_ide"}
         assert no_id <= set(Base.metadata.tables.keys())
-        assert len(Base.metadata.tables) == len(TABLES_WITH_ID) + len(no_id)
+        assert WORKBENCH_NON_STRING_ID <= set(Base.metadata.tables.keys())
+        assert len(Base.metadata.tables) == (
+            len(TABLES_WITH_ID) + len(no_id) + len(WORKBENCH_NON_STRING_ID))
 
     def test_every_id_column_is_string(self):
         """N1/D-5: every ``id`` column is ``String`` (never UUID)."""

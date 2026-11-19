@@ -28,11 +28,9 @@ from .base import Base
 class WorkbenchProject(Base):
     __tablename__ = "workbench_projects"
     __table_args__ = (
+        # The title-length and slug-regex CHECKs are PostgreSQL-only (char_length, ~)
+        # and live in migration 049_workbench; the ORM keeps only portable ones.
         CheckConstraint("kind IN ('opencode','menagerie')", name="ck_workbench_projects_kind"),
-        CheckConstraint(
-            "char_length(title) BETWEEN 1 AND 120", name="ck_workbench_projects_title_len"
-        ),
-        CheckConstraint("slug ~ '^[a-z0-9][a-z0-9-]{0,62}$'", name="ck_workbench_projects_slug"),
         UniqueConstraint("slug", "kind", name="uq_workbench_projects_slug_kind"),
     )
 

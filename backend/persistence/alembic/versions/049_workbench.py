@@ -13,6 +13,24 @@ branch_labels = None
 depends_on = None
 
 
+def _pg_only_project_checks() -> list[sa.CheckConstraint]:
+    """Title length and slug regex use PostgreSQL functions (char_length, ~).
+
+    Other dialects (the SQLite test databases) get the table without them; the
+    API validates the same rules before every insert.
+    """
+    if op.get_bind().dialect.name != "postgresql":
+        return []
+    return [
+        sa.CheckConstraint(
+            "char_length(title) BETWEEN 1 AND 120", name="ck_workbench_projects_title_len"
+        ),
+        sa.CheckConstraint(
+            "slug ~ '^[a-z0-9][a-z0-9-]{0,62}$'", name="ck_workbench_projects_slug"
+        ),
+    ]
+
+
 def upgrade() -> None:
     op.create_table(
         "workbench_projects",
@@ -26,12 +44,7 @@ def upgrade() -> None:
         sa.Column("archived", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column("push_approved", sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.CheckConstraint("kind IN ('opencode','menagerie')", name="ck_workbench_projects_kind"),
-        sa.CheckConstraint(
-            "char_length(title) BETWEEN 1 AND 120", name="ck_workbench_projects_title_len"
-        ),
-        sa.CheckConstraint(
-            "slug ~ '^[a-z0-9][a-z0-9-]{0,62}$'", name="ck_workbench_projects_slug"
-        ),
+        *_pg_only_project_checks(),
         sa.UniqueConstraint("slug", "kind", name="uq_workbench_projects_slug_kind"),
     )
     op.create_table(

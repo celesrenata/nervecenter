@@ -50,7 +50,11 @@ def test_single_alembic_head():
     cfg = Config()
     cfg.set_main_option("script_location", "backend/persistence/alembic")
     script = ScriptDirectory.from_config(cfg)
-    assert script.get_heads() == ["049_workbench"]
+    heads = script.get_heads()
+    assert len(heads) == 1, heads
+    # 049_workbench is in the single chain, directly on top of 049_voicemails.
+    assert script.get_revision("049_workbench").down_revision == "049_voicemails"
+    assert "049_workbench" in {r.revision for r in script.iterate_revisions(heads[0], "base")}
 
 
 def test_upgrade_then_downgrade_on_scratch_db(tmp_path):
